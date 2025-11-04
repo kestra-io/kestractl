@@ -19,6 +19,7 @@ type AuthContext struct {
 	Password   string `json:"password,omitempty"`
 }
 
+// authConfigEntry is the internal storage format where the name is stored as the map key, not as a field.
 type authConfigEntry struct {
 	Host       string `json:"host"`
 	Tenant     string `json:"tenant"`
