@@ -9,18 +9,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type namespacesService interface {
+	ListNamespaces(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error)
+}
+
 func newNamespacesCommand() *cobra.Command {
+	service := apiclient.NewNamespacesAPI(newKestraClient())
+	return newNamespacesCommandWithService(service)
+}
+
+func newNamespacesCommandWithService(service namespacesService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "namespaces",
 		Short: "Manage namespaces",
 	}
 
-	cmd.AddCommand(newNamespacesListCommand())
+	cmd.AddCommand(newNamespacesListCommand(service))
 
 	return cmd
 }
 
-func newNamespacesListCommand() *cobra.Command {
+func newNamespacesListCommand(service namespacesService) *cobra.Command {
 	var query string
 	var tenant string
 	var host string
@@ -36,11 +45,12 @@ func newNamespacesListCommand() *cobra.Command {
 				return errors.New("output must be 'table' or 'json'")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewNamespacesAPI(client)
+			if service == nil {
+				return errors.New("namespaces service not configured")
+			}
 
-			namespaces, err := api.ListNamespaces(tenant, context, query, 1, 100)
+			namespaces, err := service.ListNamespaces(tenant, context, query, 1, 100)
 			if err != nil {
 				return err
 			}

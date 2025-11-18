@@ -11,20 +11,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type executionsService interface {
+	KillByQuery(state []string, namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+	TriggerExecution(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+	GetExecution(executionID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+}
+
 func newExecutionsCommand() *cobra.Command {
+	service := apiclient.NewExecutionsAPI(newKestraClient())
+	return newExecutionsCommandWithService(service)
+}
+
+func newExecutionsCommandWithService(service executionsService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "executions",
 		Short: "Manage executions",
 	}
 
-	cmd.AddCommand(newExecutionsKillCommand())
-	cmd.AddCommand(newExecutionsRunCommand())
-	cmd.AddCommand(newExecutionsGetCommand())
+	cmd.AddCommand(newExecutionsKillCommand(service))
+	cmd.AddCommand(newExecutionsRunCommand(service))
+	cmd.AddCommand(newExecutionsGetCommand(service))
 
 	return cmd
 }
 
-func newExecutionsKillCommand() *cobra.Command {
+func newExecutionsKillCommand(service executionsService) *cobra.Command {
 	var namespace string
 	var flowID string
 	var tenant string
@@ -45,11 +56,12 @@ func newExecutionsKillCommand() *cobra.Command {
 				return errors.New("--namespace is required when --flow-id is provided")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewExecutionsAPI(client)
+			if service == nil {
+				return errors.New("executions service not configured")
+			}
 
-			result, err := api.KillByQuery([]string{"RUNNING"}, namespace, flowID, tenant, context)
+			result, err := service.KillByQuery([]string{"RUNNING"}, namespace, flowID, tenant, context)
 			if err != nil {
 				return err
 			}
@@ -93,7 +105,7 @@ func newExecutionsKillCommand() *cobra.Command {
 	return cmd
 }
 
-func newExecutionsRunCommand() *cobra.Command {
+func newExecutionsRunCommand(service executionsService) *cobra.Command {
 	var tenant string
 	var host string
 	var token string
@@ -112,16 +124,17 @@ func newExecutionsRunCommand() *cobra.Command {
 				return errors.New("output must be 'table' or 'json'")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewExecutionsAPI(client)
+			if service == nil {
+				return errors.New("executions service not configured")
+			}
 
 			if wait {
 				fmt.Printf("Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
 				fmt.Println("Waiting for execution to complete...")
 			}
 
-			execution, err := api.TriggerExecution(namespace, flowID, wait, nil, tenant, context)
+			execution, err := service.TriggerExecution(namespace, flowID, wait, nil, tenant, context)
 			if err != nil {
 				return err
 			}
@@ -154,7 +167,7 @@ func newExecutionsRunCommand() *cobra.Command {
 	return cmd
 }
 
-func newExecutionsGetCommand() *cobra.Command {
+func newExecutionsGetCommand(service executionsService) *cobra.Command {
 	var tenant string
 	var host string
 	var token string
@@ -171,11 +184,12 @@ func newExecutionsGetCommand() *cobra.Command {
 				return errors.New("output must be 'table' or 'json'")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewExecutionsAPI(client)
+			if service == nil {
+				return errors.New("executions service not configured")
+			}
 
-			execution, err := api.GetExecution(executionID, tenant, context)
+			execution, err := service.GetExecution(executionID, tenant, context)
 			if err != nil {
 				return err
 			}
@@ -204,6 +218,7 @@ func newExecutionsGetCommand() *cobra.Command {
 			if urlValue, ok := execution["url"]; ok {
 				fmt.Printf("URL: %v\n", urlValue)
 			} else {
+				client := newKestraClient()
 				resolvedCtx, err := client.ResolveContext(context)
 				if err == nil {
 					tenantValue := tenant

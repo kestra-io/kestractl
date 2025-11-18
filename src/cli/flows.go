@@ -11,20 +11,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
+type flowsService interface {
+	ListFlows(namespace, tenant string, ctx *apiclient.AuthContext) ([]map[string]any, error)
+	GetFlow(namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+	CreateFlow(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error)
+}
+
 func newFlowsCommand() *cobra.Command {
+	service := apiclient.NewFlowsAPI(newKestraClient())
+	return newFlowsCommandWithService(service)
+}
+
+func newFlowsCommandWithService(service flowsService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flows",
 		Short: "Manage flows",
 	}
 
-	cmd.AddCommand(newFlowsListCommand())
-	cmd.AddCommand(newFlowsGetCommand())
-	cmd.AddCommand(newFlowsDeployCommand())
+	cmd.AddCommand(newFlowsListCommand(service))
+	cmd.AddCommand(newFlowsGetCommand(service))
+	cmd.AddCommand(newFlowsDeployCommand(service))
 
 	return cmd
 }
 
-func newFlowsListCommand() *cobra.Command {
+func newFlowsListCommand(service flowsService) *cobra.Command {
 	var host string
 	var tenant string
 	var token string
@@ -41,11 +52,12 @@ func newFlowsListCommand() *cobra.Command {
 				return errors.New("output must be 'table' or 'json'")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewFlowsAPI(client)
+			if service == nil {
+				return errors.New("flows service not configured")
+			}
 
-			flows, err := api.ListFlows(namespace, tenant, context)
+			flows, err := service.ListFlows(namespace, tenant, context)
 			if err != nil {
 				return err
 			}
@@ -80,7 +92,7 @@ func newFlowsListCommand() *cobra.Command {
 	return cmd
 }
 
-func newFlowsGetCommand() *cobra.Command {
+func newFlowsGetCommand(service flowsService) *cobra.Command {
 	var host string
 	var tenant string
 	var token string
@@ -98,11 +110,12 @@ func newFlowsGetCommand() *cobra.Command {
 				return errors.New("output must be 'table' or 'json'")
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewFlowsAPI(client)
+			if service == nil {
+				return errors.New("flows service not configured")
+			}
 
-			flow, err := api.GetFlow(namespace, flowID, tenant, context)
+			flow, err := service.GetFlow(namespace, flowID, tenant, context)
 			if err != nil {
 				return err
 			}
@@ -139,7 +152,7 @@ func newFlowsGetCommand() *cobra.Command {
 	return cmd
 }
 
-func newFlowsDeployCommand() *cobra.Command {
+func newFlowsDeployCommand(service flowsService) *cobra.Command {
 	var host string
 	var tenant string
 	var token string
@@ -162,11 +175,12 @@ func newFlowsDeployCommand() *cobra.Command {
 				return fmt.Errorf("failed to read file '%s': %w", filepath, err)
 			}
 
-			client := newKestraClient()
 			context := temporaryContext(host, tenant, token)
-			api := apiclient.NewFlowsAPI(client)
+			if service == nil {
+				return errors.New("flows service not configured")
+			}
 
-			flow, err := api.CreateFlow(string(content), tenant, context, override)
+			flow, err := service.CreateFlow(string(content), tenant, context, override)
 			if err != nil {
 				return err
 			}
