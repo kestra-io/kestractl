@@ -71,6 +71,14 @@ go build ./...
 ./kestra --help
 ```
 
+### Testing
+
+```bash
+go test ./...
+```
+
+CLI unit tests live alongside their commands (e.g. `src/cli/flows_test.go`) and rely on fixtures under `src/cli/testdata/`. Add new sample flows there when expanding coverage.
+
 ## Requirements
 
 - Go 1.21 or newer
