@@ -1,24 +1,29 @@
 # Kestra CLI (Under Development)
 
-A command-line interface for managing Kestra flows, executions, and namespaces.
+A Go-based command-line interface for managing Kestra flows, executions, and namespaces.
 
 ## Installation
 
 ```bash
-# Create virtual environment
-uv venv
-source .venv/bin/activate
+# Download dependencies (requires Go 1.21+)
+go mod tidy
 
-# Install dependencies
-uv pip install -e .
+# Build the binary
+go build -o kestra
+```
+
+You can also install it into your `$GOBIN`:
+
+```bash
+go install ./...
 ```
 
 ## Quick Setup
 
-Configure your Kestra instance:
+Configure your Kestra instance and credentials:
 
 ```bash
-uv run kestra config add default http://localhost:8080 main --token YOUR_TOKEN --default
+kestra config add default http://localhost:8080 main --token YOUR_TOKEN --default
 ```
 
 This creates a configuration file at `~/.kestra/config` with your host, tenant, and authentication token.
@@ -28,19 +33,19 @@ This creates a configuration file at `~/.kestra/config` with your host, tenant, 
 ### Get a flow
 
 ```bash
-uv run kestra flows get <namespace> <flow_id>
+kestra flows get <namespace> <flow_id>
 ```
 
 ### Run an execution
 
 ```bash
-uv run kestra executions run <namespace> <flow_id>
+kestra executions run <namespace> <flow_id>
 ```
 
 ### Deploy a flow
 
 ```bash
-uv run kestra flows deploy path/to/flow.yaml
+kestra flows deploy path/to/flow.yaml
 ```
 
 ### Additional Options
@@ -48,28 +53,33 @@ uv run kestra flows deploy path/to/flow.yaml
 All commands support `--output json` for JSON output and can override config with `--host`, `--tenant`, and `--token` flags:
 
 ```bash
-uv run kestra flows get my.namespace my-flow --output json --host http://localhost:8080 --token YOUR_TOKEN
+kestra flows get my.namespace my-flow --output json --host http://localhost:8080 --token YOUR_TOKEN
 ```
 
 ## Development
 
-The project structure:
+Project layout:
 
-- `src/api_client/`: API client modules
-- `src/cli/`: CLI command modules
-- `src/main_cli.py`: Main entrypoint
+- `main.go`: CLI entrypoint
+- `src/api_client/`: API helpers for Kestra endpoints
+- `src/cli/`: Cobra commands and shared CLI helpers
 
-### Setup
+### Local build
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv pip install -e .
-uv run kestra --help
+go build ./...
+./kestra --help
 ```
+
+### Testing
+
+```bash
+go test ./...
+```
+
+CLI unit tests live alongside their commands (e.g. `src/cli/flows_test.go`) and rely on fixtures under `src/cli/testdata/`. Add new sample flows there when expanding coverage.
 
 ## Requirements
 
-- Python 3.12+
-- uv (dependency management)
-- typer, httpx, rich
+- Go 1.21 or newer
+- Access to a Kestra instance and API token
