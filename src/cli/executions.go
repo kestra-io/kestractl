@@ -38,35 +38,42 @@ func newExecutionsCommandWithService(service executionsService) *cobra.Command {
 func newExecutionsKillCommand(service executionsService) *cobra.Command {
 	var namespace string
 	var flowID string
-	var tenant string
-	var host string
-	var token string
-	var output string
 
 	cmd := &cobra.Command{
 		Use:   "kill-running",
 		Short: "Kill executions in RUNNING state.",
+		Long: `Kill all running executions, optionally filtered by namespace and flow ID.
+
+This command sends a kill request to all executions currently in RUNNING state.
+Use the --namespace and --flow-id flags to target specific executions.`,
+		Example: `  # Kill all running executions
+  kestra executions kill-running
+
+  # Kill running executions in a specific namespace
+  kestra executions kill-running --namespace my.namespace
+
+  # Kill running executions for a specific flow
+  kestra executions kill-running --namespace my.namespace --flow-id my-flow`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			output = strings.ToLower(output)
-			if output != "table" && output != "json" {
-				return errors.New("output must be 'table' or 'json'")
+			if err := validateOutputFormat(); err != nil {
+				return err
 			}
 
 			if flowID != "" && namespace == "" {
 				return errors.New("--namespace is required when --flow-id is provided")
 			}
 
-			context := temporaryContext(host, tenant, token)
+			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
 
-			result, err := service.KillByQuery([]string{"RUNNING"}, namespace, flowID, tenant, context)
+			result, err := service.KillByQuery([]string{"RUNNING"}, namespace, flowID, globalFlags.Tenant, context)
 			if err != nil {
 				return err
 			}
 
-			if output == "json" {
+			if globalFlags.Output == "json" {
 				return printJSON(result)
 			}
 
@@ -97,34 +104,39 @@ func newExecutionsKillCommand(service executionsService) *cobra.Command {
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
 	cmd.Flags().StringVarP(&flowID, "flow-id", "f", "", "Filter by flow ID (requires --namespace)")
-	cmd.Flags().StringVar(&tenant, "tenant", "", "Tenant name")
-	cmd.Flags().StringVar(&host, "host", "", "Kestra host URL")
-	cmd.Flags().StringVarP(&token, "token", "t", "", "API token")
-	cmd.Flags().StringVarP(&output, "output", "o", "table", "Output format (table or json)")
 
 	return cmd
 }
 
 func newExecutionsRunCommand(service executionsService) *cobra.Command {
-	var tenant string
-	var host string
-	var token string
 	var wait bool
-	var output string
 
 	cmd := &cobra.Command{
 		Use:   "run <namespace> <flow_id>",
 		Short: "Trigger a flow execution.",
-		Args:  cobra.ExactArgs(2),
+		Long: `Trigger a flow execution in the specified namespace.
+
+The command returns immediately by default. Use --wait to poll until
+the execution completes (SUCCESS, FAILED, or other terminal state).`,
+		Example: `  # Trigger a flow
+  kestra executions run my.namespace my-flow
+
+  # Trigger and wait for completion
+  kestra executions run my.namespace my-flow --wait
+
+  # Get JSON output
+  kestra executions run my.namespace my-flow --output json`,
+		Aliases: []string{"trigger", "execute"},
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			namespace := args[0]
 			flowID := args[1]
-			output = strings.ToLower(output)
-			if output != "table" && output != "json" {
-				return errors.New("output must be 'table' or 'json'")
+
+			if err := validateOutputFormat(); err != nil {
+				return err
 			}
 
-			context := temporaryContext(host, tenant, token)
+			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
@@ -134,12 +146,12 @@ func newExecutionsRunCommand(service executionsService) *cobra.Command {
 				fmt.Println("Waiting for execution to complete...")
 			}
 
-			execution, err := service.TriggerExecution(namespace, flowID, wait, nil, tenant, context)
+			execution, err := service.TriggerExecution(namespace, flowID, wait, nil, globalFlags.Tenant, context)
 			if err != nil {
 				return err
 			}
 
-			if output == "json" {
+			if globalFlags.Output == "json" {
 				return printJSON(execution)
 			}
 
@@ -158,43 +170,43 @@ func newExecutionsRunCommand(service executionsService) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&tenant, "tenant", "", "Tenant name")
-	cmd.Flags().StringVar(&host, "host", "", "Kestra host URL")
-	cmd.Flags().StringVarP(&token, "token", "t", "", "API token")
 	cmd.Flags().BoolVarP(&wait, "wait", "w", false, "Wait for execution to complete")
-	cmd.Flags().StringVarP(&output, "output", "o", "table", "Output format (table or json)")
 
 	return cmd
 }
 
 func newExecutionsGetCommand(service executionsService) *cobra.Command {
-	var tenant string
-	var host string
-	var token string
-	var output string
-
 	cmd := &cobra.Command{
 		Use:   "get <execution_id>",
 		Short: "Get execution details.",
-		Args:  cobra.ExactArgs(1),
+		Long: `Retrieve detailed information about a specific execution.
+
+The command displays execution status, timing, labels, and other metadata.`,
+		Example: `  # Get execution details
+  kestra executions get 2TLGqHrXC9k8BczKJe5djX
+
+  # Get execution details as JSON
+  kestra executions get 2TLGqHrXC9k8BczKJe5djX --output json`,
+		Aliases: []string{"show", "describe"},
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			executionID := args[0]
-			output = strings.ToLower(output)
-			if output != "table" && output != "json" {
-				return errors.New("output must be 'table' or 'json'")
+
+			if err := validateOutputFormat(); err != nil {
+				return err
 			}
 
-			context := temporaryContext(host, tenant, token)
+			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
 
-			execution, err := service.GetExecution(executionID, tenant, context)
+			execution, err := service.GetExecution(executionID, globalFlags.Tenant, context)
 			if err != nil {
 				return err
 			}
 
-			if output == "json" {
+			if globalFlags.Output == "json" {
 				return printJSON(execution)
 			}
 
@@ -221,7 +233,7 @@ func newExecutionsGetCommand(service executionsService) *cobra.Command {
 				client := newKestraClient()
 				resolvedCtx, err := client.ResolveContext(context)
 				if err == nil {
-					tenantValue := tenant
+					tenantValue := globalFlags.Tenant
 					if tenantValue == "" && resolvedCtx != nil {
 						tenantValue = resolvedCtx.Tenant
 					}
@@ -242,11 +254,6 @@ func newExecutionsGetCommand(service executionsService) *cobra.Command {
 			return nil
 		},
 	}
-
-	cmd.Flags().StringVar(&tenant, "tenant", "", "Tenant name")
-	cmd.Flags().StringVar(&host, "host", "", "Kestra host URL")
-	cmd.Flags().StringVarP(&token, "token", "t", "", "API token")
-	cmd.Flags().StringVarP(&output, "output", "o", "table", "Output format (table or json)")
 
 	return cmd
 }

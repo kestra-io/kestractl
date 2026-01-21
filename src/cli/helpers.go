@@ -14,10 +14,14 @@ func newKestraClient() *apiclient.KestraClient {
 	return apiclient.NewKestraClient(nil)
 }
 
-func temporaryContext(host, tenant, token string) *apiclient.AuthContext {
-	if host == "" && token == "" {
+func temporaryContext() *apiclient.AuthContext {
+	if globalFlags.Host == "" && globalFlags.Token == "" {
 		return nil
 	}
+
+	host := globalFlags.Host
+	tenant := globalFlags.Tenant
+	token := globalFlags.Token
 
 	if host == "" {
 		host = "http://localhost:8080"
@@ -82,4 +86,19 @@ func toPrettyString(value any) string {
 
 func formatList(items []string) string {
 	return strings.Join(items, ", ")
+}
+
+// validateOutputFormat validates the output format from global flags
+func validateOutputFormat() error {
+	// Default to table if not set
+	if globalFlags.Output == "" {
+		globalFlags.Output = "table"
+	}
+	
+	output := strings.ToLower(globalFlags.Output)
+	if output != "table" && output != "json" {
+		return fmt.Errorf("output must be 'table' or 'json', got '%s'", globalFlags.Output)
+	}
+	globalFlags.Output = output
+	return nil
 }

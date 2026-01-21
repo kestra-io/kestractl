@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"strings"
 
 	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 	"github.com/spf13/cobra"
@@ -31,31 +30,38 @@ func newNamespacesCommandWithService(service namespacesService) *cobra.Command {
 
 func newNamespacesListCommand(service namespacesService) *cobra.Command {
 	var query string
-	var tenant string
-	var host string
-	var token string
-	var output string
 
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List namespaces.",
+		Long: `List all namespaces in your Kestra instance.
+
+Optionally filter results using the --query flag to search for specific namespaces.`,
+		Example: `  # List all namespaces
+  kestra namespaces list
+
+  # Filter namespaces with a search query
+  kestra namespaces list --query my.namespace
+
+  # List namespaces as JSON
+  kestra namespaces list --output json`,
+		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			output = strings.ToLower(output)
-			if output != "table" && output != "json" {
-				return errors.New("output must be 'table' or 'json'")
+			if err := validateOutputFormat(); err != nil {
+				return err
 			}
 
-			context := temporaryContext(host, tenant, token)
+			context := temporaryContext()
 			if service == nil {
 				return errors.New("namespaces service not configured")
 			}
 
-			namespaces, err := service.ListNamespaces(tenant, context, query, 1, 100)
+			namespaces, err := service.ListNamespaces(globalFlags.Tenant, context, query, 1, 100)
 			if err != nil {
 				return err
 			}
 
-			if output == "json" {
+			if globalFlags.Output == "json" {
 				return printJSON(namespaces)
 			}
 
@@ -84,10 +90,6 @@ func newNamespacesListCommand(service namespacesService) *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter namespaces by search query")
-	cmd.Flags().StringVar(&tenant, "tenant", "", "Tenant name")
-	cmd.Flags().StringVar(&host, "host", "", "Kestra host URL")
-	cmd.Flags().StringVarP(&token, "token", "t", "", "API token")
-	cmd.Flags().StringVarP(&output, "output", "o", "table", "Output format (table or json)")
 
 	return cmd
 }
