@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -9,42 +10,41 @@ import (
 	"strings"
 	"testing"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 	"github.com/spf13/cobra"
 )
 
 type fakeFlowsService struct {
-	listFn   func(namespace, tenant string, ctx *apiclient.AuthContext) ([]map[string]any, error)
-	getFn    func(namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	createFn func(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error)
+	listFn   func(ctx context.Context, namespace, tenant string) ([]map[string]any, error)
+	getFn    func(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error)
+	createFn func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error)
 }
 
-func (f *fakeFlowsService) ListFlows(namespace, tenant string, ctx *apiclient.AuthContext) ([]map[string]any, error) {
+func (f *fakeFlowsService) ListFlows(ctx context.Context, namespace, tenant string) ([]map[string]any, error) {
 	if f.listFn == nil {
 		return nil, errors.New("list not implemented")
 	}
-	return f.listFn(namespace, tenant, ctx)
+	return f.listFn(ctx, namespace, tenant)
 }
 
-func (f *fakeFlowsService) GetFlow(namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+func (f *fakeFlowsService) GetFlow(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error) {
 	if f.getFn == nil {
 		return nil, errors.New("get not implemented")
 	}
-	return f.getFn(namespace, flowID, tenant, ctx)
+	return f.getFn(ctx, namespace, flowID, tenant)
 }
 
-func (f *fakeFlowsService) CreateFlow(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error) {
+func (f *fakeFlowsService) CreateFlow(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
 	if f.createFn == nil {
 		return nil, errors.New("create not implemented")
 	}
-	return f.createFn(yamlContent, tenant, ctx, override)
+	return f.createFn(ctx, yamlContent, tenant, override)
 }
 
 func TestFlowsDeployCommand_Success(t *testing.T) {
 	fixturePath := filepath.Join("testdata", "flow.yaml")
 
 	fake := &fakeFlowsService{
-		createFn: func(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error) {
+		createFn: func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
 			if !strings.Contains(yamlContent, "namespace: test.namespace") {
 				t.Fatalf("expected YAML content to contain namespace, got:\n%s", yamlContent)
 			}
@@ -80,7 +80,7 @@ func TestFlowsDeployCommand_ServiceError(t *testing.T) {
 	expectedErr := errors.New("boom")
 
 	fake := &fakeFlowsService{
-		createFn: func(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error) {
+		createFn: func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
 			return nil, expectedErr
 		},
 	}

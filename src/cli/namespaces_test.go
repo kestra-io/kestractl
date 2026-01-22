@@ -1,27 +1,26 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
-
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 )
 
 type fakeNamespacesService struct {
-	listFn func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error)
+	listFn func(ctx context.Context, tenant string, query string, page, size int) ([]any, error)
 }
 
-func (f *fakeNamespacesService) ListNamespaces(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
+func (f *fakeNamespacesService) ListNamespaces(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
 	if f.listFn == nil {
 		return nil, errors.New("list not implemented")
 	}
-	return f.listFn(tenant, ctx, query, page, size)
+	return f.listFn(ctx, tenant, query, page, size)
 }
 
 func TestNamespacesListCommand_Success(t *testing.T) {
 	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
+		listFn: func(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
 			if page != 1 {
 				t.Fatalf("expected page 1, got %d", page)
 			}
@@ -54,7 +53,7 @@ func TestNamespacesListCommand_Success(t *testing.T) {
 
 func TestNamespacesListCommand_WithQuery(t *testing.T) {
 	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
+		listFn: func(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
 			if query != "test" {
 				t.Fatalf("expected query 'test', got '%s'", query)
 			}
@@ -80,7 +79,7 @@ func TestNamespacesListCommand_ServiceError(t *testing.T) {
 	expectedErr := errors.New("list failed")
 
 	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
+		listFn: func(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
 			return nil, expectedErr
 		},
 	}
@@ -95,4 +94,3 @@ func TestNamespacesListCommand_ServiceError(t *testing.T) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
 	}
 }
-

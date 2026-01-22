@@ -1,19 +1,58 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk"
 	"github.com/spf13/cobra"
 )
 
 type namespacesService interface {
-	ListNamespaces(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error)
+	ListNamespaces(ctx context.Context, tenant string, query string, page, size int) ([]any, error)
+}
+
+// sdkNamespacesService implements namespacesService using the Kestra SDK
+type sdkNamespacesService struct {
+	client  *kestra.APIClient
+	authCtx context.Context
+}
+
+func (s *sdkNamespacesService) ListNamespaces(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
+	req := s.client.NamespacesAPI.SearchNamespaces(s.authCtx, tenant).
+		Page(int32(page)).
+		Size(int32(size)).
+		Existing(true) // Only return existing namespaces
+
+	if query != "" {
+		req = req.Q(query)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return nil, formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+	result := make([]any, len(results))
+	for i, ns := range results {
+		result[i] = map[string]any{
+			"id":      ns.GetId(),
+			"deleted": ns.GetDeleted(),
+		}
+	}
+
+	return result, nil
 }
 
 func newNamespacesCommand() *cobra.Command {
-	service := apiclient.NewNamespacesAPI(newKestraClient())
+	factory := newSDKClientFactory()
+	client, authCtx, err := factory.createClient()
+	if err != nil {
+		return newNamespacesCommandWithService(nil)
+	}
+	service := &sdkNamespacesService{client: client, authCtx: authCtx}
 	return newNamespacesCommandWithService(service)
 }
 
@@ -51,12 +90,14 @@ Optionally filter results using the --query flag to search for specific namespac
 				return err
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("namespaces service not configured")
 			}
 
-			namespaces, err := service.ListNamespaces(globalFlags.Tenant, context, query, 1, 100)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			namespaces, err := service.ListNamespaces(context.Background(), tenant, query, 1, 100)
 			if err != nil {
 				return err
 			}

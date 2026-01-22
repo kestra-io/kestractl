@@ -1,4 +1,4 @@
-package apiclient
+package cli
 
 import (
 	"encoding/json"
@@ -31,7 +31,7 @@ type authConfigEntry struct {
 
 type authConfig struct {
 	Contexts       map[string]authConfigEntry `json:"contexts"`
-	DefaultContext string                    `json:"default_context"`
+	DefaultContext string                     `json:"default_context"`
 }
 
 // AuthManager persists and retrieves Kestra authentication contexts.

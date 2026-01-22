@@ -1,24 +1,166 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 type flowsService interface {
-	ListFlows(namespace, tenant string, ctx *apiclient.AuthContext) ([]map[string]any, error)
-	GetFlow(namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	CreateFlow(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error)
+	ListFlows(ctx context.Context, namespace, tenant string) ([]map[string]any, error)
+	GetFlow(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error)
+	CreateFlow(ctx context.Context, yamlContent, tenant string, override bool) (map[string]any, error)
+}
+
+// sdkFlowsService implements flowsService using the Kestra SDK
+type sdkFlowsService struct {
+	client  *kestra.APIClient
+	authCtx context.Context
+}
+
+func (s *sdkFlowsService) ListFlows(ctx context.Context, namespace, tenant string) ([]map[string]any, error) {
+	flows, _, err := s.client.FlowsAPI.ListFlowsByNamespace(s.authCtx, namespace, tenant).Execute()
+	if err != nil {
+		return nil, formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(flows))
+	for i, flow := range flows {
+		result[i] = map[string]any{
+			"id":          flow.GetId(),
+			"namespace":   flow.GetNamespace(),
+			"description": flow.GetDescription(),
+			"revision":    flow.GetRevision(),
+		}
+	}
+	return result, nil
+}
+
+func (s *sdkFlowsService) GetFlow(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error) {
+	flow, _, err := s.client.FlowsAPI.GetFlow(s.authCtx, namespace, flowID, tenant).
+		Source(true).
+		AllowDeleted(false).
+		Execute()
+	if err != nil {
+		return nil, formatSDKError(err)
+	}
+	return flow, nil
+}
+
+func (s *sdkFlowsService) CreateFlow(ctx context.Context, yamlContent, tenant string, override bool) (map[string]any, error) {
+	namespace, flowID, err := parseFlowYAML(yamlContent)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if flow exists
+	exists := false
+	_, resp, err := s.client.FlowsAPI.GetFlow(s.authCtx, namespace, flowID, tenant).
+		Source(false).
+		AllowDeleted(false).
+		Execute()
+	if err == nil {
+		exists = true
+	} else if resp != nil && resp.StatusCode != 404 {
+		return nil, formatSDKError(err)
+	}
+
+	if exists && !override {
+		return nil, fmt.Errorf("flow '%s' already exists in namespace '%s'; use --override to update", flowID, namespace)
+	}
+
+	var result map[string]any
+	if exists && override {
+		// Update existing flow
+		updateResp, _, err := s.client.FlowsAPI.UpdateFlow(s.authCtx, flowID, namespace, tenant).
+			Body(yamlContent).
+			Execute()
+		if err != nil {
+			return nil, formatSDKError(err)
+		}
+		// Convert response to map
+		if updateResp.FlowWithSource != nil {
+			result = map[string]any{
+				"id":        updateResp.FlowWithSource.GetId(),
+				"namespace": updateResp.FlowWithSource.GetNamespace(),
+				"revision":  updateResp.FlowWithSource.GetRevision(),
+			}
+		} else if updateResp.Flow != nil {
+			result = map[string]any{
+				"id":        updateResp.Flow.GetId(),
+				"namespace": updateResp.Flow.GetNamespace(),
+				"revision":  updateResp.Flow.GetRevision(),
+			}
+		}
+	} else {
+		// Create new flow
+		flowResp, _, err := s.client.FlowsAPI.CreateFlow(s.authCtx, tenant).
+			Body(yamlContent).
+			Execute()
+		if err != nil {
+			return nil, formatSDKError(err)
+		}
+		result = map[string]any{
+			"id":        flowResp.GetId(),
+			"namespace": flowResp.GetNamespace(),
+			"revision":  flowResp.GetRevision(),
+		}
+	}
+
+	return result, nil
+}
+
+// parseFlowYAML extracts namespace and flow ID from YAML content
+func parseFlowYAML(content string) (string, string, error) {
+	var payload map[string]any
+	if err := yaml.Unmarshal([]byte(content), &payload); err != nil {
+		return "", "", fmt.Errorf("invalid YAML content: %w", err)
+	}
+
+	rawNamespace, ok := payload["namespace"]
+	if !ok {
+		return "", "", errors.New("flow YAML must contain a 'namespace' field")
+	}
+	namespace, ok := rawNamespace.(string)
+	if !ok || strings.TrimSpace(namespace) == "" {
+		return "", "", errors.New("flow YAML must contain a valid 'namespace' field")
+	}
+
+	rawID, ok := payload["id"]
+	if !ok {
+		return "", "", errors.New("flow YAML must contain an 'id' field")
+	}
+	flowID, ok := rawID.(string)
+	if !ok || strings.TrimSpace(flowID) == "" {
+		return "", "", errors.New("flow YAML must contain a valid 'id' field")
+	}
+
+	return namespace, flowID, nil
+}
+
+// formatSDKError formats SDK errors for display
+func formatSDKError(err error) error {
+	if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
+		return fmt.Errorf("API error: %s - %s", sdkErr.Error(), string(sdkErr.Body()))
+	}
+	return err
 }
 
 func newFlowsCommand() *cobra.Command {
-	service := apiclient.NewFlowsAPI(newKestraClient())
+	factory := newSDKClientFactory()
+	client, authCtx, err := factory.createClient()
+	if err != nil {
+		// Return command that will error on execution
+		return newFlowsCommandWithService(nil)
+	}
+	service := &sdkFlowsService{client: client, authCtx: authCtx}
 	return newFlowsCommandWithService(service)
 }
 
@@ -56,12 +198,14 @@ Returns a table showing flow ID, namespace, description, and revision number.`,
 				return err
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("flows service not configured")
 			}
 
-			flows, err := service.ListFlows(namespace, globalFlags.Tenant, context)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			flows, err := service.ListFlows(context.Background(), namespace, tenant)
 			if err != nil {
 				return err
 			}
@@ -113,12 +257,14 @@ The default output format is JSON as it preserves the complete flow definition.`
 				return err
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("flows service not configured")
 			}
 
-			flow, err := service.GetFlow(namespace, flowID, globalFlags.Tenant, context)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			flow, err := service.GetFlow(context.Background(), namespace, flowID, tenant)
 			if err != nil {
 				return err
 			}
@@ -182,12 +328,14 @@ Use --override to update an existing flow.`,
 				return fmt.Errorf("failed to read file '%s': %w", filepath, err)
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("flows service not configured")
 			}
 
-			flow, err := service.CreateFlow(string(content), globalFlags.Tenant, context, override)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			flow, err := service.CreateFlow(context.Background(), string(content), tenant, override)
 			if err != nil {
 				return err
 			}

@@ -1,24 +1,200 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk"
 	"github.com/spf13/cobra"
 )
 
 type executionsService interface {
-	KillByQuery(state []string, namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	TriggerExecution(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	GetExecution(executionID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+	KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error)
+	TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error)
+	GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error)
+}
+
+// sdkExecutionsService implements executionsService using the Kestra SDK
+type sdkExecutionsService struct {
+	client  *kestra.APIClient
+	authCtx context.Context
+}
+
+func (s *sdkExecutionsService) KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
+	// Convert state strings to StateType
+	stateTypes := make([]kestra.StateType, len(state))
+	for i, st := range state {
+		stateTypes[i] = kestra.StateType(st)
+	}
+
+	req := s.client.ExecutionsAPI.KillExecutionsByQuery(s.authCtx, tenant).
+		DeleteExecutionsByQueryRequest(kestra.DeleteExecutionsByQueryRequest{}).
+		State(stateTypes)
+
+	if namespace != "" {
+		req = req.Namespace(namespace)
+	}
+	if flowID != "" {
+		req = req.FlowId(flowID)
+	}
+
+	result, _, err := req.Execute()
+	if err != nil {
+		return nil, formatSDKError(err)
+	}
+
+	return result, nil
+}
+
+func (s *sdkExecutionsService) TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
+	resp, _, err := s.client.ExecutionsAPI.CreateExecution(s.authCtx, namespace, flowID, tenant).
+		Wait(wait).
+		Execute()
+	if err != nil {
+		// The SDK has a type mismatch issue with the inputs field.
+		// If we get a JSON parsing error but the response body contains valid data,
+		// try to extract the relevant fields from the raw body.
+		if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
+			body := sdkErr.Body()
+			if len(body) > 0 {
+				var rawResp map[string]any
+				if jsonErr := json.Unmarshal(body, &rawResp); jsonErr == nil {
+					// Successfully parsed the raw response
+					result := map[string]any{}
+					if id, ok := rawResp["id"]; ok {
+						result["id"] = id
+					}
+					if flowId, ok := rawResp["flowId"]; ok {
+						result["flowId"] = flowId
+					}
+					if ns, ok := rawResp["namespace"]; ok {
+						result["namespace"] = ns
+					}
+					if state, ok := rawResp["state"].(map[string]any); ok {
+						result["state"] = state
+					}
+					if url, ok := rawResp["url"]; ok {
+						result["url"] = url
+					}
+					// If we got meaningful data, return it
+					if _, hasId := result["id"]; hasId {
+						return result, nil
+					}
+				}
+			}
+		}
+		return nil, formatSDKError(err)
+	}
+
+	// Convert response to map
+	result := map[string]any{
+		"id":        resp.GetId(),
+		"flowId":    resp.GetFlowId(),
+		"namespace": resp.GetNamespace(),
+	}
+
+	state := resp.State
+	stateMap := map[string]any{
+		"current": state.GetCurrent(),
+	}
+	if !state.GetStartDate().IsZero() {
+		stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
+	}
+	if !state.GetEndDate().IsZero() {
+		stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
+	}
+	result["state"] = stateMap
+
+	return result, nil
+}
+
+func (s *sdkExecutionsService) GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error) {
+	resp, _, err := s.client.ExecutionsAPI.GetExecution(s.authCtx, executionID, tenant).Execute()
+	if err != nil {
+		// The SDK has type mismatch issues (e.g., SUBMITTED state not in enum).
+		// Try to parse the raw response on error.
+		if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
+			body := sdkErr.Body()
+			if len(body) > 0 {
+				var rawResp map[string]any
+				if jsonErr := json.Unmarshal(body, &rawResp); jsonErr == nil {
+					result := map[string]any{}
+					if id, ok := rawResp["id"]; ok {
+						result["id"] = id
+					}
+					if flowId, ok := rawResp["flowId"]; ok {
+						result["flowId"] = flowId
+					}
+					if ns, ok := rawResp["namespace"]; ok {
+						result["namespace"] = ns
+					}
+					if flowRev, ok := rawResp["flowRevision"]; ok {
+						result["flowRevision"] = flowRev
+					}
+					if state, ok := rawResp["state"].(map[string]any); ok {
+						result["state"] = state
+					}
+					if labels, ok := rawResp["labels"].([]any); ok {
+						result["labels"] = labels
+					}
+					// If we got meaningful data, return it
+					if _, hasId := result["id"]; hasId {
+						return result, nil
+					}
+				}
+			}
+		}
+		return nil, formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":           resp.GetId(),
+		"flowId":       resp.GetFlowId(),
+		"namespace":    resp.GetNamespace(),
+		"flowRevision": resp.GetFlowRevision(),
+	}
+
+	state := resp.State
+	stateMap := map[string]any{
+		"current": state.GetCurrent(),
+	}
+	if !state.GetStartDate().IsZero() {
+		stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
+	}
+	if !state.GetEndDate().IsZero() {
+		stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
+	}
+	if state.Duration != nil {
+		stateMap["duration"] = *state.Duration
+	}
+	result["state"] = stateMap
+
+	if labels := resp.GetLabels(); len(labels) > 0 {
+		labelsSlice := make([]any, len(labels))
+		for i, label := range labels {
+			labelsSlice[i] = map[string]any{
+				"key":   label.GetKey(),
+				"value": label.GetValue(),
+			}
+		}
+		result["labels"] = labelsSlice
+	}
+
+	return result, nil
 }
 
 func newExecutionsCommand() *cobra.Command {
-	service := apiclient.NewExecutionsAPI(newKestraClient())
+	factory := newSDKClientFactory()
+	client, authCtx, err := factory.createClient()
+	if err != nil {
+		return newExecutionsCommandWithService(nil)
+	}
+	service := &sdkExecutionsService{client: client, authCtx: authCtx}
 	return newExecutionsCommandWithService(service)
 }
 
@@ -63,12 +239,14 @@ Use the --namespace and --flow-id flags to target specific executions.`,
 				return errors.New("--namespace is required when --flow-id is provided")
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
 
-			result, err := service.KillByQuery([]string{"RUNNING"}, namespace, flowID, globalFlags.Tenant, context)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			result, err := service.KillByQuery(context.Background(), []string{"RUNNING"}, namespace, flowID, tenant)
 			if err != nil {
 				return err
 			}
@@ -136,17 +314,19 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 				return err
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
+
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
 
 			if wait {
 				fmt.Printf("Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
 				fmt.Println("Waiting for execution to complete...")
 			}
 
-			execution, err := service.TriggerExecution(namespace, flowID, wait, nil, globalFlags.Tenant, context)
+			execution, err := service.TriggerExecution(context.Background(), namespace, flowID, wait, nil, tenant)
 			if err != nil {
 				return err
 			}
@@ -196,12 +376,14 @@ The command displays execution status, timing, labels, and other metadata.`,
 				return err
 			}
 
-			context := temporaryContext()
 			if service == nil {
 				return errors.New("executions service not configured")
 			}
 
-			execution, err := service.GetExecution(executionID, globalFlags.Tenant, context)
+			authCtx := temporaryContext()
+			tenant := resolveTenant(authCtx)
+
+			execution, err := service.GetExecution(context.Background(), executionID, tenant)
 			if err != nil {
 				return err
 			}
@@ -227,28 +409,20 @@ The command displays execution status, timing, labels, and other metadata.`,
 				}
 			}
 
-			if urlValue, ok := execution["url"]; ok {
-				fmt.Printf("URL: %v\n", urlValue)
-			} else {
-				client := newKestraClient()
-				resolvedCtx, err := client.ResolveContext(context)
-				if err == nil {
-					tenantValue := globalFlags.Tenant
-					if tenantValue == "" && resolvedCtx != nil {
-						tenantValue = resolvedCtx.Tenant
-					}
-					hostValue := ""
-					if resolvedCtx != nil {
-						hostValue = strings.TrimRight(resolvedCtx.Host, "/")
-					}
+			// Build URL from context if not in response
+			if _, ok := execution["url"]; !ok {
+				if authCtx != nil {
+					hostValue := strings.TrimRight(authCtx.Host, "/")
 					ns := stringify(execution["namespace"])
 					flowID := stringify(execution["flowId"])
 					id := stringify(execution["id"])
-					if hostValue != "" && tenantValue != "" && ns != "" && flowID != "" && id != "" {
-						url := fmt.Sprintf("%s/ui/%s/executions/%s/%s/%s", hostValue, tenantValue, ns, flowID, id)
+					if hostValue != "" && tenant != "" && ns != "" && flowID != "" && id != "" {
+						url := fmt.Sprintf("%s/ui/%s/executions/%s/%s/%s", hostValue, tenant, ns, flowID, id)
 						fmt.Printf("URL: %s\n", url)
 					}
 				}
+			} else {
+				fmt.Printf("URL: %v\n", execution["url"])
 			}
 
 			return nil

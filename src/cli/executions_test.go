@@ -1,43 +1,42 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
-
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 )
 
 type fakeExecutionsService struct {
-	killFn         func(state []string, namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	triggerFn      func(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	getExecutionFn func(executionID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
+	killFn         func(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error)
+	triggerFn      func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error)
+	getExecutionFn func(ctx context.Context, executionID, tenant string) (map[string]any, error)
 }
 
-func (f *fakeExecutionsService) KillByQuery(state []string, namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+func (f *fakeExecutionsService) KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
 	if f.killFn == nil {
 		return nil, errors.New("kill not implemented")
 	}
-	return f.killFn(state, namespace, flowID, tenant, ctx)
+	return f.killFn(ctx, state, namespace, flowID, tenant)
 }
 
-func (f *fakeExecutionsService) TriggerExecution(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+func (f *fakeExecutionsService) TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
 	if f.triggerFn == nil {
 		return nil, errors.New("trigger not implemented")
 	}
-	return f.triggerFn(namespace, flowID, wait, inputs, tenant, ctx)
+	return f.triggerFn(ctx, namespace, flowID, wait, inputs, tenant)
 }
 
-func (f *fakeExecutionsService) GetExecution(executionID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+func (f *fakeExecutionsService) GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error) {
 	if f.getExecutionFn == nil {
 		return nil, errors.New("get execution not implemented")
 	}
-	return f.getExecutionFn(executionID, tenant, ctx)
+	return f.getExecutionFn(ctx, executionID, tenant)
 }
 
 func TestExecutionsRunCommand_Success(t *testing.T) {
 	fake := &fakeExecutionsService{
-		triggerFn: func(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+		triggerFn: func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
 			if namespace != "test.namespace" {
 				t.Fatalf("expected namespace 'test.namespace', got '%s'", namespace)
 			}
@@ -78,7 +77,7 @@ func TestExecutionsRunCommand_ServiceError(t *testing.T) {
 	expectedErr := errors.New("trigger failed")
 
 	fake := &fakeExecutionsService{
-		triggerFn: func(namespace, flowID string, wait bool, inputs map[string]any, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+		triggerFn: func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
 			return nil, expectedErr
 		},
 	}
@@ -96,7 +95,7 @@ func TestExecutionsRunCommand_ServiceError(t *testing.T) {
 
 func TestExecutionsGetCommand_Success(t *testing.T) {
 	fake := &fakeExecutionsService{
-		getExecutionFn: func(executionID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+		getExecutionFn: func(ctx context.Context, executionID, tenant string) (map[string]any, error) {
 			if executionID != "exec-123" {
 				t.Fatalf("expected executionID 'exec-123', got '%s'", executionID)
 			}
@@ -131,7 +130,7 @@ func TestExecutionsGetCommand_Success(t *testing.T) {
 
 func TestExecutionsKillCommand_Success(t *testing.T) {
 	fake := &fakeExecutionsService{
-		killFn: func(state []string, namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error) {
+		killFn: func(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
 			if len(state) != 1 || state[0] != "RUNNING" {
 				t.Fatalf("expected state ['RUNNING'], got %v", state)
 			}
@@ -156,4 +155,3 @@ func TestExecutionsKillCommand_Success(t *testing.T) {
 		t.Fatalf("expected kill count in output, got: %s", output)
 	}
 }
-

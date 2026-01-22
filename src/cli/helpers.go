@@ -6,15 +6,9 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
-
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 )
 
-func newKestraClient() *apiclient.KestraClient {
-	return apiclient.NewKestraClient(nil)
-}
-
-func temporaryContext() *apiclient.AuthContext {
+func temporaryContext() *AuthContext {
 	if globalFlags.Host == "" && globalFlags.Token == "" {
 		return nil
 	}
@@ -30,7 +24,7 @@ func temporaryContext() *apiclient.AuthContext {
 		tenant = "main"
 	}
 
-	return &apiclient.AuthContext{
+	return &AuthContext{
 		Name:       "temp",
 		Host:       host,
 		Tenant:     tenant,
