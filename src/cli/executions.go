@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -32,15 +32,16 @@ func (s *sdkExecutionsService) KillByQuery(ctx context.Context, state []string, 
 		stateTypes[i] = kestra.StateType(st)
 	}
 
-	req := s.client.ExecutionsAPI.KillExecutionsByQuery(s.authCtx, tenant).
-		DeleteExecutionsByQueryRequest(kestra.DeleteExecutionsByQueryRequest{}).
-		State(stateTypes)
+	req := s.client.ExecutionsAPI.KillExecutionsByQuery(s.authCtx, tenant)
 
+	if len(stateTypes) > 0 {
+		return nil, errors.New("filter by state not yet implemented")
+	}
 	if namespace != "" {
-		req = req.Namespace(namespace)
+		return nil, errors.New("filter by namespace not yet implemented")
 	}
 	if flowID != "" {
-		req = req.FlowId(flowID)
+		return nil, errors.New("filter by flowID not yet implemented")
 	}
 
 	result, _, err := req.Execute()
@@ -114,7 +115,7 @@ func (s *sdkExecutionsService) TriggerExecution(ctx context.Context, namespace, 
 }
 
 func (s *sdkExecutionsService) GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error) {
-	resp, _, err := s.client.ExecutionsAPI.GetExecution(s.authCtx, executionID, tenant).Execute()
+	resp, _, err := s.client.ExecutionsAPI.Execution(s.authCtx, executionID, tenant).Execute()
 	if err != nil {
 		// The SDK has type mismatch issues (e.g., SUBMITTED state not in enum).
 		// Try to parse the raw response on error.
@@ -169,9 +170,7 @@ func (s *sdkExecutionsService) GetExecution(ctx context.Context, executionID, te
 	if !state.GetEndDate().IsZero() {
 		stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
 	}
-	if state.Duration != nil {
-		stateMap["duration"] = *state.Duration
-	}
+	stateMap["duration"] = state.GetDuration()
 	result["state"] = stateMap
 
 	if labels := resp.GetLabels(); len(labels) > 0 {

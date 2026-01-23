@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/url"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 )
 
 // sdkClientFactory manages SDK client creation and authentication

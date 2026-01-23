@@ -88,7 +88,7 @@ func validateOutputFormat() error {
 	if globalFlags.Output == "" {
 		globalFlags.Output = "table"
 	}
-	
+
 	output := strings.ToLower(globalFlags.Output)
 	if output != "table" && output != "json" {
 		return fmt.Errorf("output must be 'table' or 'json', got '%s'", globalFlags.Output)

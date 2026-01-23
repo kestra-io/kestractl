@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -44,14 +44,19 @@ func (s *sdkFlowsService) ListFlows(ctx context.Context, namespace, tenant strin
 }
 
 func (s *sdkFlowsService) GetFlow(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error) {
-	flow, _, err := s.client.FlowsAPI.GetFlow(s.authCtx, namespace, flowID, tenant).
+	flow, _, err := s.client.FlowsAPI.Flow(s.authCtx, namespace, flowID, tenant).
 		Source(true).
 		AllowDeleted(false).
 		Execute()
 	if err != nil {
 		return nil, formatSDKError(err)
 	}
-	return flow, nil
+	result := map[string]any{
+		"id":        flow.GetId(),
+		"namespace": flow.GetNamespace(),
+		"revision":  flow.GetRevision(),
+	}
+	return result, nil
 }
 
 func (s *sdkFlowsService) CreateFlow(ctx context.Context, yamlContent, tenant string, override bool) (map[string]any, error) {
@@ -62,7 +67,7 @@ func (s *sdkFlowsService) CreateFlow(ctx context.Context, yamlContent, tenant st
 
 	// Check if flow exists
 	exists := false
-	_, resp, err := s.client.FlowsAPI.GetFlow(s.authCtx, namespace, flowID, tenant).
+	_, resp, err := s.client.FlowsAPI.Flow(s.authCtx, namespace, flowID, tenant).
 		Source(false).
 		AllowDeleted(false).
 		Execute()
@@ -86,17 +91,11 @@ func (s *sdkFlowsService) CreateFlow(ctx context.Context, yamlContent, tenant st
 			return nil, formatSDKError(err)
 		}
 		// Convert response to map
-		if updateResp.FlowWithSource != nil {
+		if updateResp != nil {
 			result = map[string]any{
-				"id":        updateResp.FlowWithSource.GetId(),
-				"namespace": updateResp.FlowWithSource.GetNamespace(),
-				"revision":  updateResp.FlowWithSource.GetRevision(),
-			}
-		} else if updateResp.Flow != nil {
-			result = map[string]any{
-				"id":        updateResp.Flow.GetId(),
-				"namespace": updateResp.Flow.GetNamespace(),
-				"revision":  updateResp.Flow.GetRevision(),
+				"id":        updateResp.GetId(),
+				"namespace": updateResp.GetNamespace(),
+				"revision":  updateResp.GetRevision(),
 			}
 		}
 	} else {

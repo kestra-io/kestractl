@@ -14,3 +14,5 @@ wheels/
 
 # Cursor rules file
 .cursor/rules
+
+.idea
