@@ -116,11 +116,23 @@ kestra flows list my.namespace
 # Get a specific flow (aliases: show, describe)
 kestra flows get my.namespace my-flow
 
-# Deploy a flow from YAML (aliases: create, apply)
+# Deploy a single flow from YAML (aliases: create, apply)
 kestra flows deploy path/to/flow.yaml
 
-# Override existing flow
-kestra flows deploy path/to/flow.yaml --override
+# Deploy all flows in a directory (recursive)
+kestra flows deploy ./flows/
+
+# Deploy with namespace override (all flows go to specified namespace)
+kestra flows deploy ./flows/ --namespace prod.namespace
+
+# Override existing flows
+kestra flows deploy ./flows/ --override
+
+# Stop on first error (fail-fast)
+kestra flows deploy ./flows/ --fail-fast
+
+# Combine flags
+kestra flows deploy ./flows/ --namespace prod --override --fail-fast
 ```
 
 ### Executions

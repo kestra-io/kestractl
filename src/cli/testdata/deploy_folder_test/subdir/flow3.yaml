@@ -1,0 +1,7 @@
+namespace: test.namespace.three
+id: flow-three
+revision: 1
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "hello from flow three in subdir"
