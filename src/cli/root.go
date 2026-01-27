@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"github.com/spf13/pflag"
 	"os"
 	"strings"
 
@@ -32,7 +33,20 @@ func NewRootCommand() *cobra.Command {
 It provides commands to manage flows, namespaces, and executions,
 with support for multiple authentication contexts and output formats.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return initializeConfig(cmd)
+			if err := initializeConfig(cmd); err != nil {
+				return err
+			}
+			if verbose, _ := cmd.Flags().GetBool("verbose"); verbose == true {
+				fmt.Printf("resolved params: \n")
+				cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+					v := flag.Value.String()
+					if flag.Name == "token" {
+						v = "XXX"
+					}
+					fmt.Printf("\t%s: %s\n", flag.Name, v)
+				})
+			}
+			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
@@ -45,6 +59,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVar(&globalFlags.Tenant, "tenant", "", "Tenant name")
 	root.PersistentFlags().StringVarP(&globalFlags.Output, "output", "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String("config", "", "config file (default is $HOME/.kestra/config.yaml)")
+	root.PersistentFlags().Bool("verbose", false, "verbose output (warning: it will print credentials in http requests")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())

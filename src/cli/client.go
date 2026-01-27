@@ -28,6 +28,8 @@ func NewClient() (*Client, error) {
 // newClientDefault is the default client creation logic.
 func newClientDefault() (*Client, error) {
 	host, tenant, token, err := resolveConfig()
+	isVerbose := viper.GetBool("verbose")
+
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +57,7 @@ func newClientDefault() (*Client, error) {
 	cfg.Servers = kestra.ServerConfigurations{
 		{URL: host},
 	}
+	cfg.Debug = isVerbose
 
 	client := kestra.NewAPIClient(cfg)
 	ctx := context.WithValue(context.Background(), kestra.ContextAccessToken, token)
@@ -88,7 +91,7 @@ func resolveConfig() (string, string, string, error) {
 func formatSDKError(err error) error {
 	if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
 		body := sdkErr.Body()
-		
+
 		// Try to parse as JSON first
 		if len(body) > 0 {
 			var jsonErr map[string]any
@@ -102,9 +105,9 @@ func formatSDKError(err error) error {
 				}
 			}
 		}
-		
+
 		bodyStr := string(body)
-		
+
 		// Check if response is HTML (common for 404s, auth errors, etc.)
 		isHTML := len(bodyStr) > 0 && bodyStr[0] == '<'
 		if isHTML {
@@ -115,12 +118,12 @@ func formatSDKError(err error) error {
 			}
 			return fmt.Errorf("API request failed: received HTML response instead of JSON. Check your host URL and authentication")
 		}
-		
+
 		// For non-HTML/non-JSON responses, show the error message
 		if errMsg := sdkErr.Error(); errMsg != "" {
 			return fmt.Errorf("API error: %s", errMsg)
 		}
-		
+
 		return fmt.Errorf("API error: unknown error")
 	}
 	return err
