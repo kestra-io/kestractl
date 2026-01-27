@@ -1,37 +1,28 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"gopkg.in/yaml.v3"
 )
 
 // AuthContext describes an authentication context for Kestra.
 type AuthContext struct {
-	Name       string `json:"name"`
-	Host       string `json:"host"`
-	Tenant     string `json:"tenant"`
-	AuthMethod string `json:"auth_method"`
-	Token      string `json:"token,omitempty"`
-	Username   string `json:"username,omitempty"`
-	Password   string `json:"password,omitempty"`
-}
-
-// authConfigEntry is the internal storage format where the name is stored as the map key, not as a field.
-type authConfigEntry struct {
-	Host       string `json:"host"`
-	Tenant     string `json:"tenant"`
-	AuthMethod string `json:"auth_method"`
-	Token      string `json:"token,omitempty"`
-	Username   string `json:"username,omitempty"`
-	Password   string `json:"password,omitempty"`
+	Name       string `json:"name" yaml:"-"` // Name is used as map key, not serialized to YAML
+	Host       string `json:"host" yaml:"host"`
+	Tenant     string `json:"tenant" yaml:"tenant"`
+	AuthMethod string `json:"auth_method" yaml:"auth_method"`
+	Token      string `json:"token,omitempty" yaml:"token,omitempty"`
+	Username   string `json:"username,omitempty" yaml:"username,omitempty"`
+	Password   string `json:"password,omitempty" yaml:"password,omitempty"`
 }
 
 type authConfig struct {
-	Contexts       map[string]authConfigEntry `json:"contexts"`
-	DefaultContext string                     `json:"default_context"`
+	Contexts       map[string]AuthContext `yaml:"contexts,omitempty"`
+	DefaultContext string                 `yaml:"default_context,omitempty"`
 }
 
 // AuthManager persists and retrieves Kestra authentication contexts.
@@ -54,7 +45,7 @@ func NewAuthManager(configDir string) *AuthManager {
 
 	return &AuthManager{
 		configDir:  configDir,
-		configFile: filepath.Join(configDir, "config"),
+		configFile: filepath.Join(configDir, "config.yaml"),
 	}
 }
 
@@ -68,7 +59,7 @@ func (m *AuthManager) loadConfig() (authConfig, error) {
 	}
 
 	cfg := authConfig{
-		Contexts:       map[string]authConfigEntry{},
+		Contexts:       map[string]AuthContext{},
 		DefaultContext: "",
 	}
 
@@ -84,16 +75,16 @@ func (m *AuthManager) loadConfig() (authConfig, error) {
 		return cfg, nil
 	}
 
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		// Return empty config if the file is invalid to match Python behaviour.
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		// Return empty config if the file is invalid
 		return authConfig{
-			Contexts:       map[string]authConfigEntry{},
+			Contexts:       map[string]AuthContext{},
 			DefaultContext: "",
 		}, nil
 	}
 
 	if cfg.Contexts == nil {
-		cfg.Contexts = map[string]authConfigEntry{}
+		cfg.Contexts = map[string]AuthContext{}
 	}
 
 	return cfg, nil
@@ -104,7 +95,7 @@ func (m *AuthManager) saveConfig(cfg authConfig) error {
 		return err
 	}
 
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
@@ -121,16 +112,15 @@ func (m *AuthManager) AddContext(ctx AuthContext) error {
 	}
 
 	if cfg.Contexts == nil {
-		cfg.Contexts = map[string]authConfigEntry{}
+		cfg.Contexts = map[string]AuthContext{}
 	}
 
-	cfg.Contexts[ctx.Name] = authConfigEntry{
-		Host:       ctx.Host,
-		Tenant:     ctx.Tenant,
-		AuthMethod: ctx.AuthMethod,
-		Token:      ctx.Token,
-		Username:   ctx.Username,
-		Password:   ctx.Password,
+	// Store context (Name field is excluded from YAML via yaml:"-" tag)
+	cfg.Contexts[ctx.Name] = ctx
+
+	// If this is the first context or no default is set, make it the default
+	if len(cfg.Contexts) == 1 || cfg.DefaultContext == "" {
+		cfg.DefaultContext = ctx.Name
 	}
 
 	return m.saveConfig(cfg)
@@ -150,20 +140,14 @@ func (m *AuthManager) GetContext(name string) (*AuthContext, error) {
 		}
 	}
 
-	entry, ok := cfg.Contexts[name]
+	ctx, ok := cfg.Contexts[name]
 	if !ok {
 		return nil, fmt.Errorf("context '%s' not found", name)
 	}
 
-	return &AuthContext{
-		Name:       name,
-		Host:       entry.Host,
-		Tenant:     entry.Tenant,
-		AuthMethod: entry.AuthMethod,
-		Token:      entry.Token,
-		Username:   entry.Username,
-		Password:   entry.Password,
-	}, nil
+	// Set the name field (not stored in YAML)
+	ctx.Name = name
+	return &ctx, nil
 }
 
 // SetDefaultContext marks a context as default.
@@ -189,16 +173,9 @@ func (m *AuthManager) ListContexts() (map[string]AuthContext, string, error) {
 	}
 
 	result := make(map[string]AuthContext, len(cfg.Contexts))
-	for name, entry := range cfg.Contexts {
-		result[name] = AuthContext{
-			Name:       name,
-			Host:       entry.Host,
-			Tenant:     entry.Tenant,
-			AuthMethod: entry.AuthMethod,
-			Token:      entry.Token,
-			Username:   entry.Username,
-			Password:   entry.Password,
-		}
+	for name, ctx := range cfg.Contexts {
+		ctx.Name = name // Set the name field (not stored in YAML)
+		result[name] = ctx
 	}
 
 	return result, cfg.DefaultContext, nil

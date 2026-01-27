@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 const cliVersion = "0.1.0"
@@ -28,16 +31,20 @@ func NewRootCommand() *cobra.Command {
 
 It provides commands to manage flows, namespaces, and executions,
 with support for multiple authentication contexts and output formats.`,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return initializeConfig(cmd)
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
 	}
 
 	// Add persistent flags available to all subcommands
-	root.PersistentFlags().StringVar(&globalFlags.Host, "host", getEnvOrDefault("KESTRA_HOST", ""), "Kestra host URL")
-	root.PersistentFlags().StringVarP(&globalFlags.Token, "token", "t", getEnvOrDefault("KESTRA_TOKEN", ""), "API token")
-	root.PersistentFlags().StringVar(&globalFlags.Tenant, "tenant", getEnvOrDefault("KESTRA_TENANT", ""), "Tenant name")
-	root.PersistentFlags().StringVarP(&globalFlags.Output, "output", "o", getEnvOrDefault("KESTRA_OUTPUT", "table"), "Output format (table or json)")
+	root.PersistentFlags().StringVar(&globalFlags.Host, "host", "", "Kestra host URL")
+	root.PersistentFlags().StringVarP(&globalFlags.Token, "token", "t", "", "API token")
+	root.PersistentFlags().StringVar(&globalFlags.Tenant, "tenant", "", "Tenant name")
+	root.PersistentFlags().StringVarP(&globalFlags.Output, "output", "o", "table", "Output format (table or json)")
+	root.PersistentFlags().String("config", "", "config file (default is $HOME/.kestra/config.yaml)")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())
@@ -48,12 +55,72 @@ with support for multiple authentication contexts and output formats.`,
 	return root
 }
 
-// getEnvOrDefault returns the environment variable value or a default
-func getEnvOrDefault(key, defaultValue string) string {
-	if val := os.Getenv(key); val != "" {
-		return val
+// initializeConfig sets up Viper to handle configuration from multiple sources.
+func initializeConfig(cmd *cobra.Command) error {
+	// 1. Set up Viper to use environment variables
+	viper.SetEnvPrefix("KESTRA")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	viper.AutomaticEnv()
+
+	// 2. Handle the configuration file
+	cfgFile := cmd.Flag("config").Value.String()
+	if cfgFile != "" {
+		// Use config file from the flag
+		viper.SetConfigFile(cfgFile)
+	} else {
+		// Search for a config file in default locations
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// If we can't get home dir, only search current directory
+			viper.AddConfigPath(".")
+		} else {
+			viper.AddConfigPath(home + "/.kestra")
+			viper.AddConfigPath(".")
+		}
+		viper.SetConfigName("config")
+		viper.SetConfigType("yaml")
 	}
-	return defaultValue
+
+	// 3. Read the configuration file
+	// It's okay if the config file doesn't exist
+	if err := viper.ReadInConfig(); err != nil {
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if !errors.As(err, &configFileNotFoundError) {
+			return fmt.Errorf("error reading config file: %w", err)
+		}
+	}
+
+	// 4. Bind Cobra flags to Viper
+	// This ensures flags have the highest priority
+	if err := viper.BindPFlags(cmd.Flags()); err != nil {
+		return err
+	}
+
+	// 5. Read from the default context if config file was loaded
+	// Map nested context values to top-level for Viper
+	if viper.ConfigFileUsed() != "" {
+		defaultContext := viper.GetString("default_context")
+		if defaultContext != "" {
+			// Set defaults from the context (lowest priority)
+			if !viper.IsSet("host") {
+				viper.SetDefault("host", viper.GetString("contexts."+defaultContext+".host"))
+			}
+			if !viper.IsSet("tenant") {
+				viper.SetDefault("tenant", viper.GetString("contexts."+defaultContext+".tenant"))
+			}
+			if !viper.IsSet("token") {
+				viper.SetDefault("token", viper.GetString("contexts."+defaultContext+".token"))
+			}
+		}
+	}
+
+	// 6. Sync Viper values back to globalFlags for backward compatibility
+	globalFlags.Host = viper.GetString("host")
+	globalFlags.Token = viper.GetString("token")
+	globalFlags.Tenant = viper.GetString("tenant")
+	globalFlags.Output = viper.GetString("output")
+
+	return nil
 }
 
 // Execute runs the CLI.

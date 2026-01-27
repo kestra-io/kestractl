@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+	"github.com/spf13/viper"
 )
 
 // Client wraps the Kestra SDK with authentication and tenant info.
@@ -66,52 +66,62 @@ func newClientDefault() (*Client, error) {
 	}, nil
 }
 
-// resolveConfig returns (host, tenant, token, error) with precedence: flags > env > config file.
+// resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
 func resolveConfig() (string, string, string, error) {
-	// Priority 1: CLI flags
-	if globalFlags.Host != "" || globalFlags.Token != "" {
-		host := globalFlags.Host
-		if host == "" {
-			host = "http://localhost:8080"
-		}
-		tenant := globalFlags.Tenant
-		if tenant == "" {
-			tenant = "main"
-		}
-		return host, tenant, globalFlags.Token, nil
+	// Viper handles precedence automatically: flags > env > config > defaults
+	host := viper.GetString("host")
+	tenant := viper.GetString("tenant")
+	token := viper.GetString("token")
+
+	// Set defaults if not provided
+	if host == "" {
+		host = "http://localhost:8080"
+	}
+	if tenant == "" {
+		tenant = "main"
 	}
 
-	// Priority 2: Environment variables
-	if os.Getenv("KESTRA_HOST") != "" || os.Getenv("KESTRA_TOKEN") != "" {
-		host := os.Getenv("KESTRA_HOST")
-		if host == "" {
-			host = "http://localhost:8080"
-		}
-		tenant := os.Getenv("KESTRA_TENANT")
-		if tenant == "" {
-			tenant = "main"
-		}
-		return host, tenant, os.Getenv("KESTRA_TOKEN"), nil
-	}
-
-	// Priority 3: Config file
-	mgr := NewAuthManager("")
-	authCtx, err := mgr.GetContext("")
-	if err != nil {
-		return "", "", "", err
-	}
-
-	return authCtx.Host, authCtx.Tenant, authCtx.Token, nil
+	return host, tenant, token, nil
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors.
 func formatSDKError(err error) error {
 	if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
-		body := string(sdkErr.Body())
-		if body != "" {
-			return fmt.Errorf("API error: %s", body)
+		body := sdkErr.Body()
+		
+		// Try to parse as JSON first
+		if len(body) > 0 {
+			var jsonErr map[string]any
+			if json.Unmarshal(body, &jsonErr) == nil {
+				// Extract message from JSON response
+				if msg, ok := jsonErr["message"].(string); ok && msg != "" {
+					return fmt.Errorf("API error: %s", msg)
+				}
+				if msg, ok := jsonErr["error"].(string); ok && msg != "" {
+					return fmt.Errorf("API error: %s", msg)
+				}
+			}
 		}
-		return fmt.Errorf("API error: %s", sdkErr.Error())
+		
+		bodyStr := string(body)
+		
+		// Check if response is HTML (common for 404s, auth errors, etc.)
+		isHTML := len(bodyStr) > 0 && bodyStr[0] == '<'
+		if isHTML {
+			// Extract HTTP status from error message if available
+			errMsg := sdkErr.Error()
+			if errMsg != "" {
+				return fmt.Errorf("API request failed: %s (received HTML response instead of JSON)", errMsg)
+			}
+			return fmt.Errorf("API request failed: received HTML response instead of JSON. Check your host URL and authentication")
+		}
+		
+		// For non-HTML/non-JSON responses, show the error message
+		if errMsg := sdkErr.Error(); errMsg != "" {
+			return fmt.Errorf("API error: %s", errMsg)
+		}
+		
+		return fmt.Errorf("API error: unknown error")
 	}
 	return err
 }
