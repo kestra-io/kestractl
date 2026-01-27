@@ -8,31 +8,6 @@ import (
 	"text/tabwriter"
 )
 
-func temporaryContext() *AuthContext {
-	if globalFlags.Host == "" && globalFlags.Token == "" {
-		return nil
-	}
-
-	host := globalFlags.Host
-	tenant := globalFlags.Tenant
-	token := globalFlags.Token
-
-	if host == "" {
-		host = "http://localhost:8080"
-	}
-	if tenant == "" {
-		tenant = "main"
-	}
-
-	return &AuthContext{
-		Name:       "temp",
-		Host:       host,
-		Tenant:     tenant,
-		AuthMethod: "token",
-		Token:      token,
-	}
-}
-
 func printJSON(value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -78,13 +53,8 @@ func toPrettyString(value any) string {
 	}
 }
 
-func formatList(items []string) string {
-	return strings.Join(items, ", ")
-}
-
-// validateOutputFormat validates the output format from global flags
+// validateOutputFormat validates the output format from global flags.
 func validateOutputFormat() error {
-	// Default to table if not set
 	if globalFlags.Output == "" {
 		globalFlags.Output = "table"
 	}

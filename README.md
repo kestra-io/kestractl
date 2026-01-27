@@ -1,4 +1,4 @@
-# Kestra CLI (Under Development)
+# Kestra CLI
 
 A Go-based command-line interface for managing Kestra flows, executions, and namespaces.
 
@@ -82,7 +82,7 @@ kestra executions run my.namespace my-flow --wait
 kestra executions get 2TLGqHrXC9k8BczKJe5djX
 
 # Kill running executions
-kestra executions kill-running --namespace my.namespace
+kestra executions kill-running
 ```
 
 ### Namespaces
@@ -121,15 +121,48 @@ KESTRA_TOKEN=YOUR_TOKEN \
   kestra flows list my.namespace
 ```
 
+## Architecture
+
+The CLI uses a simple, direct architecture built on [Cobra](https://github.com/spf13/cobra) and the official Kestra Go SDK.
+
+```
+main.go → root.go → commands → Client → Kestra SDK → Kestra API
+```
+
+### Project Structure
+
+```
+kestra-cli/
+├── main.go                    # Entrypoint - calls cli.Execute()
+├── go.mod                     # Dependencies: cobra, kestra SDK, yaml
+└── src/cli/
+    ├── root.go                # Root command, global flags, command registration
+    ├── client.go              # Client wrapper for SDK with config resolution
+    ├── auth.go                # AuthManager - ~/.kestra/config persistence
+    ├── helpers.go             # Output formatting utilities
+    ├── config.go              # Config subcommands (add, show, use, remove)
+    ├── flows.go               # Flows commands (list, get, deploy)
+    ├── flows_test.go          # Unit tests
+    ├── executions.go          # Executions commands (run, get, kill-running)
+    ├── executions_test.go     # Unit tests
+    ├── namespaces.go          # Namespaces commands (list)
+    ├── namespaces_test.go     # Unit tests
+    └── testdata/              # Test fixtures
+        └── flow.yaml
+```
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| Direct SDK calls | No unnecessary abstraction layers. Commands call the SDK directly through a thin `Client` wrapper. |
+| Single config resolution | `NewClient()` resolves config once: flags > env vars > config file. Clear precedence. |
+| Pure functions for logic | Business logic in testable `run*()` functions separate from Cobra command wiring. |
+| Minimal test mocking | Tests focus on pure functions and argument validation. Integration tests for SDK calls. |
+
 ## Development
 
-Project layout:
-
-- `main.go`: CLI entrypoint
-- `src/api_client/`: API helpers for Kestra endpoints
-- `src/cli/`: Cobra commands and shared CLI helpers
-
-### Local build
+### Local Build
 
 ```bash
 go build ./...
@@ -142,7 +175,9 @@ go build ./...
 go test ./...
 ```
 
-CLI unit tests live alongside their commands (e.g. `src/cli/flows_test.go`) and rely on fixtures under `src/cli/testdata/`. Add new sample flows there when expanding coverage.
+### Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed instructions on adding new commands.
 
 ## Requirements
 

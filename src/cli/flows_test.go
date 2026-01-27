@@ -2,97 +2,171 @@ package cli
 
 import (
 	"bytes"
-	"context"
-	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 )
 
-type fakeFlowsService struct {
-	listFn   func(ctx context.Context, namespace, tenant string) ([]map[string]any, error)
-	getFn    func(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error)
-	createFn func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error)
-}
-
-func (f *fakeFlowsService) ListFlows(ctx context.Context, namespace, tenant string) ([]map[string]any, error) {
-	if f.listFn == nil {
-		return nil, errors.New("list not implemented")
-	}
-	return f.listFn(ctx, namespace, tenant)
-}
-
-func (f *fakeFlowsService) GetFlow(ctx context.Context, namespace, flowID, tenant string) (map[string]any, error) {
-	if f.getFn == nil {
-		return nil, errors.New("get not implemented")
-	}
-	return f.getFn(ctx, namespace, flowID, tenant)
-}
-
-func (f *fakeFlowsService) CreateFlow(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
-	if f.createFn == nil {
-		return nil, errors.New("create not implemented")
-	}
-	return f.createFn(ctx, yamlContent, tenant, override)
-}
-
-func TestFlowsDeployCommand_Success(t *testing.T) {
-	fixturePath := filepath.Join("testdata", "flow.yaml")
-
-	fake := &fakeFlowsService{
-		createFn: func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
-			if !strings.Contains(yamlContent, "namespace: test.namespace") {
-				t.Fatalf("expected YAML content to contain namespace, got:\n%s", yamlContent)
-			}
-			if override {
-				t.Fatalf("override should default to false")
-			}
-			return map[string]any{
-				"id":        "test-flow",
-				"namespace": "test.namespace",
-				"revision":  "1",
-			}, nil
+func TestParseFlowYAML(t *testing.T) {
+	tests := []struct {
+		name        string
+		yaml        string
+		wantNS      string
+		wantID      string
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name:   "valid flow",
+			yaml:   "id: my-flow\nnamespace: test.namespace\n",
+			wantNS: "test.namespace",
+			wantID: "my-flow",
+		},
+		{
+			name:   "valid flow with extra fields",
+			yaml:   "id: my-flow\nnamespace: test.namespace\ndescription: A test flow\n",
+			wantNS: "test.namespace",
+			wantID: "my-flow",
+		},
+		{
+			name:        "missing namespace",
+			yaml:        "id: my-flow\n",
+			wantErr:     true,
+			errContains: "namespace",
+		},
+		{
+			name:        "missing id",
+			yaml:        "namespace: test.namespace\n",
+			wantErr:     true,
+			errContains: "id",
+		},
+		{
+			name:        "empty namespace",
+			yaml:        "id: my-flow\nnamespace: \n",
+			wantErr:     true,
+			errContains: "namespace",
+		},
+		{
+			name:        "empty id",
+			yaml:        "id: \nnamespace: test.namespace\n",
+			wantErr:     true,
+			errContains: "id",
+		},
+		{
+			name:        "invalid yaml",
+			yaml:        "not: valid: yaml: [",
+			wantErr:     true,
+			errContains: "invalid YAML",
 		},
 	}
 
-	cmd := newFlowsDeployCommand(fake)
-
-	output, err := executeCommand(cmd, fixturePath)
-	if err != nil {
-		t.Fatalf("Execute() returned error: %v", err)
-	}
-
-	if !strings.Contains(output, "Flow deployed successfully!") {
-		t.Fatalf("expected success message, got: %s", output)
-	}
-
-	if !strings.Contains(output, "Flow ID: test-flow") {
-		t.Fatalf("expected Flow ID in output, got: %s", output)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ns, id, err := parseFlowYAML(tt.yaml)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Fatalf("expected error containing '%s', got: %v", tt.errContains, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ns != tt.wantNS {
+				t.Fatalf("expected namespace '%s', got '%s'", tt.wantNS, ns)
+			}
+			if id != tt.wantID {
+				t.Fatalf("expected id '%s', got '%s'", tt.wantID, id)
+			}
+		})
 	}
 }
 
-func TestFlowsDeployCommand_ServiceError(t *testing.T) {
-	fixturePath := filepath.Join("testdata", "flow.yaml")
-	expectedErr := errors.New("boom")
-
-	fake := &fakeFlowsService{
-		createFn: func(ctx context.Context, yamlContent string, tenant string, override bool) (map[string]any, error) {
-			return nil, expectedErr
-		},
-	}
-
-	cmd := newFlowsDeployCommand(fake)
-
-	_, err := executeCommand(cmd, fixturePath)
+func TestFlowsListCommand_NoArgs(t *testing.T) {
+	// Test that the command requires exactly 1 argument
+	cmd := newFlowsListCommand()
+	_, err := executeCommand(cmd)
 	if err == nil {
-		t.Fatalf("expected error, got nil")
+		t.Fatal("expected error when no args provided")
 	}
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected error %v, got %v", expectedErr, err)
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsGetCommand_NoArgs(t *testing.T) {
+	// Test that the command requires exactly 2 arguments
+	cmd := newFlowsGetCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsDeployCommand_NoArgs(t *testing.T) {
+	// Test that the command requires exactly 1 argument
+	cmd := newFlowsDeployCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
+	// Override client factory to avoid config errors
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return &Client{Tenant: "main"}, nil
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDeployCommand()
+	_, err := executeCommand(cmd, "/nonexistent/path/flow.yaml")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "failed to read file") {
+		t.Fatalf("expected file read error, got: %v", err)
+	}
+}
+
+func TestValidateOutputFormat(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantErr bool
+	}{
+		{input: "table", wantErr: false},
+		{input: "json", wantErr: false},
+		{input: "TABLE", wantErr: false},
+		{input: "JSON", wantErr: false},
+		{input: "", wantErr: false}, // defaults to table
+		{input: "xml", wantErr: true},
+		{input: "yaml", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			globalFlags.Output = tt.input
+			err := validateOutputFormat()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

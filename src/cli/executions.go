@@ -1,216 +1,29 @@
 package cli
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"time"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
-type executionsService interface {
-	KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error)
-	TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error)
-	GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error)
-}
-
-// sdkExecutionsService implements executionsService using the Kestra SDK
-type sdkExecutionsService struct {
-	client  *kestra.APIClient
-	authCtx context.Context
-}
-
-func (s *sdkExecutionsService) KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
-	// Convert state strings to StateType
-	stateTypes := make([]kestra.StateType, len(state))
-	for i, st := range state {
-		stateTypes[i] = kestra.StateType(st)
-	}
-
-	req := s.client.ExecutionsAPI.KillExecutionsByQuery(s.authCtx, tenant)
-
-	if len(stateTypes) > 0 {
-		return nil, errors.New("filter by state not yet implemented")
-	}
-	if namespace != "" {
-		return nil, errors.New("filter by namespace not yet implemented")
-	}
-	if flowID != "" {
-		return nil, errors.New("filter by flowID not yet implemented")
-	}
-
-	result, _, err := req.Execute()
-	if err != nil {
-		return nil, formatSDKError(err)
-	}
-
-	return result, nil
-}
-
-func (s *sdkExecutionsService) TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
-	resp, _, err := s.client.ExecutionsAPI.CreateExecution(s.authCtx, namespace, flowID, tenant).
-		Wait(wait).
-		Execute()
-	if err != nil {
-		// The SDK has a type mismatch issue with the inputs field.
-		// If we get a JSON parsing error but the response body contains valid data,
-		// try to extract the relevant fields from the raw body.
-		if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
-			body := sdkErr.Body()
-			if len(body) > 0 {
-				var rawResp map[string]any
-				if jsonErr := json.Unmarshal(body, &rawResp); jsonErr == nil {
-					// Successfully parsed the raw response
-					result := map[string]any{}
-					if id, ok := rawResp["id"]; ok {
-						result["id"] = id
-					}
-					if flowId, ok := rawResp["flowId"]; ok {
-						result["flowId"] = flowId
-					}
-					if ns, ok := rawResp["namespace"]; ok {
-						result["namespace"] = ns
-					}
-					if state, ok := rawResp["state"].(map[string]any); ok {
-						result["state"] = state
-					}
-					if url, ok := rawResp["url"]; ok {
-						result["url"] = url
-					}
-					// If we got meaningful data, return it
-					if _, hasId := result["id"]; hasId {
-						return result, nil
-					}
-				}
-			}
-		}
-		return nil, formatSDKError(err)
-	}
-
-	// Convert response to map
-	result := map[string]any{
-		"id":        resp.GetId(),
-		"flowId":    resp.GetFlowId(),
-		"namespace": resp.GetNamespace(),
-	}
-
-	state := resp.State
-	stateMap := map[string]any{
-		"current": state.GetCurrent(),
-	}
-	if !state.GetStartDate().IsZero() {
-		stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
-	}
-	if !state.GetEndDate().IsZero() {
-		stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
-	}
-	result["state"] = stateMap
-
-	return result, nil
-}
-
-func (s *sdkExecutionsService) GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error) {
-	resp, _, err := s.client.ExecutionsAPI.Execution(s.authCtx, executionID, tenant).Execute()
-	if err != nil {
-		// The SDK has type mismatch issues (e.g., SUBMITTED state not in enum).
-		// Try to parse the raw response on error.
-		if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
-			body := sdkErr.Body()
-			if len(body) > 0 {
-				var rawResp map[string]any
-				if jsonErr := json.Unmarshal(body, &rawResp); jsonErr == nil {
-					result := map[string]any{}
-					if id, ok := rawResp["id"]; ok {
-						result["id"] = id
-					}
-					if flowId, ok := rawResp["flowId"]; ok {
-						result["flowId"] = flowId
-					}
-					if ns, ok := rawResp["namespace"]; ok {
-						result["namespace"] = ns
-					}
-					if flowRev, ok := rawResp["flowRevision"]; ok {
-						result["flowRevision"] = flowRev
-					}
-					if state, ok := rawResp["state"].(map[string]any); ok {
-						result["state"] = state
-					}
-					if labels, ok := rawResp["labels"].([]any); ok {
-						result["labels"] = labels
-					}
-					// If we got meaningful data, return it
-					if _, hasId := result["id"]; hasId {
-						return result, nil
-					}
-				}
-			}
-		}
-		return nil, formatSDKError(err)
-	}
-
-	result := map[string]any{
-		"id":           resp.GetId(),
-		"flowId":       resp.GetFlowId(),
-		"namespace":    resp.GetNamespace(),
-		"flowRevision": resp.GetFlowRevision(),
-	}
-
-	state := resp.State
-	stateMap := map[string]any{
-		"current": state.GetCurrent(),
-	}
-	if !state.GetStartDate().IsZero() {
-		stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
-	}
-	if !state.GetEndDate().IsZero() {
-		stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
-	}
-	stateMap["duration"] = state.GetDuration()
-	result["state"] = stateMap
-
-	if labels := resp.GetLabels(); len(labels) > 0 {
-		labelsSlice := make([]any, len(labels))
-		for i, label := range labels {
-			labelsSlice[i] = map[string]any{
-				"key":   label.GetKey(),
-				"value": label.GetValue(),
-			}
-		}
-		result["labels"] = labelsSlice
-	}
-
-	return result, nil
-}
-
 func newExecutionsCommand() *cobra.Command {
-	factory := newSDKClientFactory()
-	client, authCtx, err := factory.createClient()
-	if err != nil {
-		return newExecutionsCommandWithService(nil)
-	}
-	service := &sdkExecutionsService{client: client, authCtx: authCtx}
-	return newExecutionsCommandWithService(service)
-}
-
-func newExecutionsCommandWithService(service executionsService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "executions",
 		Short: "Manage executions",
 	}
 
-	cmd.AddCommand(newExecutionsKillCommand(service))
-	cmd.AddCommand(newExecutionsRunCommand(service))
-	cmd.AddCommand(newExecutionsGetCommand(service))
+	cmd.AddCommand(newExecutionsKillCommand())
+	cmd.AddCommand(newExecutionsRunCommand())
+	cmd.AddCommand(newExecutionsGetCommand())
 
 	return cmd
 }
 
-func newExecutionsKillCommand(service executionsService) *cobra.Command {
+func newExecutionsKillCommand() *cobra.Command {
 	var namespace string
 	var flowID string
 
@@ -238,44 +51,12 @@ Use the --namespace and --flow-id flags to target specific executions.`,
 				return errors.New("--namespace is required when --flow-id is provided")
 			}
 
-			if service == nil {
-				return errors.New("executions service not configured")
-			}
-
-			authCtx := temporaryContext()
-			tenant := resolveTenant(authCtx)
-
-			result, err := service.KillByQuery(context.Background(), []string{"RUNNING"}, namespace, flowID, tenant)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(result)
-			}
-
-			fmt.Println("Kill request sent successfully!")
-			if namespace != "" || flowID != "" {
-				filters := []string{}
-				if namespace != "" {
-					filters = append(filters, fmt.Sprintf("namespace: %s", namespace))
-				}
-				if flowID != "" {
-					filters = append(filters, fmt.Sprintf("flow ID: %s", flowID))
-				}
-				fmt.Printf("Filters: %s\n", strings.Join(filters, ", "))
-			} else {
-				fmt.Println("Filters: none (all running executions)")
-			}
-			fmt.Println("State: RUNNING")
-
-			if count, ok := result["count"]; ok {
-				fmt.Printf("Executions killed: %v\n", count)
-			} else if message, ok := result["message"]; ok {
-				fmt.Printf("Message: %v\n", message)
-			}
-
-			return nil
+			return runExecutionsKill(client, namespace, flowID)
 		},
 	}
 
@@ -285,7 +66,38 @@ Use the --namespace and --flow-id flags to target specific executions.`,
 	return cmd
 }
 
-func newExecutionsRunCommand(service executionsService) *cobra.Command {
+func runExecutionsKill(client *Client, namespace, flowID string) error {
+	// Note: The SDK doesn't fully support filtering yet
+	if namespace != "" {
+		return errors.New("filter by namespace not yet implemented in SDK")
+	}
+	if flowID != "" {
+		return errors.New("filter by flowID not yet implemented in SDK")
+	}
+
+	result, _, err := client.API.ExecutionsAPI.KillExecutionsByQuery(client.Ctx, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	fmt.Println("Kill request sent successfully!")
+	fmt.Println("Filters: none (all running executions)")
+	fmt.Println("State: RUNNING")
+
+	if count, ok := result["count"]; ok {
+		fmt.Printf("Executions killed: %v\n", count)
+	} else if message, ok := result["message"]; ok {
+		fmt.Printf("Message: %v\n", message)
+	}
+
+	return nil
+}
+
+func newExecutionsRunCommand() *cobra.Command {
 	var wait bool
 
 	cmd := &cobra.Command{
@@ -306,46 +118,16 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 		Aliases: []string{"trigger", "execute"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			namespace := args[0]
-			flowID := args[1]
-
 			if err := validateOutputFormat(); err != nil {
 				return err
 			}
 
-			if service == nil {
-				return errors.New("executions service not configured")
-			}
-
-			authCtx := temporaryContext()
-			tenant := resolveTenant(authCtx)
-
-			if wait {
-				fmt.Printf("Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
-				fmt.Println("Waiting for execution to complete...")
-			}
-
-			execution, err := service.TriggerExecution(context.Background(), namespace, flowID, wait, nil, tenant)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(execution)
-			}
-
-			fmt.Println("Execution triggered successfully!")
-			fmt.Println()
-			fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
-			fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
-			fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
-			printExecutionState(execution, wait)
-
-			if url, ok := execution["url"]; ok {
-				fmt.Printf("URL: %v\n", url)
-			}
-
-			return nil
+			return runExecutionsRun(client, args[0], args[1], wait)
 		},
 	}
 
@@ -354,8 +136,62 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 	return cmd
 }
 
-func newExecutionsGetCommand(service executionsService) *cobra.Command {
-	cmd := &cobra.Command{
+func runExecutionsRun(client *Client, namespace, flowID string, wait bool) error {
+	if wait {
+		fmt.Printf("Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
+		fmt.Println("Waiting for execution to complete...")
+	}
+
+	resp, _, err := client.API.ExecutionsAPI.CreateExecution(client.Ctx, namespace, flowID, client.Tenant).
+		Wait(wait).
+		Execute()
+
+	// Handle SDK type mismatch bugs
+	var execution map[string]any
+	if err != nil {
+		execution = tryParseExecutionFromError(err)
+		if execution == nil {
+			return formatSDKError(err)
+		}
+	} else {
+		execution = map[string]any{
+			"id":        resp.GetId(),
+			"flowId":    resp.GetFlowId(),
+			"namespace": resp.GetNamespace(),
+		}
+		state := resp.State
+		stateMap := map[string]any{
+			"current": state.GetCurrent(),
+		}
+		if !state.GetStartDate().IsZero() {
+			stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
+		}
+		if !state.GetEndDate().IsZero() {
+			stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
+		}
+		execution["state"] = stateMap
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(execution)
+	}
+
+	fmt.Println("Execution triggered successfully!")
+	fmt.Println()
+	fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
+	fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
+	fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
+	printExecutionState(execution, wait)
+
+	if url, ok := execution["url"]; ok {
+		fmt.Printf("URL: %v\n", url)
+	}
+
+	return nil
+}
+
+func newExecutionsGetCommand() *cobra.Command {
+	return &cobra.Command{
 		Use:   "get <execution_id>",
 		Short: "Get execution details.",
 		Long: `Retrieve detailed information about a specific execution.
@@ -369,66 +205,85 @@ The command displays execution status, timing, labels, and other metadata.`,
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			executionID := args[0]
-
 			if err := validateOutputFormat(); err != nil {
 				return err
 			}
 
-			if service == nil {
-				return errors.New("executions service not configured")
-			}
-
-			authCtx := temporaryContext()
-			tenant := resolveTenant(authCtx)
-
-			execution, err := service.GetExecution(context.Background(), executionID, tenant)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(execution)
-			}
-
-			fmt.Println("Execution Details")
-			fmt.Println()
-			fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
-			fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
-			fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
-			fmt.Printf("Flow Revision: %s\n", stringify(execution["flowRevision"]))
-			printExecutionState(execution, true)
-
-			if labels, ok := execution["labels"].([]any); ok && len(labels) > 0 {
-				fmt.Println("Labels:")
-				for _, raw := range labels {
-					if label, ok := raw.(map[string]any); ok {
-						fmt.Printf("  - %s: %s\n", stringify(label["key"]), stringify(label["value"]))
-					}
-				}
-			}
-
-			// Build URL from context if not in response
-			if _, ok := execution["url"]; !ok {
-				if authCtx != nil {
-					hostValue := strings.TrimRight(authCtx.Host, "/")
-					ns := stringify(execution["namespace"])
-					flowID := stringify(execution["flowId"])
-					id := stringify(execution["id"])
-					if hostValue != "" && tenant != "" && ns != "" && flowID != "" && id != "" {
-						url := fmt.Sprintf("%s/ui/%s/executions/%s/%s/%s", hostValue, tenant, ns, flowID, id)
-						fmt.Printf("URL: %s\n", url)
-					}
-				}
-			} else {
-				fmt.Printf("URL: %v\n", execution["url"])
-			}
-
-			return nil
+			return runExecutionsGet(client, args[0])
 		},
 	}
+}
 
-	return cmd
+func runExecutionsGet(client *Client, executionID string) error {
+	resp, _, err := client.API.ExecutionsAPI.Execution(client.Ctx, executionID, client.Tenant).Execute()
+
+	// Handle SDK type mismatch bugs
+	var execution map[string]any
+	if err != nil {
+		execution = tryParseExecutionFromError(err)
+		if execution == nil {
+			return formatSDKError(err)
+		}
+	} else {
+		execution = map[string]any{
+			"id":           resp.GetId(),
+			"flowId":       resp.GetFlowId(),
+			"namespace":    resp.GetNamespace(),
+			"flowRevision": resp.GetFlowRevision(),
+		}
+
+		state := resp.State
+		stateMap := map[string]any{
+			"current": state.GetCurrent(),
+		}
+		if !state.GetStartDate().IsZero() {
+			stateMap["startDate"] = state.GetStartDate().Format(time.RFC3339)
+		}
+		if !state.GetEndDate().IsZero() {
+			stateMap["endDate"] = state.GetEndDate().Format(time.RFC3339)
+		}
+		stateMap["duration"] = state.GetDuration()
+		execution["state"] = stateMap
+
+		if labels := resp.GetLabels(); len(labels) > 0 {
+			labelsSlice := make([]any, len(labels))
+			for i, label := range labels {
+				labelsSlice[i] = map[string]any{
+					"key":   label.GetKey(),
+					"value": label.GetValue(),
+				}
+			}
+			execution["labels"] = labelsSlice
+		}
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(execution)
+	}
+
+	fmt.Println("Execution Details")
+	fmt.Println()
+	fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
+	fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
+	fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
+	fmt.Printf("Flow Revision: %s\n", stringify(execution["flowRevision"]))
+	printExecutionState(execution, true)
+
+	if labels, ok := execution["labels"].([]any); ok && len(labels) > 0 {
+		fmt.Println("Labels:")
+		for _, raw := range labels {
+			if label, ok := raw.(map[string]any); ok {
+				fmt.Printf("  - %s: %s\n", stringify(label["key"]), stringify(label["value"]))
+			}
+		}
+	}
+
+	return nil
 }
 
 func printExecutionState(execution map[string]any, includeTiming bool) {
@@ -478,7 +333,6 @@ func formatDuration(raw any) string {
 }
 
 func parseISO8601Duration(value string) (string, error) {
-	// Handle simple PTxS format where x is seconds (possibly fractional).
 	if !strings.HasPrefix(value, "PT") || !strings.HasSuffix(value, "S") {
 		return "", fmt.Errorf("unsupported duration format")
 	}

@@ -1,157 +1,156 @@
 package cli
 
 import (
-	"context"
-	"errors"
 	"strings"
 	"testing"
 )
 
-type fakeExecutionsService struct {
-	killFn         func(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error)
-	triggerFn      func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error)
-	getExecutionFn func(ctx context.Context, executionID, tenant string) (map[string]any, error)
-}
-
-func (f *fakeExecutionsService) KillByQuery(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
-	if f.killFn == nil {
-		return nil, errors.New("kill not implemented")
-	}
-	return f.killFn(ctx, state, namespace, flowID, tenant)
-}
-
-func (f *fakeExecutionsService) TriggerExecution(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
-	if f.triggerFn == nil {
-		return nil, errors.New("trigger not implemented")
-	}
-	return f.triggerFn(ctx, namespace, flowID, wait, inputs, tenant)
-}
-
-func (f *fakeExecutionsService) GetExecution(ctx context.Context, executionID, tenant string) (map[string]any, error) {
-	if f.getExecutionFn == nil {
-		return nil, errors.New("get execution not implemented")
-	}
-	return f.getExecutionFn(ctx, executionID, tenant)
-}
-
-func TestExecutionsRunCommand_Success(t *testing.T) {
-	fake := &fakeExecutionsService{
-		triggerFn: func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
-			if namespace != "test.namespace" {
-				t.Fatalf("expected namespace 'test.namespace', got '%s'", namespace)
-			}
-			if flowID != "test-flow" {
-				t.Fatalf("expected flowID 'test-flow', got '%s'", flowID)
-			}
-			if wait {
-				t.Fatalf("wait should default to false")
-			}
-			return map[string]any{
-				"id":        "exec-123",
-				"flowId":    "test-flow",
-				"namespace": "test.namespace",
-				"state": map[string]any{
-					"current": "CREATED",
-				},
-			}, nil
-		},
-	}
-
-	cmd := newExecutionsRunCommand(fake)
-
-	output, err := executeCommand(cmd, "test.namespace", "test-flow")
-	if err != nil {
-		t.Fatalf("Execute() returned error: %v", err)
-	}
-
-	if !strings.Contains(output, "Execution triggered successfully!") {
-		t.Fatalf("expected success message, got: %s", output)
-	}
-
-	if !strings.Contains(output, "Execution ID: exec-123") {
-		t.Fatalf("expected Execution ID in output, got: %s", output)
-	}
-}
-
-func TestExecutionsRunCommand_ServiceError(t *testing.T) {
-	expectedErr := errors.New("trigger failed")
-
-	fake := &fakeExecutionsService{
-		triggerFn: func(ctx context.Context, namespace, flowID string, wait bool, inputs map[string]any, tenant string) (map[string]any, error) {
-			return nil, expectedErr
-		},
-	}
-
-	cmd := newExecutionsRunCommand(fake)
-
-	_, err := executeCommand(cmd, "test.namespace", "test-flow")
+func TestExecutionsRunCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsRunCommand()
+	_, err := executeCommand(cmd)
 	if err == nil {
-		t.Fatalf("expected error, got nil")
+		t.Fatal("expected error when no args provided")
 	}
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected error %v, got %v", expectedErr, err)
-	}
-}
-
-func TestExecutionsGetCommand_Success(t *testing.T) {
-	fake := &fakeExecutionsService{
-		getExecutionFn: func(ctx context.Context, executionID, tenant string) (map[string]any, error) {
-			if executionID != "exec-123" {
-				t.Fatalf("expected executionID 'exec-123', got '%s'", executionID)
-			}
-			return map[string]any{
-				"id":           "exec-123",
-				"flowId":       "test-flow",
-				"namespace":    "test.namespace",
-				"flowRevision": "1",
-				"state": map[string]any{
-					"current": "SUCCESS",
-				},
-				"url": "http://localhost:8080/ui/main/executions/test.namespace/test-flow/exec-123",
-			}, nil
-		},
-	}
-
-	cmd := newExecutionsGetCommand(fake)
-
-	output, err := executeCommand(cmd, "exec-123")
-	if err != nil {
-		t.Fatalf("Execute() returned error: %v", err)
-	}
-
-	if !strings.Contains(output, "Execution Details") {
-		t.Fatalf("expected 'Execution Details' in output, got: %s", output)
-	}
-
-	if !strings.Contains(output, "Execution ID: exec-123") {
-		t.Fatalf("expected Execution ID in output, got: %s", output)
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
 	}
 }
 
-func TestExecutionsKillCommand_Success(t *testing.T) {
-	fake := &fakeExecutionsService{
-		killFn: func(ctx context.Context, state []string, namespace, flowID, tenant string) (map[string]any, error) {
-			if len(state) != 1 || state[0] != "RUNNING" {
-				t.Fatalf("expected state ['RUNNING'], got %v", state)
+func TestExecutionsRunCommand_OneArg(t *testing.T) {
+	cmd := newExecutionsRunCommand()
+	_, err := executeCommand(cmd, "namespace")
+	if err == nil {
+		t.Fatal("expected error when only 1 arg provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsGetCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsGetCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsKillCommand_RequiresNamespaceWithFlowID(t *testing.T) {
+	// Override client to avoid config errors
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return &Client{Tenant: "main"}, nil
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsKillCommand()
+	_, err := executeCommand(cmd, "--flow-id", "some-flow")
+	if err == nil {
+		t.Fatal("expected error when flow-id is provided without namespace")
+	}
+	if !strings.Contains(err.Error(), "--namespace is required") {
+		t.Fatalf("expected namespace required error, got: %v", err)
+	}
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		input    any
+		expected string
+	}{
+		{input: "PT5S", expected: "5.00s"},
+		{input: "PT5.123S", expected: "5.12s"},
+		{input: "PT0.5S", expected: "0.50s"},
+		{input: float64(5000), expected: "5.00s"},
+		{input: float64(1234), expected: "1.23s"},
+		{input: "not-iso", expected: "not-iso"},
+		{input: "plain string", expected: "plain string"},
+		{input: 42, expected: "42"},
+	}
+
+	for _, tt := range tests {
+		t.Run("", func(t *testing.T) {
+			result := formatDuration(tt.input)
+			if result != tt.expected {
+				t.Errorf("formatDuration(%v) = %s, want %s", tt.input, result, tt.expected)
 			}
-			return map[string]any{
-				"count": float64(5),
-			}, nil
+		})
+	}
+}
+
+func TestParseISO8601Duration(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{input: "PT5S", expected: "5.00s"},
+		{input: "PT5.123S", expected: "5.12s"},
+		{input: "PT0.5S", expected: "0.50s"},
+		{input: "PT123S", expected: "123.00s"},
+		{input: "PT0.001S", expected: "0.00s"},
+		{input: "invalid", wantErr: true},
+		{input: "PT", wantErr: true},
+		{input: "PTS", wantErr: true},
+		{input: "5S", wantErr: true},
+		{input: "PT5M", wantErr: true}, // Minutes not supported
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			result, err := parseISO8601Duration(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("parseISO8601Duration(%s) expected error, got nil", tt.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseISO8601Duration(%s) unexpected error: %v", tt.input, err)
+				return
+			}
+			if result != tt.expected {
+				t.Errorf("parseISO8601Duration(%s) = %s, want %s", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestPrintExecutionState(t *testing.T) {
+	// Test with valid state
+	execution := map[string]any{
+		"state": map[string]any{
+			"current":   "SUCCESS",
+			"startDate": "2024-01-15T10:00:00Z",
+			"endDate":   "2024-01-15T10:00:05Z",
+			"duration":  "PT5S",
 		},
 	}
 
-	cmd := newExecutionsKillCommand(fake)
+	// This should not panic
+	output, _ := captureStdout(func() error {
+		printExecutionState(execution, true)
+		return nil
+	})
 
-	output, err := executeCommand(cmd)
-	if err != nil {
-		t.Fatalf("Execute() returned error: %v", err)
+	if !strings.Contains(output, "State: SUCCESS") {
+		t.Errorf("expected state output, got: %s", output)
 	}
+}
 
-	if !strings.Contains(output, "Kill request sent successfully!") {
-		t.Fatalf("expected success message, got: %s", output)
-	}
+func TestPrintExecutionState_Unknown(t *testing.T) {
+	// Test with missing state
+	execution := map[string]any{}
 
-	if !strings.Contains(output, "Executions killed: 5") {
-		t.Fatalf("expected kill count in output, got: %s", output)
+	output, _ := captureStdout(func() error {
+		printExecutionState(execution, false)
+		return nil
+	})
+
+	if !strings.Contains(output, "State: unknown") {
+		t.Errorf("expected 'unknown' state, got: %s", output)
 	}
 }

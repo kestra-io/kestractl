@@ -1,73 +1,23 @@
 package cli
 
 import (
-	"context"
-	"errors"
 	"fmt"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
-type namespacesService interface {
-	ListNamespaces(ctx context.Context, tenant string, query string, page, size int) ([]any, error)
-}
-
-// sdkNamespacesService implements namespacesService using the Kestra SDK
-type sdkNamespacesService struct {
-	client  *kestra.APIClient
-	authCtx context.Context
-}
-
-func (s *sdkNamespacesService) ListNamespaces(ctx context.Context, tenant string, query string, page, size int) ([]any, error) {
-	req := s.client.NamespacesAPI.SearchNamespaces(s.authCtx, tenant).
-		Page(int32(page)).
-		Size(int32(size)).
-		Existing(true) // Only return existing namespaces
-
-	if query != "" {
-		req = req.Q(query)
-	}
-
-	resp, _, err := req.Execute()
-	if err != nil {
-		return nil, formatSDKError(err)
-	}
-
-	results := resp.GetResults()
-	result := make([]any, len(results))
-	for i, ns := range results {
-		result[i] = map[string]any{
-			"id":      ns.GetId(),
-			"deleted": ns.GetDeleted(),
-		}
-	}
-
-	return result, nil
-}
-
 func newNamespacesCommand() *cobra.Command {
-	factory := newSDKClientFactory()
-	client, authCtx, err := factory.createClient()
-	if err != nil {
-		return newNamespacesCommandWithService(nil)
-	}
-	service := &sdkNamespacesService{client: client, authCtx: authCtx}
-	return newNamespacesCommandWithService(service)
-}
-
-func newNamespacesCommandWithService(service namespacesService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "namespaces",
 		Short: "Manage namespaces",
 	}
 
-	cmd.AddCommand(newNamespacesListCommand(service))
+	cmd.AddCommand(newNamespacesListCommand())
 
 	return cmd
 }
 
-func newNamespacesListCommand(service namespacesService) *cobra.Command {
+func newNamespacesListCommand() *cobra.Command {
 	var query string
 
 	cmd := &cobra.Command{
@@ -90,47 +40,59 @@ Optionally filter results using the --query flag to search for specific namespac
 				return err
 			}
 
-			if service == nil {
-				return errors.New("namespaces service not configured")
-			}
-
-			authCtx := temporaryContext()
-			tenant := resolveTenant(authCtx)
-
-			namespaces, err := service.ListNamespaces(context.Background(), tenant, query, 1, 100)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(namespaces)
-			}
-
-			w := tabWriter()
-			fmt.Fprintln(w, "ID\tDeleted")
-			for _, item := range namespaces {
-				switch v := item.(type) {
-				case string:
-					fmt.Fprintf(w, "%s\tfalse\n", v)
-				case map[string]any:
-					id := stringify(v["id"])
-					deleted := "false"
-					if del, ok := v["deleted"].(bool); ok && del {
-						deleted = "true"
-					}
-					fmt.Fprintf(w, "%s\t%s\n", id, deleted)
-				default:
-					fmt.Fprintf(w, "%v\tfalse\n", v)
-				}
-			}
-			w.Flush()
-			fmt.Printf("\nTotal namespaces: %d\n", len(namespaces))
-
-			return nil
+			return runNamespacesList(client, query)
 		},
 	}
 
 	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter namespaces by search query")
 
 	return cmd
+}
+
+func runNamespacesList(client *Client, query string) error {
+	req := client.API.NamespacesAPI.SearchNamespaces(client.Ctx, client.Tenant).
+		Page(1).
+		Size(100).
+		Existing(true)
+
+	if query != "" {
+		req = req.Q(query)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	if globalFlags.Output == "json" {
+		jsonResults := make([]map[string]any, len(results))
+		for i, ns := range results {
+			jsonResults[i] = map[string]any{
+				"id":      ns.GetId(),
+				"deleted": ns.GetDeleted(),
+			}
+		}
+		return printJSON(jsonResults)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tDeleted")
+	for _, ns := range results {
+		deleted := "false"
+		if ns.GetDeleted() {
+			deleted = "true"
+		}
+		fmt.Fprintf(w, "%s\t%s\n", ns.GetId(), deleted)
+	}
+	w.Flush()
+	fmt.Printf("\nTotal namespaces: %d\n", len(results))
+
+	return nil
 }
