@@ -393,37 +393,10 @@ func formatDeployResults(results []DeployResult, singleFile bool) error {
 	}
 
 	if globalFlags.Output == "json" {
-		if singleFile && len(results) == 1 {
-			// Single file: output single result object for backward compatibility
-			r := results[0]
-			if !r.Success {
-				return fmt.Errorf("%s", r.Error)
-			}
-			return printJSON(map[string]any{
-				"id":        r.FlowID,
-				"namespace": r.Namespace,
-				"revision":  r.Revision,
-			})
-		}
-		// Multiple files: output array of results
 		return printJSON(results)
 	}
 
 	// Table output
-	if singleFile && len(results) == 1 {
-		// Single file: preserve original output format for backward compatibility
-		r := results[0]
-		if !r.Success {
-			return fmt.Errorf("%s", r.Error)
-		}
-		fmt.Println("Flow deployed successfully!")
-		fmt.Printf("Flow ID: %s\n", r.FlowID)
-		fmt.Printf("Namespace: %s\n", r.Namespace)
-		fmt.Printf("Revision: %d\n", r.Revision)
-		return nil
-	}
-
-	// Multiple files: summary table
 	w := tabWriter()
 	fmt.Fprintln(w, "FILE\tFLOW ID\tNAMESPACE\tSTATUS\tERROR")
 	for _, r := range results {
