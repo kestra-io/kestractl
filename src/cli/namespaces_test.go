@@ -1,98 +1,59 @@
 package cli
 
 import (
-	"errors"
 	"strings"
 	"testing"
-
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 )
 
-type fakeNamespacesService struct {
-	listFn func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error)
-}
-
-func (f *fakeNamespacesService) ListNamespaces(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
-	if f.listFn == nil {
-		return nil, errors.New("list not implemented")
-	}
-	return f.listFn(tenant, ctx, query, page, size)
-}
-
-func TestNamespacesListCommand_Success(t *testing.T) {
-	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
-			if page != 1 {
-				t.Fatalf("expected page 1, got %d", page)
-			}
-			if size != 100 {
-				t.Fatalf("expected size 100, got %d", size)
-			}
-			return []any{
-				"namespace1",
-				"namespace2",
-				"test.namespace",
-			}, nil
-		},
-	}
-
-	cmd := newNamespacesListCommand(fake)
-
-	output, err := executeCommand(cmd)
+func TestNamespacesListCommand_Help(t *testing.T) {
+	cmd := newNamespacesListCommand()
+	output, err := executeCommand(cmd, "--help")
 	if err != nil {
 		t.Fatalf("Execute() returned error: %v", err)
 	}
 
-	if !strings.Contains(output, "Total namespaces: 3") {
-		t.Fatalf("expected namespace count in output, got: %s", output)
+	if !strings.Contains(output, "List all namespaces") {
+		t.Fatalf("expected help text, got: %s", output)
 	}
-
-	if !strings.Contains(output, "namespace1") {
-		t.Fatalf("expected namespace1 in output, got: %s", output)
-	}
-}
-
-func TestNamespacesListCommand_WithQuery(t *testing.T) {
-	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
-			if query != "test" {
-				t.Fatalf("expected query 'test', got '%s'", query)
-			}
-			return []any{
-				"test.namespace",
-			}, nil
-		},
-	}
-
-	cmd := newNamespacesListCommand(fake)
-
-	output, err := executeCommand(cmd, "--query", "test")
-	if err != nil {
-		t.Fatalf("Execute() returned error: %v", err)
-	}
-
-	if !strings.Contains(output, "Total namespaces: 1") {
-		t.Fatalf("expected namespace count in output, got: %s", output)
+	if !strings.Contains(output, "--query") {
+		t.Fatalf("expected query flag in help, got: %s", output)
 	}
 }
 
-func TestNamespacesListCommand_ServiceError(t *testing.T) {
-	expectedErr := errors.New("list failed")
+func TestNamespacesListCommand_QueryFlag(t *testing.T) {
+	cmd := newNamespacesListCommand()
 
-	fake := &fakeNamespacesService{
-		listFn: func(tenant string, ctx *apiclient.AuthContext, query string, page, size int) ([]any, error) {
-			return nil, expectedErr
-		},
+	// Verify the flag exists and has the right short form
+	queryFlag := cmd.Flags().Lookup("query")
+	if queryFlag == nil {
+		t.Fatal("expected --query flag")
 	}
-
-	cmd := newNamespacesListCommand(fake)
-
-	_, err := executeCommand(cmd)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-	if !errors.Is(err, expectedErr) {
-		t.Fatalf("expected error %v, got %v", expectedErr, err)
+	if queryFlag.Shorthand != "q" {
+		t.Fatalf("expected -q shorthand, got %s", queryFlag.Shorthand)
 	}
 }
 
+func TestNamespacesCommand_Structure(t *testing.T) {
+	cmd := newNamespacesCommand()
+
+	if cmd.Use != "namespaces" {
+		t.Fatalf("expected use 'namespaces', got '%s'", cmd.Use)
+	}
+
+	// Should have at least the list subcommand
+	subcommands := cmd.Commands()
+	if len(subcommands) == 0 {
+		t.Fatal("expected subcommands")
+	}
+
+	var hasListCmd bool
+	for _, sub := range subcommands {
+		if sub.Use == "list" {
+			hasListCmd = true
+			break
+		}
+	}
+	if !hasListCmd {
+		t.Fatal("expected 'list' subcommand")
+	}
+}

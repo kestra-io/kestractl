@@ -6,38 +6,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
-
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 )
-
-func newKestraClient() *apiclient.KestraClient {
-	return apiclient.NewKestraClient(nil)
-}
-
-func temporaryContext() *apiclient.AuthContext {
-	if globalFlags.Host == "" && globalFlags.Token == "" {
-		return nil
-	}
-
-	host := globalFlags.Host
-	tenant := globalFlags.Tenant
-	token := globalFlags.Token
-
-	if host == "" {
-		host = "http://localhost:8080"
-	}
-	if tenant == "" {
-		tenant = "main"
-	}
-
-	return &apiclient.AuthContext{
-		Name:       "temp",
-		Host:       host,
-		Tenant:     tenant,
-		AuthMethod: "token",
-		Token:      token,
-	}
-}
 
 func printJSON(value any) error {
 	data, err := json.MarshalIndent(value, "", "  ")
@@ -84,17 +53,12 @@ func toPrettyString(value any) string {
 	}
 }
 
-func formatList(items []string) string {
-	return strings.Join(items, ", ")
-}
-
-// validateOutputFormat validates the output format from global flags
+// validateOutputFormat validates the output format from global flags.
 func validateOutputFormat() error {
-	// Default to table if not set
 	if globalFlags.Output == "" {
 		globalFlags.Output = "table"
 	}
-	
+
 	output := strings.ToLower(globalFlags.Output)
 	if output != "table" && output != "json" {
 		return fmt.Errorf("output must be 'table' or 'json', got '%s'", globalFlags.Output)

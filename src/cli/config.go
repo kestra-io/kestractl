@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -29,7 +28,7 @@ func newConfigShowCommand() *cobra.Command {
 		Use:   "show",
 		Short: "Show current configuration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := apiclient.NewAuthManager("")
+			manager := NewAuthManager("")
 			contexts, defaultName, err := manager.ListContexts()
 			if err != nil {
 				return err
@@ -49,20 +48,20 @@ func newConfigShowCommand() *cobra.Command {
 			}
 			fmt.Println()
 
-				names := make([]string, 0, len(contexts))
-				for name := range contexts {
-					names = append(names, name)
-				}
-				sort.Strings(names)
+			names := make([]string, 0, len(contexts))
+			for name := range contexts {
+				names = append(names, name)
+			}
+			sort.Strings(names)
 
-				for _, name := range names {
-					ctx := contexts[name]
-					status := " "
-					if name == defaultName {
-						status = "*"
-					}
-					fmt.Printf("%s %s: %s (tenant: %s)\n", status, name, ctx.Host, ctx.Tenant)
+			for _, name := range names {
+				ctx := contexts[name]
+				status := " "
+				if name == defaultName {
+					status = "*"
 				}
+				fmt.Printf("%s %s: %s (tenant: %s)\n", status, name, ctx.Host, ctx.Tenant)
+			}
 
 			return nil
 		},
@@ -89,8 +88,8 @@ func newConfigAddCommand() *cobra.Command {
 				return errors.New("token is required (use --token)")
 			}
 
-			manager := apiclient.NewAuthManager("")
-			ctx := apiclient.AuthContext{
+			manager := NewAuthManager("")
+			ctx := AuthContext{
 				Name:       name,
 				Host:       host,
 				Tenant:     tenant,
@@ -132,7 +131,7 @@ func newConfigRemoveCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			manager := apiclient.NewAuthManager("")
+			manager := NewAuthManager("")
 			if err := manager.DeleteContext(name); err != nil {
 				return err
 			}
@@ -151,7 +150,7 @@ func newConfigUseCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			manager := apiclient.NewAuthManager("")
+			manager := NewAuthManager("")
 			if err := manager.SetDefaultContext(name); err != nil {
 				return err
 			}

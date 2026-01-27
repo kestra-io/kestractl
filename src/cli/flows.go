@@ -7,36 +7,25 @@ import (
 	"sort"
 	"strings"
 
-	apiclient "github.com/kestra-io/kestra-cli/src/api_client"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
-type flowsService interface {
-	ListFlows(namespace, tenant string, ctx *apiclient.AuthContext) ([]map[string]any, error)
-	GetFlow(namespace, flowID, tenant string, ctx *apiclient.AuthContext) (map[string]any, error)
-	CreateFlow(yamlContent string, tenant string, ctx *apiclient.AuthContext, override bool) (map[string]any, error)
-}
-
 func newFlowsCommand() *cobra.Command {
-	service := apiclient.NewFlowsAPI(newKestraClient())
-	return newFlowsCommandWithService(service)
-}
-
-func newFlowsCommandWithService(service flowsService) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flows",
 		Short: "Manage flows",
 	}
 
-	cmd.AddCommand(newFlowsListCommand(service))
-	cmd.AddCommand(newFlowsGetCommand(service))
-	cmd.AddCommand(newFlowsDeployCommand(service))
+	cmd.AddCommand(newFlowsListCommand())
+	cmd.AddCommand(newFlowsGetCommand())
+	cmd.AddCommand(newFlowsDeployCommand())
 
 	return cmd
 }
 
-func newFlowsListCommand(service flowsService) *cobra.Command {
-	cmd := &cobra.Command{
+func newFlowsListCommand() *cobra.Command {
+	return &cobra.Command{
 		Use:   "list <namespace>",
 		Short: "List flows in a namespace.",
 		Long: `List all flows in the specified namespace.
@@ -50,49 +39,59 @@ Returns a table showing flow ID, namespace, description, and revision number.`,
 		Aliases: []string{"ls"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			namespace := args[0]
-
 			if err := validateOutputFormat(); err != nil {
 				return err
 			}
 
-			context := temporaryContext()
-			if service == nil {
-				return errors.New("flows service not configured")
-			}
-
-			flows, err := service.ListFlows(namespace, globalFlags.Tenant, context)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(flows)
-			}
-
-			w := tabWriter()
-			fmt.Fprintln(w, "ID\tNamespace\tDescription\tRevision")
-			for _, flow := range flows {
-				id := stringify(flow["id"])
-				ns := stringify(flow["namespace"])
-				desc := stringify(flow["description"])
-				if desc == "" {
-					desc = "-"
-				}
-				rev := stringify(flow["revision"])
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", id, ns, desc, rev)
-			}
-			w.Flush()
-
-			return nil
+			return runFlowsList(client, args[0])
 		},
 	}
-
-	return cmd
 }
 
-func newFlowsGetCommand(service flowsService) *cobra.Command {
-	cmd := &cobra.Command{
+func runFlowsList(client *Client, namespace string) error {
+	flows, _, err := client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if globalFlags.Output == "json" {
+		result := make([]map[string]any, len(flows))
+		for i, flow := range flows {
+			result[i] = map[string]any{
+				"id":          flow.GetId(),
+				"namespace":   flow.GetNamespace(),
+				"description": flow.GetDescription(),
+				"revision":    flow.GetRevision(),
+			}
+		}
+		return printJSON(result)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tNamespace\tDescription\tRevision")
+	for _, flow := range flows {
+		desc := flow.GetDescription()
+		if desc == "" {
+			desc = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
+			flow.GetId(),
+			flow.GetNamespace(),
+			desc,
+			flow.GetRevision())
+	}
+	w.Flush()
+
+	return nil
+}
+
+func newFlowsGetCommand() *cobra.Command {
+	return &cobra.Command{
 		Use:   "get <namespace> <flow_id>",
 		Short: "Get a specific flow.",
 		Long: `Retrieve the full definition of a specific flow.
@@ -106,51 +105,59 @@ The default output format is JSON as it preserves the complete flow definition.`
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			namespace := args[0]
-			flowID := args[1]
-
 			if err := validateOutputFormat(); err != nil {
 				return err
 			}
 
-			context := temporaryContext()
-			if service == nil {
-				return errors.New("flows service not configured")
-			}
-
-			flow, err := service.GetFlow(namespace, flowID, globalFlags.Tenant, context)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(flow)
-			}
-
-			w := tabWriter()
-			fmt.Fprintln(w, "Property\tValue")
-
-			keys := make([]string, 0, len(flow))
-			for key := range flow {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-
-			for _, key := range keys {
-				val := toPrettyString(flow[key])
-				val = strings.ReplaceAll(val, "\n", "\\n")
-				fmt.Fprintf(w, "%s\t%s\n", key, val)
-			}
-			w.Flush()
-
-			return nil
+			return runFlowsGet(client, args[0], args[1])
 		},
 	}
-
-	return cmd
 }
 
-func newFlowsDeployCommand(service flowsService) *cobra.Command {
+func runFlowsGet(client *Client, namespace, flowID string) error {
+	flow, _, err := client.API.FlowsAPI.Flow(client.Ctx, namespace, flowID, client.Tenant).
+		Source(true).
+		AllowDeleted(false).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":        flow.GetId(),
+		"namespace": flow.GetNamespace(),
+		"revision":  flow.GetRevision(),
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "Property\tValue")
+
+	keys := make([]string, 0, len(result))
+	for key := range result {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		val := toPrettyString(result[key])
+		val = strings.ReplaceAll(val, "\n", "\\n")
+		fmt.Fprintf(w, "%s\t%s\n", key, val)
+	}
+	w.Flush()
+
+	return nil
+}
+
+func newFlowsDeployCommand() *cobra.Command {
 	var override bool
 
 	cmd := &cobra.Command{
@@ -171,41 +178,117 @@ Use --override to update an existing flow.`,
 		Aliases: []string{"create", "apply"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			filepath := args[0]
-
 			if err := validateOutputFormat(); err != nil {
 				return err
 			}
 
-			content, err := os.ReadFile(filepath)
-			if err != nil {
-				return fmt.Errorf("failed to read file '%s': %w", filepath, err)
-			}
-
-			context := temporaryContext()
-			if service == nil {
-				return errors.New("flows service not configured")
-			}
-
-			flow, err := service.CreateFlow(string(content), globalFlags.Tenant, context, override)
+			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			if globalFlags.Output == "json" {
-				return printJSON(flow)
-			}
-
-			fmt.Println("Flow deployed successfully!")
-			fmt.Printf("Flow ID: %s\n", stringify(flow["id"]))
-			fmt.Printf("Namespace: %s\n", stringify(flow["namespace"]))
-			fmt.Printf("Revision: %s\n", stringify(flow["revision"]))
-
-			return nil
+			return runFlowsDeploy(client, args[0], override)
 		},
 	}
 
 	cmd.Flags().BoolVar(&override, "override", false, "Override the flow if it already exists")
 
 	return cmd
+}
+
+func runFlowsDeploy(client *Client, filepath string, override bool) error {
+	content, err := os.ReadFile(filepath)
+	if err != nil {
+		return fmt.Errorf("failed to read file '%s': %w", filepath, err)
+	}
+
+	yamlContent := string(content)
+	namespace, flowID, err := parseFlowYAML(yamlContent)
+	if err != nil {
+		return err
+	}
+
+	// Check if flow exists
+	exists := false
+	_, resp, checkErr := client.API.FlowsAPI.Flow(client.Ctx, namespace, flowID, client.Tenant).
+		Source(false).
+		AllowDeleted(false).
+		Execute()
+	if checkErr == nil {
+		exists = true
+	} else if resp != nil && resp.StatusCode != 404 {
+		return formatSDKError(checkErr)
+	}
+
+	if exists && !override {
+		return fmt.Errorf("flow '%s' already exists in namespace '%s'; use --override to update", flowID, namespace)
+	}
+
+	var result map[string]any
+	if exists && override {
+		// Update existing flow
+		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, flowID, namespace, client.Tenant).
+			Body(yamlContent).
+			Execute()
+		if err != nil {
+			return formatSDKError(err)
+		}
+		result = map[string]any{
+			"id":        updateResp.GetId(),
+			"namespace": updateResp.GetNamespace(),
+			"revision":  updateResp.GetRevision(),
+		}
+	} else {
+		// Create new flow
+		flowResp, _, err := client.API.FlowsAPI.CreateFlow(client.Ctx, client.Tenant).
+			Body(yamlContent).
+			Execute()
+		if err != nil {
+			return formatSDKError(err)
+		}
+		result = map[string]any{
+			"id":        flowResp.GetId(),
+			"namespace": flowResp.GetNamespace(),
+			"revision":  flowResp.GetRevision(),
+		}
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	fmt.Println("Flow deployed successfully!")
+	fmt.Printf("Flow ID: %s\n", stringify(result["id"]))
+	fmt.Printf("Namespace: %s\n", stringify(result["namespace"]))
+	fmt.Printf("Revision: %s\n", stringify(result["revision"]))
+
+	return nil
+}
+
+// parseFlowYAML extracts namespace and flow ID from YAML content.
+func parseFlowYAML(content string) (string, string, error) {
+	var payload map[string]any
+	if err := yaml.Unmarshal([]byte(content), &payload); err != nil {
+		return "", "", fmt.Errorf("invalid YAML content: %w", err)
+	}
+
+	rawNamespace, ok := payload["namespace"]
+	if !ok {
+		return "", "", errors.New("flow YAML must contain a 'namespace' field")
+	}
+	namespace, ok := rawNamespace.(string)
+	if !ok || strings.TrimSpace(namespace) == "" {
+		return "", "", errors.New("flow YAML must contain a valid 'namespace' field")
+	}
+
+	rawID, ok := payload["id"]
+	if !ok {
+		return "", "", errors.New("flow YAML must contain an 'id' field")
+	}
+	flowID, ok := rawID.(string)
+	if !ok || strings.TrimSpace(flowID) == "" {
+		return "", "", errors.New("flow YAML must contain a valid 'id' field")
+	}
+
+	return namespace, flowID, nil
 }
