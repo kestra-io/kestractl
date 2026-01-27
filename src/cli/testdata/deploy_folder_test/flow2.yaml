@@ -1,6 +1,5 @@
 namespace: test.namespace.two
 id: flow-two
-revision: 1
 tasks:
   - id: log
     type: io.kestra.plugin.core.log.Log

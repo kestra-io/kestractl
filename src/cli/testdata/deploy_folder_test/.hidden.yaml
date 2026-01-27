@@ -1,6 +1,5 @@
 namespace: test.hidden
 id: hidden-flow
-revision: 1
 tasks:
   - id: log
     type: io.kestra.plugin.core.log.Log
