@@ -227,7 +227,7 @@ func runFlowsDeploy(client *Client, filepath string, override bool) error {
 	var result map[string]any
 	if exists && override {
 		// Update existing flow
-		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, flowID, namespace, client.Tenant).
+		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, namespace, flowID, client.Tenant).
 			Body(yamlContent).
 			Execute()
 		if err != nil {
