@@ -117,7 +117,7 @@ func newConfigAddCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVarP(&token, "token", "t", "", "API token")
+	cmd.Flags().StringVarP(&token, FlagToken, "t", "", "API token")
 	cmd.Flags().BoolVar(&setDefault, "default", false, "Set as default context")
 
 	return cmd

@@ -13,6 +13,16 @@ import (
 
 const cliVersion = "0.1.0"
 
+// Flag names
+const (
+	FlagHost    = "host"
+	FlagToken   = "token"
+	FlagTenant  = "tenant"
+	FlagOutput  = "output"
+	FlagConfig  = "config"
+	FlagVerbose = "verbose"
+)
+
 // GlobalFlags holds flags that are available to all commands
 type GlobalFlags struct {
 	Host   string
@@ -36,11 +46,11 @@ with support for multiple authentication contexts and output formats.`,
 			if err := initializeConfig(cmd); err != nil {
 				return err
 			}
-			if verbose, _ := cmd.Flags().GetBool("verbose"); verbose == true {
+			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
 				fmt.Printf("resolved params: \n")
 				cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 					v := flag.Value.String()
-					if flag.Name == "token" {
+					if flag.Name == FlagToken {
 						v = "XXX"
 					}
 					fmt.Printf("\t%s: %s\n", flag.Name, v)
@@ -54,12 +64,12 @@ with support for multiple authentication contexts and output formats.`,
 	}
 
 	// Add persistent flags available to all subcommands
-	root.PersistentFlags().StringVar(&globalFlags.Host, "host", "", "Kestra host URL")
-	root.PersistentFlags().StringVarP(&globalFlags.Token, "token", "t", "", "API token")
-	root.PersistentFlags().StringVar(&globalFlags.Tenant, "tenant", "", "Tenant name")
-	root.PersistentFlags().StringVarP(&globalFlags.Output, "output", "o", "table", "Output format (table or json)")
-	root.PersistentFlags().String("config", "", "config file (default is $HOME/.kestra/config.yaml)")
-	root.PersistentFlags().Bool("verbose", false, "verbose output (warning: it will print credentials in http requests")
+	root.PersistentFlags().StringVar(&globalFlags.Host, FlagHost, "", "Kestra host URL")
+	root.PersistentFlags().StringVarP(&globalFlags.Token, FlagToken, "t", "", "API token")
+	root.PersistentFlags().StringVar(&globalFlags.Tenant, FlagTenant, "", "Tenant name")
+	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
+	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestra/config.yaml)")
+	root.PersistentFlags().Bool(FlagVerbose, false, "verbose output (warning: it will print credentials in http requests")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())
@@ -78,7 +88,7 @@ func initializeConfig(cmd *cobra.Command) error {
 	viper.AutomaticEnv()
 
 	// 2. Handle the configuration file
-	cfgFile := cmd.Flag("config").Value.String()
+	cfgFile := cmd.Flag(FlagConfig).Value.String()
 	if cfgFile != "" {
 		// Use config file from the flag
 		viper.SetConfigFile(cfgFile)
@@ -117,23 +127,23 @@ func initializeConfig(cmd *cobra.Command) error {
 		defaultContext := viper.GetString("default_context")
 		if defaultContext != "" {
 			// Set defaults from the context (lowest priority)
-			if !viper.IsSet("host") {
-				viper.SetDefault("host", viper.GetString("contexts."+defaultContext+".host"))
+			if !viper.IsSet(FlagHost) {
+				viper.SetDefault(FlagHost, viper.GetString("contexts."+defaultContext+".host"))
 			}
-			if !viper.IsSet("tenant") {
-				viper.SetDefault("tenant", viper.GetString("contexts."+defaultContext+".tenant"))
+			if !viper.IsSet(FlagTenant) {
+				viper.SetDefault(FlagTenant, viper.GetString("contexts."+defaultContext+".tenant"))
 			}
-			if !viper.IsSet("token") {
-				viper.SetDefault("token", viper.GetString("contexts."+defaultContext+".token"))
+			if !viper.IsSet(FlagToken) {
+				viper.SetDefault(FlagToken, viper.GetString("contexts."+defaultContext+".token"))
 			}
 		}
 	}
 
 	// 6. Sync Viper values back to globalFlags for backward compatibility
-	globalFlags.Host = viper.GetString("host")
-	globalFlags.Token = viper.GetString("token")
-	globalFlags.Tenant = viper.GetString("tenant")
-	globalFlags.Output = viper.GetString("output")
+	globalFlags.Host = viper.GetString(FlagHost)
+	globalFlags.Token = viper.GetString(FlagToken)
+	globalFlags.Tenant = viper.GetString(FlagTenant)
+	globalFlags.Output = viper.GetString(FlagOutput)
 
 	return nil
 }
