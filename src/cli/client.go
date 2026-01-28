@@ -72,9 +72,9 @@ func newClientDefault() (*Client, error) {
 // resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
 func resolveConfig() (string, string, string, error) {
 	// Viper handles precedence automatically: flags > env > config > defaults
-	host := viper.GetString("host")
-	tenant := viper.GetString("tenant")
-	token := viper.GetString("token")
+	host := viper.GetString(FlagHost)
+	tenant := viper.GetString(FlagTenant)
+	token := viper.GetString(FlagToken)
 
 	// Set defaults if not provided
 	if host == "" {
