@@ -27,7 +27,7 @@ func NewClient() (*Client, error) {
 
 // newClientDefault is the default client creation logic.
 func newClientDefault() (*Client, error) {
-	host, tenant, token, err := resolveConfig()
+	host, tenant, token, username, password, err := resolveConfig()
 	isVerbose := viper.GetBool("verbose")
 
 	if err != nil {
@@ -60,7 +60,18 @@ func newClientDefault() (*Client, error) {
 	cfg.Debug = isVerbose
 
 	client := kestra.NewAPIClient(cfg)
-	ctx := context.WithValue(context.Background(), kestra.ContextAccessToken, token)
+
+	ctx := context.Background()
+	if token != "" {
+		ctx = context.WithValue(ctx, kestra.ContextAccessToken, token)
+	} else if username != "" && password != "" {
+		ctx = context.WithValue(ctx, kestra.ContextBasicAuth, kestra.BasicAuth{
+			UserName: username,
+			Password: password,
+		})
+	} else {
+		return nil, fmt.Errorf("could not init client without any auth, at least token or username+password is required")
+	}
 
 	return &Client{
 		API:    client,
@@ -70,11 +81,13 @@ func newClientDefault() (*Client, error) {
 }
 
 // resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
-func resolveConfig() (string, string, string, error) {
+func resolveConfig() (string, string, string, string, string, error) {
 	// Viper handles precedence automatically: flags > env > config > defaults
 	host := viper.GetString(FlagHost)
 	tenant := viper.GetString(FlagTenant)
 	token := viper.GetString(FlagToken)
+	username := viper.GetString(FlagUsername)
+	password := viper.GetString(FlagPassword)
 
 	// Set defaults if not provided
 	if host == "" {
@@ -84,7 +97,7 @@ func resolveConfig() (string, string, string, error) {
 		tenant = "main"
 	}
 
-	return host, tenant, token, nil
+	return host, tenant, token, username, password, nil
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors.

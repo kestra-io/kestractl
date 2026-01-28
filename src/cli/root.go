@@ -15,20 +15,24 @@ const cliVersion = "0.1.0"
 
 // Flag names
 const (
-	FlagHost    = "host"
-	FlagToken   = "token"
-	FlagTenant  = "tenant"
-	FlagOutput  = "output"
-	FlagConfig  = "config"
-	FlagVerbose = "verbose"
+	FlagHost     = "host"
+	FlagToken    = "token"
+	FlagUsername = "username"
+	FlagPassword = "password"
+	FlagTenant   = "tenant"
+	FlagOutput   = "output"
+	FlagConfig   = "config"
+	FlagVerbose  = "verbose"
 )
 
 // GlobalFlags holds flags that are available to all commands
 type GlobalFlags struct {
-	Host   string
-	Token  string
-	Tenant string
-	Output string
+	Host     string
+	Token    string
+	Username string
+	Password string
+	Tenant   string
+	Output   string
 }
 
 var globalFlags GlobalFlags
@@ -47,10 +51,13 @@ with support for multiple authentication contexts and output formats.`,
 				return err
 			}
 			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
+				if viper.ConfigFileUsed() != "" {
+					fmt.Printf("config location: %s\n", viper.ConfigFileUsed())
+				}
 				fmt.Printf("resolved params: \n")
 				cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 					v := flag.Value.String()
-					if flag.Name == FlagToken {
+					if v != "" && (flag.Name == FlagToken || flag.Name == FlagPassword) {
 						v = "XXX"
 					}
 					fmt.Printf("\t%s: %s\n", flag.Name, v)
@@ -66,6 +73,8 @@ with support for multiple authentication contexts and output formats.`,
 	// Add persistent flags available to all subcommands
 	root.PersistentFlags().StringVar(&globalFlags.Host, FlagHost, "", "Kestra host URL")
 	root.PersistentFlags().StringVarP(&globalFlags.Token, FlagToken, "t", "", "API token")
+	root.PersistentFlags().StringVarP(&globalFlags.Username, FlagUsername, "", "", "basic auth username")
+	root.PersistentFlags().StringVarP(&globalFlags.Password, FlagPassword, "", "", "basic auth password")
 	root.PersistentFlags().StringVar(&globalFlags.Tenant, FlagTenant, "", "Tenant name")
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestra/config.yaml)")
@@ -142,6 +151,8 @@ func initializeConfig(cmd *cobra.Command) error {
 	// 6. Sync Viper values back to globalFlags for backward compatibility
 	globalFlags.Host = viper.GetString(FlagHost)
 	globalFlags.Token = viper.GetString(FlagToken)
+	globalFlags.Username = viper.GetString(FlagUsername)
+	globalFlags.Password = viper.GetString(FlagPassword)
 	globalFlags.Tenant = viper.GetString(FlagTenant)
 	globalFlags.Output = viper.GetString(FlagOutput)
 
