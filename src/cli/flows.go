@@ -356,7 +356,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 
 	if exists && override {
 		// Update existing flow
-		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, flowID, namespace, client.Tenant).
+		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, namespace, flowID, client.Tenant).
 			Body(yamlContent).
 			Execute()
 		if err != nil {
