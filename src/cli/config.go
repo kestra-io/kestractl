@@ -70,6 +70,8 @@ func newConfigShowCommand() *cobra.Command {
 
 func newConfigAddCommand() *cobra.Command {
 	var token string
+	var username string
+	var password string
 	var setDefault bool
 
 	cmd := &cobra.Command{
@@ -84,8 +86,13 @@ func newConfigAddCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, host, tenant := args[0], args[1], args[2]
 
-			if strings.TrimSpace(token) == "" {
-				return errors.New("token is required (use --token)")
+			var authMethod string
+			if strings.TrimSpace(token) != "" {
+				authMethod = "token"
+			} else if strings.TrimSpace(username) != "" && strings.TrimSpace(password) != "" {
+				authMethod = "basicAuth"
+			} else {
+				return errors.New("at least token or username+password is required (use --token or --username and --password)")
 			}
 
 			manager := NewAuthManager("")
@@ -93,8 +100,10 @@ func newConfigAddCommand() *cobra.Command {
 				Name:       name,
 				Host:       host,
 				Tenant:     tenant,
-				AuthMethod: "token",
+				AuthMethod: authMethod,
 				Token:      token,
+				Username:   username,
+				Password:   password,
 			}
 
 			if err := manager.AddContext(ctx); err != nil {
@@ -118,6 +127,8 @@ func newConfigAddCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVarP(&token, FlagToken, "t", "", "API token")
+	cmd.Flags().StringVarP(&username, FlagUsername, "", "", "basic auth username")
+	cmd.Flags().StringVarP(&password, FlagPassword, "", "", "basic auth password")
 	cmd.Flags().BoolVar(&setDefault, "default", false, "Set as default context")
 
 	return cmd
