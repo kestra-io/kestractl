@@ -1,0 +1,6 @@
+namespace: test.namespace
+# Missing id field - this should cause an error
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "invalid flow - missing id"

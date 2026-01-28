@@ -3,13 +3,25 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
+
+// DeployResult holds the result of deploying a single flow.
+type DeployResult struct {
+	FilePath  string `json:"file_path"`
+	FlowID    string `json:"flow_id"`
+	Namespace string `json:"namespace"`
+	Revision  int32  `json:"revision,omitempty"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
 
 func newFlowsCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -158,20 +170,43 @@ func runFlowsGet(client *Client, namespace, flowID string) error {
 }
 
 func newFlowsDeployCommand() *cobra.Command {
-	var override bool
+	var (
+		override          bool
+		namespaceOverride string
+		failFast          bool
+	)
 
 	cmd := &cobra.Command{
-		Use:   "deploy <filepath>",
-		Short: "Deploy a flow from a YAML file.",
-		Long: `Deploy a flow definition from a local YAML file to Kestra.
+		Use:          "deploy <path>",
+		Short:        "Deploy flows from a YAML file or directory.",
+		SilenceUsage: true,
+		Long: `Deploy flow definitions from a local YAML file or directory to Kestra.
 
-By default, the deployment will fail if the flow already exists.
-Use --override to update an existing flow.`,
-		Example: `  # Deploy a new flow
+When a directory is provided, all .yaml and .yml files are deployed recursively.
+Hidden files and directories (starting with .) are skipped.
+
+By default, the deployment will fail if a flow already exists.
+Use --override to update existing flows.
+
+By default, when deploying multiple flows, all files are processed even if some fail.
+Use --fail-fast to stop on the first error.`,
+		Example: `  # Deploy a single flow
   kestra flows deploy flow.yaml
 
-  # Deploy and override existing flow
-  kestra flows deploy flow.yaml --override
+  # Deploy all flows in a directory (recursive)
+  kestra flows deploy ./flows/
+
+  # Deploy with namespace override (all flows go to specified namespace)
+  kestra flows deploy ./flows/ --namespace prod.namespace
+
+  # Stop on first error (fail-fast)
+  kestra flows deploy ./flows/ --fail-fast
+
+  # Override existing flows
+  kestra flows deploy ./flows/ --override
+
+  # Combine flags
+  kestra flows deploy ./flows/ --namespace prod --override --fail-fast
 
   # Deploy with JSON output
   kestra flows deploy flow.yaml --output json`,
@@ -187,26 +222,119 @@ Use --override to update an existing flow.`,
 				return err
 			}
 
-			return runFlowsDeploy(client, args[0], override)
+			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast)
 		},
 	}
 
 	cmd.Flags().BoolVar(&override, "override", false, "Override the flow if it already exists")
+	cmd.Flags().StringVar(&namespaceOverride, "namespace", "", "Override the namespace for all deployed flows")
+	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first deployment error")
 
 	return cmd
 }
 
-func runFlowsDeploy(client *Client, filepath string, override bool) error {
-	content, err := os.ReadFile(filepath)
+func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool) error {
+	// Check if path is a file or directory
+	info, err := os.Stat(path)
 	if err != nil {
-		return fmt.Errorf("failed to read file '%s': %w", filepath, err)
+		return fmt.Errorf("failed to access path '%s': %w", path, err)
+	}
+
+	var files []string
+	if info.IsDir() {
+		// Collect all YAML files recursively
+		files, err = collectFlowFiles(path)
+		if err != nil {
+			return fmt.Errorf("failed to scan directory '%s': %w", path, err)
+		}
+		if len(files) == 0 {
+			return fmt.Errorf("no .yaml or .yml files found in directory '%s'", path)
+		}
+	} else {
+		// Single file
+		files = []string{path}
+	}
+
+	// Deploy all flows
+	results := make([]DeployResult, 0, len(files))
+	for _, file := range files {
+		result := deployFlow(client, file, namespaceOverride, override)
+		results = append(results, result)
+
+		if !result.Success && failFast {
+			// Stop on first error when fail-fast is enabled
+			break
+		}
+	}
+
+	// Output results
+	return formatDeployResults(results, len(files) == 1)
+}
+
+// collectFlowFiles recursively collects all .yaml and .yml files from a directory.
+// Hidden files and directories (starting with .) are skipped.
+func collectFlowFiles(rootPath string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// Skip hidden files/dirs (but not the root path itself if it starts with .)
+		if strings.HasPrefix(d.Name(), ".") && path != rootPath {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Collect .yaml and .yml files
+		if !d.IsDir() {
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext == ".yaml" || ext == ".yml" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(files) // Deterministic order
+	return files, nil
+}
+
+// deployFlow deploys a single flow file and returns the result.
+func deployFlow(client *Client, filePath string, namespaceOverride string, override bool) DeployResult {
+	result := DeployResult{
+		FilePath: filePath,
+		Success:  false,
+	}
+
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		result.Error = fmt.Sprintf("failed to read file: %v", err)
+		return result
 	}
 
 	yamlContent := string(content)
 	namespace, flowID, err := parseFlowYAML(yamlContent)
 	if err != nil {
-		return err
+		result.Error = err.Error()
+		return result
 	}
+
+	result.FlowID = flowID
+
+	// Apply namespace override if provided
+	if namespaceOverride != "" {
+		// Modify YAML content to use the overridden namespace
+		yamlContent, err = replaceNamespaceInYAML(yamlContent, namespaceOverride)
+		if err != nil {
+			result.Error = fmt.Sprintf("failed to override namespace: %v", err)
+			return result
+		}
+		namespace = namespaceOverride
+	}
+	result.Namespace = namespace
 
 	// Check if flow exists
 	exists := false
@@ -217,51 +345,85 @@ func runFlowsDeploy(client *Client, filepath string, override bool) error {
 	if checkErr == nil {
 		exists = true
 	} else if resp != nil && resp.StatusCode != 404 {
-		return formatSDKError(checkErr)
+		result.Error = formatSDKError(checkErr).Error()
+		return result
 	}
 
 	if exists && !override {
-		return fmt.Errorf("flow '%s' already exists in namespace '%s'; use --override to update", flowID, namespace)
+		result.Error = fmt.Sprintf("flow '%s' already exists in namespace '%s'; use --override to update", flowID, namespace)
+		return result
 	}
 
-	var result map[string]any
 	if exists && override {
 		// Update existing flow
 		updateResp, _, err := client.API.FlowsAPI.UpdateFlow(client.Ctx, namespace, flowID, client.Tenant).
 			Body(yamlContent).
 			Execute()
 		if err != nil {
-			return formatSDKError(err)
+			result.Error = formatSDKError(err).Error()
+			return result
 		}
-		result = map[string]any{
-			"id":        updateResp.GetId(),
-			"namespace": updateResp.GetNamespace(),
-			"revision":  updateResp.GetRevision(),
-		}
+		result.Revision = updateResp.GetRevision()
 	} else {
 		// Create new flow
 		flowResp, _, err := client.API.FlowsAPI.CreateFlow(client.Ctx, client.Tenant).
 			Body(yamlContent).
 			Execute()
 		if err != nil {
-			return formatSDKError(err)
+			result.Error = formatSDKError(err).Error()
+			return result
 		}
-		result = map[string]any{
-			"id":        flowResp.GetId(),
-			"namespace": flowResp.GetNamespace(),
-			"revision":  flowResp.GetRevision(),
+		result.Revision = flowResp.GetRevision()
+	}
+
+	result.Success = true
+	return result
+}
+
+// formatDeployResults outputs the deployment results in the appropriate format.
+func formatDeployResults(results []DeployResult, singleFile bool) error {
+	// Count successes and failures
+	var successCount, failCount int
+	for _, r := range results {
+		if r.Success {
+			successCount++
+		} else {
+			failCount++
 		}
 	}
 
 	if globalFlags.Output == "json" {
-		return printJSON(result)
+		return printJSON(results)
 	}
 
-	fmt.Println("Flow deployed successfully!")
-	fmt.Printf("Flow ID: %s\n", stringify(result["id"]))
-	fmt.Printf("Namespace: %s\n", stringify(result["namespace"]))
-	fmt.Printf("Revision: %s\n", stringify(result["revision"]))
+	// Table output
+	w := tabWriter()
+	fmt.Fprintln(w, "FILE\tFLOW ID\tNAMESPACE\tSTATUS\tERROR")
+	for _, r := range results {
+		status := "OK"
+		errMsg := "-"
+		if !r.Success {
+			status = "FAILED"
+			errMsg = r.Error
+		}
+		flowID := r.FlowID
+		if flowID == "" {
+			flowID = "-"
+		}
+		namespace := r.Namespace
+		if namespace == "" {
+			namespace = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.FilePath, flowID, namespace, status, errMsg)
+	}
+	w.Flush()
 
+	// Print summary
+	fmt.Printf("\n%d flow(s) deployed successfully, %d failed\n", successCount, failCount)
+
+	if failCount > 0 {
+		return fmt.Errorf("deployment completed with %d error(s)", failCount)
+	}
 	return nil
 }
 
@@ -291,4 +453,21 @@ func parseFlowYAML(content string) (string, string, error) {
 	}
 
 	return namespace, flowID, nil
+}
+
+// replaceNamespaceInYAML modifies the namespace field in YAML content.
+func replaceNamespaceInYAML(content string, newNamespace string) (string, error) {
+	var payload map[string]any
+	if err := yaml.Unmarshal([]byte(content), &payload); err != nil {
+		return "", fmt.Errorf("invalid YAML content: %w", err)
+	}
+
+	payload["namespace"] = newNamespace
+
+	modified, err := yaml.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal modified YAML: %w", err)
+	}
+
+	return string(modified), nil
 }

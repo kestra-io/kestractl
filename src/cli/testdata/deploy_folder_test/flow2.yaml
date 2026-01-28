@@ -1,0 +1,6 @@
+namespace: test.namespace.two
+id: flow-two
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "hello from flow two"
