@@ -133,6 +133,12 @@ kestra flows deploy ./flows/ --fail-fast
 
 # Combine flags
 kestra flows deploy ./flows/ --namespace prod --override --fail-fast
+
+# Validate a single flow
+kestra flows validate path/to/flow.yaml
+
+# Validate all flows in a directory (recursive)
+kestra flows validate ./flows/
 ```
 
 ### Executions
