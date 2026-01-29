@@ -125,6 +125,36 @@ func TestFlowsDeployCommand_NoArgs(t *testing.T) {
 	}
 }
 
+func TestFlowsValidateCommand_NoArgs(t *testing.T) {
+	// Test that the command requires exactly 1 argument
+	cmd := newFlowsValidateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsValidateCommand_FileNotFound(t *testing.T) {
+	// Override client factory to avoid config errors
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return &Client{Tenant: "main"}, nil
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsValidateCommand()
+	_, err := executeCommand(cmd, "/nonexistent/path/flow.yaml")
+	if err == nil {
+		t.Fatal("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "failed to access path") {
+		t.Fatalf("expected path access error, got: %v", err)
+	}
+}
+
 func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	// Override client factory to avoid config errors
 	original := newClientFunc
@@ -309,6 +339,27 @@ func TestFlowsDeployCommand_Help(t *testing.T) {
 		"--fail-fast",
 		"directory",
 		"recursive",
+	}
+	for _, s := range expectedStrings {
+		if !strings.Contains(output, s) {
+			t.Fatalf("expected help to contain '%s', got: %s", s, output)
+		}
+	}
+}
+
+func TestFlowsValidateCommand_Help(t *testing.T) {
+	cmd := newFlowsValidateCommand()
+	output, err := executeCommand(cmd, "--help")
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+
+	// Check for key elements in help text
+	expectedStrings := []string{
+		"validate <path>",
+		"directory",
+		"recursive",
+		"json",
 	}
 	for _, s := range expectedStrings {
 		if !strings.Contains(output, s) {
