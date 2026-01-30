@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -113,13 +115,94 @@ This action is immediate and cannot be undone.`,
 }
 
 func runIamGroupsCreate(client *Client, opts iamGroupCreateOptions) error {
-	return fmt.Errorf("not implemented")
+	if strings.TrimSpace(opts.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+
+	req := kestra.IAMGroupControllerApiCreateGroupRequest{Name: opts.Name}
+	if opts.Description != "" {
+		req.SetDescription(opts.Description)
+	}
+
+	resp, _, err := client.API.GroupsAPI.CreateGroup(client.Ctx, client.Tenant).
+		IAMGroupControllerApiCreateGroupRequest(req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":   resp.GetId(),
+		"name": resp.GetName(),
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tName")
+	fmt.Fprintf(w, "%s\t%s\n",
+		withFallback(resp.GetId()),
+		withFallback(resp.GetName()),
+	)
+	w.Flush()
+
+	return nil
 }
 
 func runIamGroupsList(client *Client) error {
-	return fmt.Errorf("not implemented")
+	resp, _, err := client.API.GroupsAPI.SearchGroups(client.Ctx, client.Tenant).
+		Page(1).
+		Size(1000).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	if globalFlags.Output == "json" {
+		jsonResults := make([]map[string]any, len(results))
+		for i, group := range results {
+			jsonResults[i] = map[string]any{
+				"id":   group.GetId(),
+				"name": group.GetName(),
+			}
+		}
+		return printJSON(jsonResults)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tName")
+	for _, group := range results {
+		fmt.Fprintf(w, "%s\t%s\n",
+			withFallback(group.GetId()),
+			withFallback(group.GetName()),
+		)
+	}
+	w.Flush()
+
+	return nil
 }
 
 func runIamGroupsDelete(client *Client, id string) error {
-	return fmt.Errorf("not implemented")
+	_, err := client.API.GroupsAPI.DeleteGroup(client.Ctx, id, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(map[string]any{
+			"id":      id,
+			"deleted": true,
+		})
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tMessage")
+	fmt.Fprintf(w, "%s\tDeleted\n", id)
+	w.Flush()
+
+	return nil
 }
