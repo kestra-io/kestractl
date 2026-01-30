@@ -22,6 +22,8 @@ func newIamGroupsCommand() *cobra.Command {
 	cmd.AddCommand(newIamGroupsCreateCommand())
 	cmd.AddCommand(newIamGroupsListCommand())
 	cmd.AddCommand(newIamGroupsDeleteCommand())
+	cmd.AddCommand(newIamGroupsAttachCommand())
+	cmd.AddCommand(newIamGroupsDetachCommand())
 
 	return cmd
 }
