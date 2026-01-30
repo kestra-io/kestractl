@@ -26,6 +26,7 @@ func newIamRolesCommand() *cobra.Command {
 	cmd.AddCommand(newIamRolesCreateCommand())
 	cmd.AddCommand(newIamRolesListCommand())
 	cmd.AddCommand(newIamRolesDeleteCommand())
+	cmd.AddCommand(newIamRolesBindingsCommand())
 
 	return cmd
 }
@@ -38,9 +39,12 @@ func newIamRolesCreateCommand() *cobra.Command {
 		Short: "Create an IAM role.",
 		Long: `Create an IAM role with required name and permissions.
 
-Permissions must be specified as RESOURCE:ACTION pairs and can be repeated.`,
+Permissions must be specified as RESOURCE:ACTION pairs and can be repeated or passed as a comma-separated list.`,
 		Example: `  # Create a role with permissions
-  kestra iam roles create --name ops --permission FLOW:READ --permission NAMESPACE:READ`,
+  kestra iam roles create --name ops --permission FLOW:READ --permission NAMESPACE:READ
+
+  # Create a role with comma-separated permissions
+  kestra iam roles create --name ops --permission FLOW:READ,NAMESPACE:READ`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
@@ -67,7 +71,7 @@ Permissions must be specified as RESOURCE:ACTION pairs and can be repeated.`,
 	cmd.Flags().StringVar(&opts.Name, "name", "", "Name for the role (required)")
 	cmd.Flags().StringVar(&opts.Description, "description", "", "Description for the role")
 	cmd.Flags().BoolVar(&opts.Default, "default", false, "Mark the role as default")
-	cmd.Flags().StringArrayVar(&opts.PermissionValues, "permission", []string{}, "Permission in RESOURCE:ACTION format (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.PermissionValues, "permission", []string{}, "Permission in RESOURCE:ACTION format (repeatable or comma-separated)")
 
 	_ = cmd.MarkFlagRequired("name")
 	_ = cmd.MarkFlagRequired("permission")
