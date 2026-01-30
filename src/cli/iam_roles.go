@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"strings"
+
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
@@ -124,13 +127,109 @@ This action is immediate and cannot be undone.`,
 }
 
 func runIamRolesCreate(client *Client, opts iamRoleCreateOptions) error {
+	if strings.TrimSpace(opts.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+
+	req := kestra.IAMRoleControllerApiRoleCreateOrUpdateRequest{
+		Permissions: opts.Permissions,
+		Name:        opts.Name,
+	}
+
+	if opts.Description != "" {
+		req.SetDescription(opts.Description)
+	}
+	if opts.DefaultSet {
+		req.SetIsDefault(opts.Default)
+	}
+
+	resp, _, err := client.API.RolesAPI.CreateRole(client.Ctx, client.Tenant).
+		IAMRoleControllerApiRoleCreateOrUpdateRequest(req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":        resp.GetId(),
+		"name":      resp.GetName(),
+		"isDefault": resp.GetIsDefault(),
+		"isManaged": resp.GetIsManaged(),
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
+	fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
+		withFallback(resp.GetId()),
+		withFallback(resp.GetName()),
+		resp.GetIsDefault(),
+		resp.GetIsManaged(),
+	)
+	w.Flush()
+
 	return nil
 }
 
 func runIamRolesList(client *Client) error {
+	resp, _, err := client.API.RolesAPI.SearchRoles(client.Ctx, client.Tenant).
+		Page(1).
+		Size(1000).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	if globalFlags.Output == "json" {
+		jsonResults := make([]map[string]any, len(results))
+		for i, role := range results {
+			jsonResults[i] = map[string]any{
+				"id":        role.GetId(),
+				"name":      role.GetName(),
+				"isDefault": role.GetIsDefault(),
+				"isManaged": role.GetIsManaged(),
+			}
+		}
+		return printJSON(jsonResults)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
+	for _, role := range results {
+		fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
+			withFallback(role.GetId()),
+			withFallback(role.GetName()),
+			role.GetIsDefault(),
+			role.GetIsManaged(),
+		)
+	}
+	w.Flush()
+
 	return nil
 }
 
 func runIamRolesDelete(client *Client, id string) error {
+	_, err := client.API.RolesAPI.DeleteRole(client.Ctx, id, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(map[string]any{
+			"id":      id,
+			"deleted": true,
+		})
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tMessage")
+	fmt.Fprintf(w, "%s\tDeleted\n", id)
+	w.Flush()
+
 	return nil
 }
