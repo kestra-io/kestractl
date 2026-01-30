@@ -13,6 +13,8 @@ type iamUserCreateOptions struct {
 	FirstName     string
 	LastName      string
 	Password      string
+	Tenants       []string
+	Groups        []string
 	SuperAdmin    bool
 	SuperAdminSet bool
 	Restricted    bool
@@ -40,12 +42,15 @@ func newIamUsersCreateCommand() *cobra.Command {
 		Short: "Create an IAM user.",
 		Long: `Create an IAM user with required fields only.
 
-Optional flags can set names, password, or admin attributes.`,
+Optional flags can set names, password, admin attributes, or tenant/group assignments.`,
 		Example: `  # Create a user with the required email
   kestra iam users create --email user@example.com
 
   # Create a user with names
   kestra iam users create --email user@example.com --first-name Jane --last-name Doe
+
+  # Create a user and assign tenant and group
+  kestra iam users create --email user@example.com --assign-tenant main --group grp_123
 
   # Create a super admin user
   kestra iam users create --email admin@example.com --super-admin`,
@@ -71,6 +76,8 @@ Optional flags can set names, password, or admin attributes.`,
 	cmd.Flags().StringVar(&opts.FirstName, "first-name", "", "First name for the user")
 	cmd.Flags().StringVar(&opts.LastName, "last-name", "", "Last name for the user")
 	cmd.Flags().StringVar(&opts.Password, "password", "", "Password for the user")
+	cmd.Flags().StringArrayVar(&opts.Tenants, "assign-tenant", []string{}, "Assign tenant(s) to the user (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.Groups, "group", []string{}, "Assign group ID(s) to the user (repeatable)")
 	cmd.Flags().BoolVar(&opts.SuperAdmin, "super-admin", false, "Grant super admin privileges")
 	cmd.Flags().BoolVar(&opts.Restricted, "restricted", false, "Restrict access to assigned tenants")
 
@@ -145,6 +152,11 @@ func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
 	}
 	if opts.Password != "" {
 		req.SetPassword(opts.Password)
+	}
+	if len(opts.Tenants) > 0 {
+		req.SetTenants(opts.Tenants)
+	} else if strings.TrimSpace(client.Tenant) != "" {
+		req.SetTenants([]string{client.Tenant})
 	}
 	if opts.SuperAdminSet {
 		req.SetSuperAdmin(opts.SuperAdmin)
