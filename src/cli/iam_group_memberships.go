@@ -105,9 +105,70 @@ func validateIamGroupMembershipFlags(opts iamGroupMembershipOptions) error {
 }
 
 func runIamGroupsAttach(client *Client, opts iamGroupMembershipOptions) error {
-	return nil
+	group, err := resolveIamGroupIdentifier(client, opts.Group)
+	if err != nil {
+		return err
+	}
+
+	user, err := resolveIamUserIdentifier(client, opts.User)
+	if err != nil {
+		return err
+	}
+
+	_, _, err = client.API.GroupsAPI.AddUserToGroup(client.Ctx, group.ID, user.ID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return printIamGroupMembershipResult("attach", group, user)
 }
 
 func runIamGroupsDetach(client *Client, opts iamGroupMembershipOptions) error {
+	group, err := resolveIamGroupIdentifier(client, opts.Group)
+	if err != nil {
+		return err
+	}
+
+	user, err := resolveIamUserIdentifier(client, opts.User)
+	if err != nil {
+		return err
+	}
+
+	_, _, err = client.API.GroupsAPI.DeleteUserFromGroup(client.Ctx, group.ID, user.ID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return printIamGroupMembershipResult("detach", group, user)
+}
+
+func printIamGroupMembershipResult(action string, group *iamResolvedIdentifier, user *iamResolvedUser) error {
+	if globalFlags.Output == "json" {
+		return printJSON(map[string]any{
+			"action": strings.ToLower(action),
+			"group": map[string]any{
+				"id":   group.ID,
+				"name": group.Name,
+			},
+			"user": map[string]any{
+				"id":          user.ID,
+				"name":        user.Name,
+				"displayName": user.DisplayName,
+			},
+		})
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ACTION\tGROUP_ID\tGROUP_NAME\tUSER_ID\tUSERNAME\tDISPLAY_NAME")
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		strings.ToUpper(action),
+		withFallback(group.ID),
+		withFallback(group.Name),
+		withFallback(user.ID),
+		withFallback(user.Username),
+		withFallback(user.DisplayName),
+	)
+	w.Flush()
+
 	return nil
 }
