@@ -21,4 +21,18 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test ./...
+        run: go test ./src/...
+
+      - name: GCP - Auth with github service account
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: configure docker access to GCP registry for EE image
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev
+        
+      - name: Build local CLI and test it E2E
+        env:
+          APPLICATION_SECRETS: ${{ secrets.APPLICATION_SECRETS }}
+        run: |
+          echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+          sh run-e2e-tests.sh
