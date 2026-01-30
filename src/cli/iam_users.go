@@ -158,6 +158,9 @@ func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
 	} else if strings.TrimSpace(client.Tenant) != "" {
 		req.SetTenants([]string{client.Tenant})
 	}
+	if len(opts.Groups) > 0 {
+		req.SetGroups(opts.Groups)
+	}
 	if opts.SuperAdminSet {
 		req.SetSuperAdmin(opts.SuperAdmin)
 	}
