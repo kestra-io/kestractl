@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -130,13 +132,117 @@ This action is immediate and cannot be undone.`,
 }
 
 func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
-	return fmt.Errorf("not implemented")
+	if strings.TrimSpace(opts.Email) == "" {
+		return fmt.Errorf("email is required")
+	}
+
+	req := kestra.IAMUserControllerApiCreateOrUpdateUserRequest{Email: opts.Email}
+	if opts.FirstName != "" {
+		req.SetFirstName(opts.FirstName)
+	}
+	if opts.LastName != "" {
+		req.SetLastName(opts.LastName)
+	}
+	if opts.Password != "" {
+		req.SetPassword(opts.Password)
+	}
+	if opts.SuperAdminSet {
+		req.SetSuperAdmin(opts.SuperAdmin)
+	}
+	if opts.RestrictedSet {
+		req.SetRestricted(opts.Restricted)
+	}
+
+	resp, _, err := client.API.UsersAPI.CreateUser(client.Ctx).
+		IAMUserControllerApiCreateOrUpdateUserRequest(req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":          resp.GetId(),
+		"username":    resp.GetUsername(),
+		"displayName": resp.GetDisplayName(),
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(result)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tUsername\tDisplayName")
+	fmt.Fprintf(w, "%s\t%s\t%s\n",
+		withFallback(resp.GetId()),
+		withFallback(resp.GetUsername()),
+		withFallback(resp.GetDisplayName()),
+	)
+	w.Flush()
+
+	return nil
 }
 
 func runIamUsersList(client *Client) error {
-	return fmt.Errorf("not implemented")
+	resp, _, err := client.API.UsersAPI.ListUsers(client.Ctx).
+		Page(1).
+		Size(1000).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	if globalFlags.Output == "json" {
+		jsonResults := make([]map[string]any, len(results))
+		for i, user := range results {
+			jsonResults[i] = map[string]any{
+				"id":          user.GetId(),
+				"username":    user.GetUsername(),
+				"displayName": user.GetDisplayName(),
+			}
+		}
+		return printJSON(jsonResults)
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tUsername\tDisplayName")
+	for _, user := range results {
+		fmt.Fprintf(w, "%s\t%s\t%s\n",
+			withFallback(user.GetId()),
+			withFallback(user.GetUsername()),
+			withFallback(user.GetDisplayName()),
+		)
+	}
+	w.Flush()
+
+	return nil
 }
 
 func runIamUsersDelete(client *Client, id string) error {
-	return fmt.Errorf("not implemented")
+	_, err := client.API.UsersAPI.DeleteUser(client.Ctx, id).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if globalFlags.Output == "json" {
+		return printJSON(map[string]any{
+			"id":      id,
+			"deleted": true,
+		})
+	}
+
+	w := tabWriter()
+	fmt.Fprintln(w, "ID\tMessage")
+	fmt.Fprintf(w, "%s\tDeleted\n", id)
+	w.Flush()
+
+	return nil
+}
+
+func withFallback(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
