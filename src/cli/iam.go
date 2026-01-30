@@ -9,6 +9,7 @@ func newIamCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newIamUsersCommand())
+	cmd.AddCommand(newIamRolesCommand())
 
 	return cmd
 }
