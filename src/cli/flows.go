@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -24,6 +25,19 @@ type DeployResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// ValidateResult holds the result of validating a single flow file.
+type ValidateResult struct {
+	FilePath         string   `json:"file_path"`
+	FlowID           string   `json:"flow_id,omitempty"`
+	Namespace        string   `json:"namespace,omitempty"`
+	Constraints      []string `json:"constraints,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
+	Infos            []string `json:"infos,omitempty"`
+	DeprecationPaths []string `json:"deprecation_paths,omitempty"`
+	Outdated         bool     `json:"outdated,omitempty"`
+	Success          bool     `json:"success"`
+}
+
 func newFlowsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flows",
@@ -33,6 +47,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsListCommand())
 	cmd.AddCommand(newFlowsGetCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
+	cmd.AddCommand(newFlowsValidateCommand())
 
 	return cmd
 }
@@ -223,6 +238,220 @@ Use --fail-fast to stop on the first error.`,
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first deployment error")
 
 	return cmd
+}
+
+func newFlowsValidateCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:          "validate <path>",
+		Short:        "Validate flows from a YAML file or directory.",
+		SilenceUsage: true,
+		Long: `Validate flow definitions from a local YAML file or directory.
+
+When a directory is provided, all .yaml and .yml files are validated recursively.
+Hidden files and directories (starting with .) are skipped.
+
+Validation fails if any flow has constraint violations.
+Warnings, infos, deprecations, and outdated flags are reported but do not fail validation.`,
+		Example: `  # Validate a single flow
+  kestra flows validate flow.yaml
+
+  # Validate all flows in a directory (recursive)
+  kestra flows validate ./flows/
+
+  # Validate with JSON output
+  kestra flows validate ./flows/ --output json`,
+		Aliases: []string{"check"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runFlowsValidate(client, args[0], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runFlowsValidate(client *Client, path string, renderer *Renderer) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to access path '%s': %w", path, err)
+	}
+
+	var files []string
+	if info.IsDir() {
+		files, err = collectFlowFiles(path)
+		if err != nil {
+			return fmt.Errorf("failed to scan directory '%s': %w", path, err)
+		}
+		if len(files) == 0 {
+			return fmt.Errorf("no .yaml or .yml files found in directory '%s'", path)
+		}
+	} else {
+		files = []string{path}
+	}
+
+	contents := make([]string, 0, len(files))
+	for _, file := range files {
+		data, readErr := os.ReadFile(file)
+		if readErr != nil {
+			return fmt.Errorf("failed to read file '%s': %w", file, readErr)
+		}
+		contents = append(contents, string(data))
+	}
+
+	body := strings.Join(contents, "\n---\n")
+
+	violations, _, err := client.API.FlowsAPI.ValidateFlows(client.Ctx, client.Tenant).
+		Body(body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return formatValidateResults(violations, files, renderer)
+}
+
+func formatValidateResults(violations []kestra.ValidateConstraintViolation, files []string, renderer *Renderer) error {
+	results := make([]ValidateResult, len(files))
+	for i, file := range files {
+		results[i] = ValidateResult{
+			FilePath: file,
+			Success:  true,
+		}
+	}
+
+	unknownResults := make([]ValidateResult, 0)
+
+	for _, violation := range violations {
+		index := int(violation.GetIndex())
+		var target *ValidateResult
+		if index >= 0 && index < len(results) {
+			target = &results[index]
+		} else {
+			unknownResults = append(unknownResults, ValidateResult{
+				FilePath: fmt.Sprintf("<index %d>", index),
+				Success:  true,
+			})
+			target = &unknownResults[len(unknownResults)-1]
+		}
+
+		if flowID := violation.GetFlow(); strings.TrimSpace(flowID) != "" {
+			target.FlowID = flowID
+		}
+		if namespace := violation.GetNamespace(); strings.TrimSpace(namespace) != "" {
+			target.Namespace = namespace
+		}
+		if constraint := strings.TrimSpace(violation.GetConstraints()); constraint != "" {
+			constraint = strings.ReplaceAll(constraint, "\n", "; ")
+			target.Constraints = appendUniqueString(target.Constraints, constraint)
+		}
+		if warnings := violation.GetWarnings(); len(warnings) > 0 {
+			for _, warning := range warnings {
+				warning = strings.ReplaceAll(strings.TrimSpace(warning), "\n", "; ")
+				if warning != "" {
+					target.Warnings = appendUniqueString(target.Warnings, warning)
+				}
+			}
+		}
+		if infos := violation.GetInfos(); len(infos) > 0 {
+			for _, info := range infos {
+				info = strings.ReplaceAll(strings.TrimSpace(info), "\n", "; ")
+				if info != "" {
+					target.Infos = appendUniqueString(target.Infos, info)
+				}
+			}
+		}
+		if deps := violation.GetDeprecationPaths(); len(deps) > 0 {
+			for _, dep := range deps {
+				dep = strings.TrimSpace(dep)
+				if dep != "" {
+					target.DeprecationPaths = appendUniqueString(target.DeprecationPaths, dep)
+				}
+			}
+		}
+		if violation.GetOutdated() {
+			target.Outdated = true
+		}
+	}
+
+	allResults := results
+	if len(unknownResults) > 0 {
+		allResults = append(allResults, unknownResults...)
+	}
+
+	failed := 0
+	for i := range allResults {
+		if len(allResults[i].Constraints) > 0 {
+			allResults[i].Success = false
+			failed++
+		} else {
+			allResults[i].Success = true
+		}
+	}
+
+	valid := len(allResults) - failed
+	if err := renderer.Render(allResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "FILE\tSTATUS\tCONSTRAINTS\tWARNINGS\tINFOS\tOUTDATED\tDEPRECATIONS")
+		for _, result := range allResults {
+			status := "OK"
+			constraints := "-"
+			if len(result.Constraints) > 0 {
+				status = "FAILED"
+				constraints = strings.Join(result.Constraints, "; ")
+			}
+			warnings := "-"
+			if len(result.Warnings) > 0 {
+				warnings = fmt.Sprintf("%d", len(result.Warnings))
+			}
+			infos := "-"
+			if len(result.Infos) > 0 {
+				infos = fmt.Sprintf("%d", len(result.Infos))
+			}
+			outdated := "false"
+			if result.Outdated {
+				outdated = "true"
+			}
+			deprecations := "-"
+			if len(result.DeprecationPaths) > 0 {
+				deprecations = fmt.Sprintf("%d", len(result.DeprecationPaths))
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				result.FilePath,
+				status,
+				constraints,
+				warnings,
+				infos,
+				outdated,
+				deprecations,
+			)
+		}
+		fmt.Fprintf(w, "\n%d flow(s) valid, %d failed\n", valid, failed)
+		return nil
+	}); err != nil {
+		return err
+	}
+	if failed > 0 {
+		return fmt.Errorf("validation failed for %d flow(s)", failed)
+	}
+	return nil
+}
+
+func appendUniqueString(list []string, value string) []string {
+	for _, existing := range list {
+		if existing == value {
+			return list
+		}
+	}
+	return append(list, value)
 }
 
 func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool, renderer *Renderer) error {
