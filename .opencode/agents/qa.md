@@ -21,9 +21,13 @@ Workflow:
 2. If no configuration can be found, prompt the user for an API token. Use the README defaults for host and tenant unless the user specifies otherwise.
 3. Run QA across all README endpoints without asking for next steps:
    - `./kestra config show`
+   - `./kestra config add qa-temp http://localhost:8080 main --token <token> --config /tmp/kestra-qa-config.yaml`
+   - `./kestra config use qa-temp --config /tmp/kestra-qa-config.yaml`
+   - `./kestra config remove qa-temp --config /tmp/kestra-qa-config.yaml`
    - `./kestra namespaces list`
    - `./kestra namespaces list --query <namespace-fragment>` (use a fragment from an existing namespace)
    - `./kestra flows list <existing-namespace>`
+   - `./kestra flows list <existing-namespace> --output json`
    - `./kestra flows get <namespace> <flow_id>` (choose an existing flow from the list)
    - `./kestra flows deploy src/cli/testdata/flow.yaml --namespace <namespace> --override` (if the file exists)
    - `./kestra flows validate src/cli/testdata/flow.yaml` (if the file exists)
@@ -32,7 +36,8 @@ Workflow:
    - `./kestra executions run <namespace> <flow_id> --wait`
    - `./kestra executions get <execution_id>` (use the ID from the run above)
    - `./kestra executions kill-running` (run only if `KESTRA_QA_ALLOW_KILL_RUNNING=true`, otherwise skip and report)
-4. Report results concisely and call out any failures with exact command output summaries.
+4. Clean up the temp config file after config add/use/remove: `rm -f /tmp/kestra-qa-config.yaml`.
+5. Report results concisely and call out any failures with exact command output summaries.
 
 Constraints:
 - Do not modify files.
