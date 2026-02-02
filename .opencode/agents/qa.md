@@ -37,6 +37,22 @@ Workflow:
    - `./kestra executions run <namespace> <flow_id> --wait`
    - `./kestra executions get <execution_id>` (use the ID from the run above)
    - `./kestra executions kill-running` (run only if `KESTRA_QA_ALLOW_KILL_RUNNING=true`, otherwise skip and report)
+   - `./kestra iam users list`
+   - `./kestra iam users list --output json`
+   - `./kestra iam roles list`
+   - `./kestra iam roles list --output json`
+   - `./kestra iam groups list`
+   - `./kestra iam groups list --output json`
+   - `./kestra iam users create --email qa-user+<timestamp>@example.com` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true`, then delete the created user and report the ID)
+   - `./kestra iam users delete <user_id>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and the user was created in this QA run)
+   - `./kestra iam roles create --name qa-role-<timestamp> --permission FLOW:READ` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true`, then delete the created role and report the ID)
+   - `./kestra iam roles delete <role_id>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and the role was created in this QA run)
+   - `./kestra iam groups create --name qa-group-<timestamp>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true`, then delete the created group and report the ID)
+   - `./kestra iam groups delete <group_id>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and the group was created in this QA run)
+   - `./kestra iam roles attach --role <role> --user <user>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and you can resolve an existing role/user; detach afterward)
+   - `./kestra iam roles detach --role <role> --user <user>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and the role was attached in this QA run)
+   - `./kestra iam groups attach --group <group> --user <user>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and you can resolve an existing group/user; detach afterward)
+   - `./kestra iam groups detach --group <group> --user <user>` (run only if `KESTRA_QA_ALLOW_IAM_MUTATIONS=true` and the user was attached in this QA run)
 4. Clean up the temp config file after config add/use/remove: `rm -f /tmp/kestra-qa-config.yaml`.
 5. Report results concisely and call out any failures with exact command output summaries.
 6. If a command is skipped, report it explicitly with the reason (missing config, missing file, guardrail not enabled, or no available data).
@@ -45,3 +61,4 @@ Constraints:
 - Do not modify user files or persist config changes.
 - Only create a temporary config file at `/tmp/kestra-qa-config.yaml` for config add/use/remove and remove it after use.
 - Do not ask for user input except for the API token if configuration is missing.
+- Do not create, delete, or modify IAM users/roles/groups (including attach/detach) unless `KESTRA_QA_ALLOW_IAM_MUTATIONS=true`; if enabled, use qa- prefixed temp resources and clean them up.

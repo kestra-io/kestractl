@@ -167,6 +167,49 @@ kestra namespaces list
 kestra namespaces list --query my.namespace
 ```
 
+### IAM
+
+```bash
+# List IAM users (alias: ls)
+kestra iam users list
+
+# Create an IAM user
+kestra iam users create --email user@example.com
+
+# Delete an IAM user by ID
+kestra iam users delete usr_12345
+
+# List IAM roles (alias: ls)
+kestra iam roles list
+
+# Create an IAM role with permissions
+kestra iam roles create --name ops --permission FLOW:READ --permission NAMESPACE:READ
+
+# Delete an IAM role by ID
+kestra iam roles delete role_12345
+
+# List IAM groups (alias: ls)
+kestra iam groups list
+
+# Create an IAM group
+kestra iam groups create --name ops
+
+# Delete an IAM group by ID
+kestra iam groups delete grp_12345
+
+# Attach a role to a user or group
+kestra iam roles attach --role ops --user usr_123
+kestra iam roles attach --role ops --group grp_456
+
+# Detach a role from a user or group
+kestra iam roles detach --role ops --user usr_123
+kestra iam roles detach --role ops --group grp_456
+
+# Add/remove a user to/from a group
+kestra iam groups attach --group ops --user usr_123
+kestra iam groups detach --group ops --user usr_123
+```
+
 ### Output Formats
 
 ```bash
