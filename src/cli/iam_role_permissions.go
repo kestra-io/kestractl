@@ -43,10 +43,10 @@ func parseIAMRolePermissions(values []string) (kestra.IAMRoleControllerApiRoleCr
 
 	aggregated := map[string]map[string]struct{}{}
 
-	for _, raw := range values {
+	for _, raw := range expandCommaSeparated(values) {
 		trimmed := strings.TrimSpace(raw)
 		if trimmed == "" {
-			return permissions, fmt.Errorf("permission cannot be empty")
+			continue
 		}
 
 		parts := strings.SplitN(trimmed, ":", 2)
@@ -132,4 +132,23 @@ func parseIAMRolePermissions(values []string) (kestra.IAMRoleControllerApiRoleCr
 	}
 
 	return permissions, nil
+}
+
+func expandCommaSeparated(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }

@@ -26,7 +26,8 @@ func newIamRolesCommand() *cobra.Command {
 	cmd.AddCommand(newIamRolesCreateCommand())
 	cmd.AddCommand(newIamRolesListCommand())
 	cmd.AddCommand(newIamRolesDeleteCommand())
-	cmd.AddCommand(newIamRolesBindingsCommand())
+	cmd.AddCommand(newIamRolesAttachCommand())
+	cmd.AddCommand(newIamRolesDetachCommand())
 
 	return cmd
 }

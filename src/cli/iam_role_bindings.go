@@ -26,29 +26,17 @@ type iamRoleBindingTarget struct {
 	Name string
 }
 
-func newIamRolesBindingsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "bindings",
-		Short: "Attach or detach IAM roles to users or groups",
-	}
-
-	cmd.AddCommand(newIamRolesBindingsAttachCommand())
-	cmd.AddCommand(newIamRolesBindingsDetachCommand())
-
-	return cmd
-}
-
-func newIamRolesBindingsAttachCommand() *cobra.Command {
+func newIamRolesAttachCommand() *cobra.Command {
 	var opts iamRoleBindingOptions
 
 	cmd := &cobra.Command{
 		Use:   "attach",
 		Short: "Attach an IAM role to a user or group.",
 		Example: `  # Attach a role to a user
-  kestra iam roles bindings attach --role ops --user usr_123
+	  kestra iam roles attach --role ops --user usr_123
 
-  # Attach a role to a group
-  kestra iam roles bindings attach --role ops --group grp_456`,
+	  # Attach a role to a group
+	  kestra iam roles attach --role ops --group grp_456`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
@@ -77,17 +65,17 @@ func newIamRolesBindingsAttachCommand() *cobra.Command {
 	return cmd
 }
 
-func newIamRolesBindingsDetachCommand() *cobra.Command {
+func newIamRolesDetachCommand() *cobra.Command {
 	var opts iamRoleBindingOptions
 
 	cmd := &cobra.Command{
 		Use:   "detach",
 		Short: "Detach an IAM role from a user or group.",
 		Example: `  # Detach a role from a user
-  kestra iam roles bindings detach --role ops --user usr_123
+	  kestra iam roles detach --role ops --user usr_123
 
-  # Detach a role from a group
-  kestra iam roles bindings detach --role ops --group grp_456`,
+	  # Detach a role from a group
+	  kestra iam roles detach --role ops --group grp_456`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {

@@ -76,8 +76,8 @@ Optional flags can set names, password, admin attributes, or tenant/group assign
 	cmd.Flags().StringVar(&opts.FirstName, "first-name", "", "First name for the user")
 	cmd.Flags().StringVar(&opts.LastName, "last-name", "", "Last name for the user")
 	cmd.Flags().StringVar(&opts.Password, "password", "", "Password for the user")
-	cmd.Flags().StringArrayVar(&opts.Tenants, "assign-tenant", []string{}, "Assign tenant(s) to the user (repeatable)")
-	cmd.Flags().StringArrayVar(&opts.Groups, "group", []string{}, "Assign group ID(s) to the user (repeatable)")
+	cmd.Flags().StringArrayVar(&opts.Tenants, "assign-tenant", []string{}, "Assign tenant(s) to the user (repeatable or comma-separated)")
+	cmd.Flags().StringArrayVar(&opts.Groups, "group", []string{}, "Assign group ID(s) to the user (repeatable or comma-separated)")
 	cmd.Flags().BoolVar(&opts.SuperAdmin, "super-admin", false, "Grant super admin privileges")
 	cmd.Flags().BoolVar(&opts.Restricted, "restricted", false, "Restrict access to assigned tenants")
 
@@ -143,6 +143,13 @@ func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
 		return fmt.Errorf("email is required")
 	}
 
+	if len(opts.Tenants) > 0 {
+		opts.Tenants = splitCommaValues(opts.Tenants)
+	}
+	if len(opts.Groups) > 0 {
+		opts.Groups = splitCommaValues(opts.Groups)
+	}
+
 	req := kestra.IAMUserControllerApiCreateOrUpdateUserRequest{Email: opts.Email}
 	if opts.FirstName != "" {
 		req.SetFirstName(opts.FirstName)
@@ -195,6 +202,25 @@ func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
 	w.Flush()
 
 	return nil
+}
+
+func splitCommaValues(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }
 
 func runIamUsersList(client *Client) error {
