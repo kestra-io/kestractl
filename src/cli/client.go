@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/viper"
@@ -166,4 +167,59 @@ func tryParseExecutionFromError(err error) map[string]any {
 	}
 
 	return rawResp
+}
+
+type namespaceListItem struct {
+	ID      string
+	Deleted bool
+}
+
+// tryParseNamespaceListFromError handles known SDK type mismatch bugs.
+// Returns nil if the error is a real error and should be propagated.
+func tryParseNamespaceListFromError(err error) []namespaceListItem {
+	sdkErr, ok := err.(*kestra.GenericOpenAPIError)
+	if !ok {
+		return nil
+	}
+
+	body := sdkErr.Body()
+	if len(body) == 0 {
+		return nil
+	}
+
+	var rawResp map[string]any
+	if json.Unmarshal(body, &rawResp) != nil {
+		return nil
+	}
+
+	rawResults, ok := rawResp["results"].([]any)
+	if !ok {
+		return nil
+	}
+
+	items := make([]namespaceListItem, 0, len(rawResults))
+	for _, raw := range rawResults {
+		rawMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		id, ok := rawMap["id"].(string)
+		if !ok || strings.TrimSpace(id) == "" {
+			continue
+		}
+
+		deleted := false
+		if rawDeleted, ok := rawMap["deleted"].(bool); ok {
+			deleted = rawDeleted
+		}
+
+		items = append(items, namespaceListItem{ID: id, Deleted: deleted})
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	return items
 }
