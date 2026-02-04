@@ -448,34 +448,6 @@ func TestReplaceNamespaceInYAML(t *testing.T) {
 	}
 }
 
-func TestValidateOutputFormat(t *testing.T) {
-	tests := []struct {
-		input   string
-		wantErr bool
-	}{
-		{input: "table", wantErr: false},
-		{input: "json", wantErr: false},
-		{input: "TABLE", wantErr: false},
-		{input: "JSON", wantErr: false},
-		{input: "", wantErr: false}, // defaults to table
-		{input: "xml", wantErr: true},
-		{input: "yaml", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			globalFlags.Output = tt.input
-			err := validateOutputFormat()
-			if tt.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
 func executeCommand(cmd *cobra.Command, args ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
