@@ -67,7 +67,31 @@ func runNamespacesList(client *Client, query string, renderer *Renderer) error {
 
 	resp, _, err := req.Execute()
 	if err != nil {
-		return formatSDKError(err)
+		fallback := tryParseNamespaceListFromError(err)
+		if fallback == nil {
+			return formatSDKError(err)
+		}
+
+		jsonResults := make([]map[string]any, len(fallback))
+		for i, ns := range fallback {
+			jsonResults[i] = map[string]any{
+				"id":      ns.ID,
+				"deleted": ns.Deleted,
+			}
+		}
+
+		return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
+			fmt.Fprintln(w, "ID\tDeleted")
+			for _, ns := range fallback {
+				deleted := "false"
+				if ns.Deleted {
+					deleted = "true"
+				}
+				fmt.Fprintf(w, "%s\t%s\n", ns.ID, deleted)
+			}
+			fmt.Fprintf(w, "\nTotal namespaces: %d\n", len(fallback))
+			return nil
+		})
 	}
 
 	results := resp.GetResults()
