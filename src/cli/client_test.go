@@ -58,3 +58,51 @@ func TestTryParseNamespaceListFromError(t *testing.T) {
 		t.Fatalf("unexpected second item: %+v", items[1])
 	}
 }
+
+func TestNormalizeHost(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "no trailing slash",
+			in:   "http://localhost:8080",
+			want: "http://localhost:8080",
+		},
+		{
+			name: "single trailing slash",
+			in:   "http://localhost:8080/",
+			want: "http://localhost:8080",
+		},
+		{
+			name: "multiple trailing slashes",
+			in:   "http://localhost:8080///",
+			want: "http://localhost:8080",
+		},
+		{
+			name: "path trailing slash",
+			in:   "https://example.com/api/",
+			want: "https://example.com/api",
+		},
+		{
+			name: "whitespace",
+			in:   "  https://example.com/api/  ",
+			want: "https://example.com/api",
+		},
+		{
+			name: "empty",
+			in:   "",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeHost(tt.in)
+			if got != tt.want {
+				t.Fatalf("expected '%s', got '%s'", tt.want, got)
+			}
+		})
+	}
+}

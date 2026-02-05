@@ -84,7 +84,7 @@ func newClientDefault() (*Client, error) {
 // resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
 func resolveConfig() (string, string, string, string, string, error) {
 	// Viper handles precedence automatically: flags > env > config > defaults
-	host := viper.GetString(FlagHost)
+	host := strings.TrimSpace(viper.GetString(FlagHost))
 	tenant := viper.GetString(FlagTenant)
 	token := viper.GetString(FlagToken)
 	username := viper.GetString(FlagUsername)
@@ -98,7 +98,23 @@ func resolveConfig() (string, string, string, string, string, error) {
 		tenant = "main"
 	}
 
+	host = normalizeHost(host)
+
 	return host, tenant, token, username, password, nil
+}
+
+func normalizeHost(host string) string {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" {
+		return trimmed
+	}
+
+	normalized := strings.TrimRight(trimmed, "/")
+	if normalized == "" {
+		return trimmed
+	}
+
+	return normalized
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors.
