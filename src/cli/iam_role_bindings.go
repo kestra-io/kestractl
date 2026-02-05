@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -190,34 +191,35 @@ func resolveIamBindingTarget(client *Client, opts iamRoleBindingOptions) (*iamRo
 }
 
 func printIamRoleBindingResult(action string, role *iamResolvedIdentifier, target *iamRoleBindingTarget) error {
-	if globalFlags.Output == "json" {
-		return printJSON(map[string]any{
-			"action": strings.ToLower(action),
-			"role": map[string]any{
-				"id":   role.ID,
-				"name": role.Name,
-			},
-			"target": map[string]any{
-				"type": target.Type,
-				"id":   target.ID,
-				"name": target.Name,
-			},
-		})
+	result := map[string]any{
+		"action": strings.ToLower(action),
+		"role": map[string]any{
+			"id":   role.ID,
+			"name": role.Name,
+		},
+		"target": map[string]any{
+			"type": target.Type,
+			"id":   target.ID,
+			"name": target.Name,
+		},
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ACTION\tTARGET_TYPE\tTARGET_ID\tTARGET_NAME\tROLE_ID\tROLE_NAME")
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-		strings.ToUpper(action),
-		strings.ToUpper(target.Type),
-		withFallback(target.ID),
-		withFallback(target.Name),
-		withFallback(role.ID),
-		withFallback(role.Name),
-	)
-	w.Flush()
-
-	return nil
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ACTION\tTARGET_TYPE\tTARGET_ID\tTARGET_NAME\tROLE_ID\tROLE_NAME")
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			strings.ToUpper(action),
+			strings.ToUpper(target.Type),
+			withFallback(target.ID),
+			withFallback(target.Name),
+			withFallback(role.ID),
+			withFallback(role.Name),
+		)
+		return nil
+	})
 }
 
 func createIamBinding(client *Client, request *kestra.IAMBindingControllerApiCreateBindingRequest) (*kestra.IAMBindingControllerApiBindingDetail, error) {

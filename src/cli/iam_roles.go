@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -162,21 +163,20 @@ func runIamRolesCreate(client *Client, opts iamRoleCreateOptions) error {
 		"isManaged": resp.GetIsManaged(),
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(result)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
-	fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
-		withFallback(resp.GetId()),
-		withFallback(resp.GetName()),
-		resp.GetIsDefault(),
-		resp.GetIsManaged(),
-	)
-	w.Flush()
-
-	return nil
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
+		fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
+			withFallback(resp.GetId()),
+			withFallback(resp.GetName()),
+			resp.GetIsDefault(),
+			resp.GetIsManaged(),
+		)
+		return nil
+	})
 }
 
 func runIamRolesList(client *Client) error {
@@ -190,32 +190,32 @@ func runIamRolesList(client *Client) error {
 
 	results := resp.GetResults()
 
-	if globalFlags.Output == "json" {
-		jsonResults := make([]map[string]any, len(results))
-		for i, role := range results {
-			jsonResults[i] = map[string]any{
-				"id":        role.GetId(),
-				"name":      role.GetName(),
-				"isDefault": role.GetIsDefault(),
-				"isManaged": role.GetIsManaged(),
-			}
+	jsonResults := make([]map[string]any, len(results))
+	for i, role := range results {
+		jsonResults[i] = map[string]any{
+			"id":        role.GetId(),
+			"name":      role.GetName(),
+			"isDefault": role.GetIsDefault(),
+			"isManaged": role.GetIsManaged(),
 		}
-		return printJSON(jsonResults)
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
-	for _, role := range results {
-		fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
-			withFallback(role.GetId()),
-			withFallback(role.GetName()),
-			role.GetIsDefault(),
-			role.GetIsManaged(),
-		)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-	w.Flush()
-
-	return nil
+	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tName\tDefault\tManaged")
+		for _, role := range results {
+			fmt.Fprintf(w, "%s\t%s\t%t\t%t\n",
+				withFallback(role.GetId()),
+				withFallback(role.GetName()),
+				role.GetIsDefault(),
+				role.GetIsManaged(),
+			)
+		}
+		return nil
+	})
 }
 
 func runIamRolesDelete(client *Client, id string) error {
@@ -224,17 +224,18 @@ func runIamRolesDelete(client *Client, id string) error {
 		return formatSDKError(err)
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(map[string]any{
-			"id":      id,
-			"deleted": true,
-		})
+	result := map[string]any{
+		"id":      id,
+		"deleted": true,
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tMessage")
-	fmt.Fprintf(w, "%s\tDeleted\n", id)
-	w.Flush()
-
-	return nil
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tMessage")
+		fmt.Fprintf(w, "%s\tDeleted\n", id)
+		return nil
+	})
 }

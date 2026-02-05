@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 )
@@ -143,32 +144,33 @@ func runIamGroupsDetach(client *Client, opts iamGroupMembershipOptions) error {
 }
 
 func printIamGroupMembershipResult(action string, group *iamResolvedIdentifier, user *iamResolvedUser) error {
-	if globalFlags.Output == "json" {
-		return printJSON(map[string]any{
-			"action": strings.ToLower(action),
-			"group": map[string]any{
-				"id":   group.ID,
-				"name": group.Name,
-			},
-			"user": map[string]any{
-				"id":          user.ID,
-				"name":        user.Name,
-				"displayName": user.DisplayName,
-			},
-		})
+	result := map[string]any{
+		"action": strings.ToLower(action),
+		"group": map[string]any{
+			"id":   group.ID,
+			"name": group.Name,
+		},
+		"user": map[string]any{
+			"id":          user.ID,
+			"name":        user.Name,
+			"displayName": user.DisplayName,
+		},
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ACTION\tGROUP_ID\tGROUP_NAME\tUSER_ID\tUSERNAME\tDISPLAY_NAME")
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
-		strings.ToUpper(action),
-		withFallback(group.ID),
-		withFallback(group.Name),
-		withFallback(user.ID),
-		withFallback(user.Username),
-		withFallback(user.DisplayName),
-	)
-	w.Flush()
-
-	return nil
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ACTION\tGROUP_ID\tGROUP_NAME\tUSER_ID\tUSERNAME\tDISPLAY_NAME")
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			strings.ToUpper(action),
+			withFallback(group.ID),
+			withFallback(group.Name),
+			withFallback(user.ID),
+			withFallback(user.Username),
+			withFallback(user.DisplayName),
+		)
+		return nil
+	})
 }

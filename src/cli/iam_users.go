@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -188,20 +189,19 @@ func runIamUsersCreate(client *Client, opts iamUserCreateOptions) error {
 		"displayName": resp.GetDisplayName(),
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(result)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tUsername\tDisplayName")
-	fmt.Fprintf(w, "%s\t%s\t%s\n",
-		withFallback(resp.GetId()),
-		withFallback(resp.GetUsername()),
-		withFallback(resp.GetDisplayName()),
-	)
-	w.Flush()
-
-	return nil
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tUsername\tDisplayName")
+		fmt.Fprintf(w, "%s\t%s\t%s\n",
+			withFallback(resp.GetId()),
+			withFallback(resp.GetUsername()),
+			withFallback(resp.GetDisplayName()),
+		)
+		return nil
+	})
 }
 
 func splitCommaValues(values []string) []string {
@@ -234,30 +234,30 @@ func runIamUsersList(client *Client) error {
 
 	results := resp.GetResults()
 
-	if globalFlags.Output == "json" {
-		jsonResults := make([]map[string]any, len(results))
-		for i, user := range results {
-			jsonResults[i] = map[string]any{
-				"id":          user.GetId(),
-				"username":    user.GetUsername(),
-				"displayName": user.GetDisplayName(),
-			}
+	jsonResults := make([]map[string]any, len(results))
+	for i, user := range results {
+		jsonResults[i] = map[string]any{
+			"id":          user.GetId(),
+			"username":    user.GetUsername(),
+			"displayName": user.GetDisplayName(),
 		}
-		return printJSON(jsonResults)
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tUsername\tDisplayName")
-	for _, user := range results {
-		fmt.Fprintf(w, "%s\t%s\t%s\n",
-			withFallback(user.GetId()),
-			withFallback(user.GetUsername()),
-			withFallback(user.GetDisplayName()),
-		)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-	w.Flush()
-
-	return nil
+	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tUsername\tDisplayName")
+		for _, user := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\n",
+				withFallback(user.GetId()),
+				withFallback(user.GetUsername()),
+				withFallback(user.GetDisplayName()),
+			)
+		}
+		return nil
+	})
 }
 
 func runIamUsersDelete(client *Client, id string) error {
@@ -266,19 +266,20 @@ func runIamUsersDelete(client *Client, id string) error {
 		return formatSDKError(err)
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(map[string]any{
-			"id":      id,
-			"deleted": true,
-		})
+	result := map[string]any{
+		"id":      id,
+		"deleted": true,
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tMessage")
-	fmt.Fprintf(w, "%s\tDeleted\n", id)
-	w.Flush()
-
-	return nil
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tMessage")
+		fmt.Fprintf(w, "%s\tDeleted\n", id)
+		return nil
+	})
 }
 
 func withFallback(value string) string {

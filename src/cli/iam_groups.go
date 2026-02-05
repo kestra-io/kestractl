@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -138,19 +139,18 @@ func runIamGroupsCreate(client *Client, opts iamGroupCreateOptions) error {
 		"name": resp.GetName(),
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(result)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tName")
-	fmt.Fprintf(w, "%s\t%s\n",
-		withFallback(resp.GetId()),
-		withFallback(resp.GetName()),
-	)
-	w.Flush()
-
-	return nil
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tName")
+		fmt.Fprintf(w, "%s\t%s\n",
+			withFallback(resp.GetId()),
+			withFallback(resp.GetName()),
+		)
+		return nil
+	})
 }
 
 func runIamGroupsList(client *Client) error {
@@ -164,28 +164,28 @@ func runIamGroupsList(client *Client) error {
 
 	results := resp.GetResults()
 
-	if globalFlags.Output == "json" {
-		jsonResults := make([]map[string]any, len(results))
-		for i, group := range results {
-			jsonResults[i] = map[string]any{
-				"id":   group.GetId(),
-				"name": group.GetName(),
-			}
+	jsonResults := make([]map[string]any, len(results))
+	for i, group := range results {
+		jsonResults[i] = map[string]any{
+			"id":   group.GetId(),
+			"name": group.GetName(),
 		}
-		return printJSON(jsonResults)
 	}
 
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tName")
-	for _, group := range results {
-		fmt.Fprintf(w, "%s\t%s\n",
-			withFallback(group.GetId()),
-			withFallback(group.GetName()),
-		)
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
 	}
-	w.Flush()
-
-	return nil
+	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tName")
+		for _, group := range results {
+			fmt.Fprintf(w, "%s\t%s\n",
+				withFallback(group.GetId()),
+				withFallback(group.GetName()),
+			)
+		}
+		return nil
+	})
 }
 
 func runIamGroupsDelete(client *Client, id string) error {
@@ -194,17 +194,17 @@ func runIamGroupsDelete(client *Client, id string) error {
 		return formatSDKError(err)
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(map[string]any{
-			"id":      id,
-			"deleted": true,
-		})
+	result := map[string]any{
+		"id":      id,
+		"deleted": true,
 	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tMessage")
-	fmt.Fprintf(w, "%s\tDeleted\n", id)
-	w.Flush()
-
-	return nil
+	renderer, err := NewRendererFromFlags(nil)
+	if err != nil {
+		return err
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tMessage")
+		fmt.Fprintf(w, "%s\tDeleted\n", id)
+		return nil
+	})
 }
