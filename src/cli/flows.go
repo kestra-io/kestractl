@@ -54,18 +54,21 @@ func newFlowsCommand() *cobra.Command {
 
 func newFlowsListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "list <namespace>",
-		Short: "List flows in a namespace.",
-		Long: `List all flows in the specified namespace.
+		Use:   "list [namespace]",
+		Short: "List flows.",
+		Long: `List flows in a namespace or across all namespaces.
 
 Returns a table showing flow ID, namespace, description, and revision number.`,
 		Example: `  # List all flows in a namespace
   kestra flows list my.namespace
 
+  # List flows across all namespaces
+  kestra flows list
+
   # List flows with JSON output
   kestra flows list my.namespace --output json`,
 		Aliases: []string{"ls"},
-		Args:    cobra.ExactArgs(1),
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -76,15 +79,29 @@ Returns a table showing flow ID, namespace, description, and revision number.`,
 				return err
 			}
 
-			return runFlowsList(client, args[0], renderer)
+			namespace := ""
+			if len(args) == 1 {
+				namespace = args[0]
+			}
+			return runFlowsList(client, namespace, renderer)
 		},
 	}
 }
 
 func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
-	flows, _, err := client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
-	if err != nil {
-		return formatSDKError(err)
+	var flows []kestra.Flow
+	if namespace == "" {
+		var err error
+		flows, err = listAllFlows(client)
+		if err != nil {
+			return err
+		}
+	} else {
+		var err error
+		flows, _, err = client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
+		if err != nil {
+			return formatSDKError(err)
+		}
 	}
 
 	result := make([]map[string]any, len(flows))
@@ -112,6 +129,31 @@ func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
 		}
 		return nil
 	})
+}
+
+func listAllFlows(client *Client) ([]kestra.Flow, error) {
+	const pageSize int32 = 1000
+	page := int32(1)
+	results := make([]kestra.Flow, 0)
+
+	for {
+		resp, _, err := client.API.FlowsAPI.SearchFlows(client.Ctx, client.Tenant).
+			Page(page).
+			Size(pageSize).
+			Execute()
+		if err != nil {
+			return nil, formatSDKError(err)
+		}
+		batch := resp.GetResults()
+		results = append(results, batch...)
+
+		if len(batch) == 0 || int64(len(results)) >= resp.GetTotal() {
+			break
+		}
+		page++
+	}
+
+	return results, nil
 }
 
 func newFlowsGetCommand() *cobra.Command {
