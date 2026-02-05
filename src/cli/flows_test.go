@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -90,14 +91,20 @@ func TestParseFlowYAML(t *testing.T) {
 }
 
 func TestFlowsListCommand_NoArgs(t *testing.T) {
-	// Test that the command requires exactly 1 argument
+	// Test that the command allows 0 arguments
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
 	cmd := newFlowsListCommand()
 	_, err := executeCommand(cmd)
 	if err == nil {
 		t.Fatal("expected error when no args provided")
 	}
-	if !strings.Contains(err.Error(), "accepts 1 arg") {
-		t.Fatalf("expected args error, got: %v", err)
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
 	}
 }
 
