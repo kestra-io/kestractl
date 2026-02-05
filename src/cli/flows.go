@@ -132,7 +132,7 @@ func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
 }
 
 func listAllFlows(client *Client) ([]kestra.Flow, error) {
-	const pageSize int32 = 100
+	const pageSize int32 = 1000
 	page := int32(1)
 	results := make([]kestra.Flow, 0)
 
