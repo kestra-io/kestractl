@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/viper"
@@ -83,7 +84,7 @@ func newClientDefault() (*Client, error) {
 // resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
 func resolveConfig() (string, string, string, string, string, error) {
 	// Viper handles precedence automatically: flags > env > config > defaults
-	host := viper.GetString(FlagHost)
+	host := strings.TrimSpace(viper.GetString(FlagHost))
 	tenant := viper.GetString(FlagTenant)
 	token := viper.GetString(FlagToken)
 	username := viper.GetString(FlagUsername)
@@ -97,7 +98,23 @@ func resolveConfig() (string, string, string, string, string, error) {
 		tenant = "main"
 	}
 
+	host = normalizeHost(host)
+
 	return host, tenant, token, username, password, nil
+}
+
+func normalizeHost(host string) string {
+	trimmed := strings.TrimSpace(host)
+	if trimmed == "" {
+		return trimmed
+	}
+
+	normalized := strings.TrimRight(trimmed, "/")
+	if normalized == "" {
+		return trimmed
+	}
+
+	return normalized
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors.
@@ -166,4 +183,59 @@ func tryParseExecutionFromError(err error) map[string]any {
 	}
 
 	return rawResp
+}
+
+type namespaceListItem struct {
+	ID      string
+	Deleted bool
+}
+
+// tryParseNamespaceListFromError handles known SDK type mismatch bugs.
+// Returns nil if the error is a real error and should be propagated.
+func tryParseNamespaceListFromError(err error) []namespaceListItem {
+	sdkErr, ok := err.(*kestra.GenericOpenAPIError)
+	if !ok {
+		return nil
+	}
+
+	body := sdkErr.Body()
+	if len(body) == 0 {
+		return nil
+	}
+
+	var rawResp map[string]any
+	if json.Unmarshal(body, &rawResp) != nil {
+		return nil
+	}
+
+	rawResults, ok := rawResp["results"].([]any)
+	if !ok {
+		return nil
+	}
+
+	items := make([]namespaceListItem, 0, len(rawResults))
+	for _, raw := range rawResults {
+		rawMap, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+
+		id, ok := rawMap["id"].(string)
+		if !ok || strings.TrimSpace(id) == "" {
+			continue
+		}
+
+		deleted := false
+		if rawDeleted, ok := rawMap["deleted"].(bool); ok {
+			deleted = rawDeleted
+		}
+
+		items = append(items, namespaceListItem{ID: id, Deleted: deleted})
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	return items
 }

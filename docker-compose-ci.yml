@@ -1,0 +1,21 @@
+services:
+  kestra:
+    container_name: cli-test-kestra
+    image: "europe-west1-docker.pkg.dev/kestra-host/docker/kestra-ee:${KESTRA_VERSION}-no-plugins"
+    pull_policy: always
+    user: "root"
+    command: server standalone
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -fsv http://localhost:8081/health" ]
+      interval: 2s
+      timeout: 30s
+      retries: 30
+      start_period: 5s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./e2e_tests/docker-setup/application.yml:/app/confs/application.yml:ro
+      - ./e2e_tests/docker-setup/application-secrets.yml:/app/secrets/application-secrets.yml:ro
+    environment:
+      MICRONAUT_CONFIG_FILES: /app/confs/application.yml,/app/secrets/application-secrets.yml
+    ports:
+      - "9801:8080"

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -66,55 +67,51 @@ Returns a table showing flow ID, namespace, description, and revision number.`,
 		Aliases: []string{"ls"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runFlowsList(client, args[0])
+			return runFlowsList(client, args[0], renderer)
 		},
 	}
 }
 
-func runFlowsList(client *Client, namespace string) error {
+func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
 	flows, _, err := client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
 	if err != nil {
 		return formatSDKError(err)
 	}
 
-	if globalFlags.Output == "json" {
-		result := make([]map[string]any, len(flows))
-		for i, flow := range flows {
-			result[i] = map[string]any{
-				"id":          flow.GetId(),
-				"namespace":   flow.GetNamespace(),
-				"description": flow.GetDescription(),
-				"revision":    flow.GetRevision(),
+	result := make([]map[string]any, len(flows))
+	for i, flow := range flows {
+		result[i] = map[string]any{
+			"id":          flow.GetId(),
+			"namespace":   flow.GetNamespace(),
+			"description": flow.GetDescription(),
+			"revision":    flow.GetRevision(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNamespace\tDescription\tRevision")
+		for _, flow := range flows {
+			desc := flow.GetDescription()
+			if desc == "" {
+				desc = "-"
 			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
+				flow.GetId(),
+				flow.GetNamespace(),
+				desc,
+				flow.GetRevision())
 		}
-		return printJSON(result)
-	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "ID\tNamespace\tDescription\tRevision")
-	for _, flow := range flows {
-		desc := flow.GetDescription()
-		if desc == "" {
-			desc = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
-			flow.GetId(),
-			flow.GetNamespace(),
-			desc,
-			flow.GetRevision())
-	}
-	w.Flush()
-
-	return nil
+		return nil
+	})
 }
 
 func newFlowsGetCommand() *cobra.Command {
@@ -132,21 +129,21 @@ The default output format is JSON as it preserves the complete flow definition.`
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runFlowsGet(client, args[0], args[1])
+			return runFlowsGet(client, args[0], args[1], renderer)
 		},
 	}
 }
 
-func runFlowsGet(client *Client, namespace, flowID string) error {
+func runFlowsGet(client *Client, namespace, flowID string, renderer *Renderer) error {
 	flow, _, err := client.API.FlowsAPI.Flow(client.Ctx, namespace, flowID, client.Tenant).
 		Source(true).
 		AllowDeleted(false).
@@ -161,27 +158,22 @@ func runFlowsGet(client *Client, namespace, flowID string) error {
 		"revision":  flow.GetRevision(),
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(result)
-	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Property\tValue")
 
-	w := tabWriter()
-	fmt.Fprintln(w, "Property\tValue")
+		keys := make([]string, 0, len(result))
+		for key := range result {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
 
-	keys := make([]string, 0, len(result))
-	for key := range result {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-
-	for _, key := range keys {
-		val := toPrettyString(result[key])
-		val = strings.ReplaceAll(val, "\n", "\\n")
-		fmt.Fprintf(w, "%s\t%s\n", key, val)
-	}
-	w.Flush()
-
-	return nil
+		for _, key := range keys {
+			val := toPrettyString(result[key])
+			val = strings.ReplaceAll(val, "\n", "\\n")
+			fmt.Fprintf(w, "%s\t%s\n", key, val)
+		}
+		return nil
+	})
 }
 
 func newFlowsDeployCommand() *cobra.Command {
@@ -228,16 +220,16 @@ Use --fail-fast to stop on the first error.`,
 		Aliases: []string{"create", "apply"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast)
+			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast, renderer)
 		},
 	}
 
@@ -271,7 +263,8 @@ Warnings, infos, deprecations, and outdated flags are reported but do not fail v
 		Aliases: []string{"check"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
 
@@ -280,14 +273,14 @@ Warnings, infos, deprecations, and outdated flags are reported but do not fail v
 				return err
 			}
 
-			return runFlowsValidate(client, args[0])
+			return runFlowsValidate(client, args[0], renderer)
 		},
 	}
 
 	return cmd
 }
 
-func runFlowsValidate(client *Client, path string) error {
+func runFlowsValidate(client *Client, path string, renderer *Renderer) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to access path '%s': %w", path, err)
@@ -324,10 +317,10 @@ func runFlowsValidate(client *Client, path string) error {
 		return formatSDKError(err)
 	}
 
-	return formatValidateResults(violations, files)
+	return formatValidateResults(violations, files, renderer)
 }
 
-func formatValidateResults(violations []kestra.ValidateConstraintViolation, files []string) error {
+func formatValidateResults(violations []kestra.ValidateConstraintViolation, files []string, renderer *Renderer) error {
 	results := make([]ValidateResult, len(files))
 	for i, file := range files {
 		results[i] = ValidateResult{
@@ -405,49 +398,47 @@ func formatValidateResults(violations []kestra.ValidateConstraintViolation, file
 		}
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(allResults)
-	}
-
-	w := tabWriter()
-	fmt.Fprintln(w, "FILE\tSTATUS\tCONSTRAINTS\tWARNINGS\tINFOS\tOUTDATED\tDEPRECATIONS")
-	for _, result := range allResults {
-		status := "OK"
-		constraints := "-"
-		if len(result.Constraints) > 0 {
-			status = "FAILED"
-			constraints = strings.Join(result.Constraints, "; ")
-		}
-		warnings := "-"
-		if len(result.Warnings) > 0 {
-			warnings = fmt.Sprintf("%d", len(result.Warnings))
-		}
-		infos := "-"
-		if len(result.Infos) > 0 {
-			infos = fmt.Sprintf("%d", len(result.Infos))
-		}
-		outdated := "false"
-		if result.Outdated {
-			outdated = "true"
-		}
-		deprecations := "-"
-		if len(result.DeprecationPaths) > 0 {
-			deprecations = fmt.Sprintf("%d", len(result.DeprecationPaths))
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			result.FilePath,
-			status,
-			constraints,
-			warnings,
-			infos,
-			outdated,
-			deprecations,
-		)
-	}
-	w.Flush()
-
 	valid := len(allResults) - failed
-	fmt.Printf("\n%d flow(s) valid, %d failed\n", valid, failed)
+	if err := renderer.Render(allResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "FILE\tSTATUS\tCONSTRAINTS\tWARNINGS\tINFOS\tOUTDATED\tDEPRECATIONS")
+		for _, result := range allResults {
+			status := "OK"
+			constraints := "-"
+			if len(result.Constraints) > 0 {
+				status = "FAILED"
+				constraints = strings.Join(result.Constraints, "; ")
+			}
+			warnings := "-"
+			if len(result.Warnings) > 0 {
+				warnings = fmt.Sprintf("%d", len(result.Warnings))
+			}
+			infos := "-"
+			if len(result.Infos) > 0 {
+				infos = fmt.Sprintf("%d", len(result.Infos))
+			}
+			outdated := "false"
+			if result.Outdated {
+				outdated = "true"
+			}
+			deprecations := "-"
+			if len(result.DeprecationPaths) > 0 {
+				deprecations = fmt.Sprintf("%d", len(result.DeprecationPaths))
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				result.FilePath,
+				status,
+				constraints,
+				warnings,
+				infos,
+				outdated,
+				deprecations,
+			)
+		}
+		fmt.Fprintf(w, "\n%d flow(s) valid, %d failed\n", valid, failed)
+		return nil
+	}); err != nil {
+		return err
+	}
 	if failed > 0 {
 		return fmt.Errorf("validation failed for %d flow(s)", failed)
 	}
@@ -463,7 +454,7 @@ func appendUniqueString(list []string, value string) []string {
 	return append(list, value)
 }
 
-func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool) error {
+func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool, renderer *Renderer) error {
 	// Check if path is a file or directory
 	info, err := os.Stat(path)
 	if err != nil {
@@ -498,7 +489,7 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 	}
 
 	// Output results
-	return formatDeployResults(results, len(files) == 1)
+	return formatDeployResults(results, len(files) == 1, renderer)
 }
 
 // collectFlowFiles recursively collects all .yaml and .yml files from a directory.
@@ -611,7 +602,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 }
 
 // formatDeployResults outputs the deployment results in the appropriate format.
-func formatDeployResults(results []DeployResult, singleFile bool) error {
+func formatDeployResults(results []DeployResult, singleFile bool, renderer *Renderer) error {
 	// Count successes and failures
 	var successCount, failCount int
 	for _, r := range results {
@@ -622,34 +613,30 @@ func formatDeployResults(results []DeployResult, singleFile bool) error {
 		}
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(results)
+	if err := renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "FILE\tFLOW ID\tNAMESPACE\tSTATUS\tERROR")
+		for _, r := range results {
+			status := "OK"
+			errMsg := "-"
+			if !r.Success {
+				status = "FAILED"
+				errMsg = r.Error
+			}
+			flowID := r.FlowID
+			if flowID == "" {
+				flowID = "-"
+			}
+			namespace := r.Namespace
+			if namespace == "" {
+				namespace = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.FilePath, flowID, namespace, status, errMsg)
+		}
+		fmt.Fprintf(w, "\n%d flow(s) deployed successfully, %d failed\n", successCount, failCount)
+		return nil
+	}); err != nil {
+		return err
 	}
-
-	// Table output
-	w := tabWriter()
-	fmt.Fprintln(w, "FILE\tFLOW ID\tNAMESPACE\tSTATUS\tERROR")
-	for _, r := range results {
-		status := "OK"
-		errMsg := "-"
-		if !r.Success {
-			status = "FAILED"
-			errMsg = r.Error
-		}
-		flowID := r.FlowID
-		if flowID == "" {
-			flowID = "-"
-		}
-		namespace := r.Namespace
-		if namespace == "" {
-			namespace = "-"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", r.FilePath, flowID, namespace, status, errMsg)
-	}
-	w.Flush()
-
-	// Print summary
-	fmt.Printf("\n%d flow(s) deployed successfully, %d failed\n", successCount, failCount)
 
 	if failCount > 0 {
 		return fmt.Errorf("deployment completed with %d error(s)", failCount)

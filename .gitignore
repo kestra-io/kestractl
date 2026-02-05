@@ -16,4 +16,5 @@ wheels/
 .cursor/rules
 
 .idea
-.planning/
+
+.planning/.*

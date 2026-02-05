@@ -3,8 +3,10 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -43,10 +45,10 @@ Use the --namespace and --flow-id flags to target specific executions.`,
   # Kill running executions for a specific flow
   kestra executions kill-running --namespace my.namespace --flow-id my-flow`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			if flowID != "" && namespace == "" {
 				return errors.New("--namespace is required when --flow-id is provided")
 			}
@@ -56,7 +58,7 @@ Use the --namespace and --flow-id flags to target specific executions.`,
 				return err
 			}
 
-			return runExecutionsKill(client, namespace, flowID)
+			return runExecutionsKill(client, namespace, flowID, renderer)
 		},
 	}
 
@@ -66,7 +68,7 @@ Use the --namespace and --flow-id flags to target specific executions.`,
 	return cmd
 }
 
-func runExecutionsKill(client *Client, namespace, flowID string) error {
+func runExecutionsKill(client *Client, namespace, flowID string, renderer *Renderer) error {
 	// Note: The SDK doesn't fully support filtering yet
 	if namespace != "" {
 		return errors.New("filter by namespace not yet implemented in SDK")
@@ -80,21 +82,18 @@ func runExecutionsKill(client *Client, namespace, flowID string) error {
 		return formatSDKError(err)
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(result)
-	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Kill request sent successfully!")
+		fmt.Fprintln(w, "Filters: none (all running executions)")
+		fmt.Fprintln(w, "State: RUNNING")
 
-	fmt.Println("Kill request sent successfully!")
-	fmt.Println("Filters: none (all running executions)")
-	fmt.Println("State: RUNNING")
-
-	if count, ok := result["count"]; ok {
-		fmt.Printf("Executions killed: %v\n", count)
-	} else if message, ok := result["message"]; ok {
-		fmt.Printf("Message: %v\n", message)
-	}
-
-	return nil
+		if count, ok := result["count"]; ok {
+			fmt.Fprintf(w, "Executions killed: %v\n", count)
+		} else if message, ok := result["message"]; ok {
+			fmt.Fprintf(w, "Message: %v\n", message)
+		}
+		return nil
+	})
 }
 
 func newExecutionsRunCommand() *cobra.Command {
@@ -118,16 +117,16 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 		Aliases: []string{"trigger", "execute"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runExecutionsRun(client, args[0], args[1], wait)
+			return runExecutionsRun(client, args[0], args[1], wait, renderer)
 		},
 	}
 
@@ -136,10 +135,10 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 	return cmd
 }
 
-func runExecutionsRun(client *Client, namespace, flowID string, wait bool) error {
+func runExecutionsRun(client *Client, namespace, flowID string, wait bool, renderer *Renderer) error {
 	if wait {
-		fmt.Printf("Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
-		fmt.Println("Waiting for execution to complete...")
+		fmt.Fprintf(renderer.Writer(), "Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
+		fmt.Fprintln(renderer.Writer(), "Waiting for execution to complete...")
 	}
 
 	resp, _, err := client.API.ExecutionsAPI.CreateExecution(client.Ctx, namespace, flowID, client.Tenant).
@@ -172,22 +171,19 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool) error
 		execution["state"] = stateMap
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(execution)
-	}
+	return renderer.Render(execution, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Execution triggered successfully!")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Execution ID: %s\n", stringify(execution["id"]))
+		fmt.Fprintf(w, "Flow: %s\n", stringify(execution["flowId"]))
+		fmt.Fprintf(w, "Namespace: %s\n", stringify(execution["namespace"]))
+		printExecutionState(w, execution, wait)
 
-	fmt.Println("Execution triggered successfully!")
-	fmt.Println()
-	fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
-	fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
-	fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
-	printExecutionState(execution, wait)
-
-	if url, ok := execution["url"]; ok {
-		fmt.Printf("URL: %v\n", url)
-	}
-
-	return nil
+		if url, ok := execution["url"]; ok {
+			fmt.Fprintf(w, "URL: %v\n", url)
+		}
+		return nil
+	})
 }
 
 func newExecutionsGetCommand() *cobra.Command {
@@ -205,21 +201,21 @@ The command displays execution status, timing, labels, and other metadata.`,
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
 				return err
 			}
-
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runExecutionsGet(client, args[0])
+			return runExecutionsGet(client, args[0], renderer)
 		},
 	}
 }
 
-func runExecutionsGet(client *Client, executionID string) error {
+func runExecutionsGet(client *Client, executionID string, renderer *Renderer) error {
 	resp, _, err := client.API.ExecutionsAPI.Execution(client.Ctx, executionID, client.Tenant).Execute()
 
 	// Handle SDK type mismatch bugs
@@ -262,56 +258,53 @@ func runExecutionsGet(client *Client, executionID string) error {
 		}
 	}
 
-	if globalFlags.Output == "json" {
-		return printJSON(execution)
-	}
+	return renderer.Render(execution, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Execution Details")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Execution ID: %s\n", stringify(execution["id"]))
+		fmt.Fprintf(w, "Flow: %s\n", stringify(execution["flowId"]))
+		fmt.Fprintf(w, "Namespace: %s\n", stringify(execution["namespace"]))
+		fmt.Fprintf(w, "Flow Revision: %s\n", stringify(execution["flowRevision"]))
+		printExecutionState(w, execution, true)
 
-	fmt.Println("Execution Details")
-	fmt.Println()
-	fmt.Printf("Execution ID: %s\n", stringify(execution["id"]))
-	fmt.Printf("Flow: %s\n", stringify(execution["flowId"]))
-	fmt.Printf("Namespace: %s\n", stringify(execution["namespace"]))
-	fmt.Printf("Flow Revision: %s\n", stringify(execution["flowRevision"]))
-	printExecutionState(execution, true)
-
-	if labels, ok := execution["labels"].([]any); ok && len(labels) > 0 {
-		fmt.Println("Labels:")
-		for _, raw := range labels {
-			if label, ok := raw.(map[string]any); ok {
-				fmt.Printf("  - %s: %s\n", stringify(label["key"]), stringify(label["value"]))
+		if labels, ok := execution["labels"].([]any); ok && len(labels) > 0 {
+			fmt.Fprintln(w, "Labels:")
+			for _, raw := range labels {
+				if label, ok := raw.(map[string]any); ok {
+					fmt.Fprintf(w, "  - %s: %s\n", stringify(label["key"]), stringify(label["value"]))
+				}
 			}
 		}
-	}
-
-	return nil
+		return nil
+	})
 }
 
-func printExecutionState(execution map[string]any, includeTiming bool) {
+func printExecutionState(w io.Writer, execution map[string]any, includeTiming bool) {
 	stateValue, ok := execution["state"].(map[string]any)
 	if !ok {
-		fmt.Println("State: unknown")
+		fmt.Fprintln(w, "State: unknown")
 		return
 	}
 
 	if current, ok := stateValue["current"]; ok {
-		fmt.Printf("State: %v\n", current)
+		fmt.Fprintf(w, "State: %v\n", current)
 	}
 
 	if startDate, ok := stateValue["startDate"]; ok {
-		fmt.Printf("Started: %v\n", startDate)
+		fmt.Fprintf(w, "Started: %v\n", startDate)
 	} else if startDate, ok := execution["startDate"]; ok {
-		fmt.Printf("Started: %v\n", startDate)
+		fmt.Fprintf(w, "Started: %v\n", startDate)
 	}
 
 	if includeTiming {
 		if endDate, ok := stateValue["endDate"]; ok {
-			fmt.Printf("Ended: %v\n", endDate)
+			fmt.Fprintf(w, "Ended: %v\n", endDate)
 		} else if endDate, ok := execution["endDate"]; ok {
-			fmt.Printf("Ended: %v\n", endDate)
+			fmt.Fprintf(w, "Ended: %v\n", endDate)
 		}
 
 		if duration, ok := stateValue["duration"]; ok {
-			fmt.Printf("Duration: %s\n", formatDuration(duration))
+			fmt.Fprintf(w, "Duration: %s\n", formatDuration(duration))
 		}
 	}
 }

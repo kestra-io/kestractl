@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -131,10 +132,9 @@ func TestPrintExecutionState(t *testing.T) {
 	}
 
 	// This should not panic
-	output, _ := captureStdout(func() error {
-		printExecutionState(execution, true)
-		return nil
-	})
+	var buf bytes.Buffer
+	printExecutionState(&buf, execution, true)
+	output := buf.String()
 
 	if !strings.Contains(output, "State: SUCCESS") {
 		t.Errorf("expected state output, got: %s", output)
@@ -145,10 +145,9 @@ func TestPrintExecutionState_Unknown(t *testing.T) {
 	// Test with missing state
 	execution := map[string]any{}
 
-	output, _ := captureStdout(func() error {
-		printExecutionState(execution, false)
-		return nil
-	})
+	var buf bytes.Buffer
+	printExecutionState(&buf, execution, false)
+	output := buf.String()
 
 	if !strings.Contains(output, "State: unknown") {
 		t.Errorf("expected 'unknown' state, got: %s", output)
