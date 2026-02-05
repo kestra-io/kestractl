@@ -84,7 +84,7 @@ func newConfigAddCommand() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, host, tenant := args[0], args[1], args[2]
+			name, host, tenant := args[0], normalizeHost(args[1]), args[2]
 
 			var authMethod string
 			if strings.TrimSpace(token) != "" {
