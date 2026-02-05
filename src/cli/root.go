@@ -78,7 +78,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVar(&globalFlags.Tenant, FlagTenant, "", "Tenant name")
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestra/config.yaml)")
-	root.PersistentFlags().Bool(FlagVerbose, false, "verbose output (warning: it will print credentials in http requests")
+	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "verbose output (warning: it will print credentials in http requests")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())
