@@ -3,7 +3,10 @@ package cli
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +26,8 @@ func newNamespaceFilesCommand() *cobra.Command {
 
 	cmd.AddCommand(newNamespaceFilesListCommand())
 	cmd.AddCommand(newNamespaceFilesGetCommand())
+	cmd.AddCommand(newNamespaceFilesUploadCommand())
+	cmd.AddCommand(newNamespaceFilesDeleteCommand())
 
 	return cmd
 }
@@ -111,6 +116,108 @@ If the provided path is a directory, the command returns a directory listing.`,
 	return cmd
 }
 
+func newNamespaceFilesUploadCommand() *cobra.Command {
+	var destination string
+	var override bool
+	var failFast bool
+
+	cmd := &cobra.Command{
+		Use:          "upload <namespace> <local-path>",
+		Short:        "Upload namespace files.",
+		SilenceUsage: true,
+		Long: `Upload a local file or directory to a namespace path.
+
+When a directory is provided, all files are uploaded recursively.
+Hidden files and directories (starting with .) are skipped.
+
+The destination path is required and missing directories are created automatically.
+By default, uploads fail if a destination file exists. Use --override to replace files.
+
+When uploading multiple files, failures are collected unless --fail-fast is set.`,
+		Example: `  # Upload a single file
+  kestra nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+
+  # Upload a directory (recursive)
+  kestra nsfiles upload my.namespace ./assets --path resources
+
+  # Override existing files
+  kestra nsfiles upload my.namespace ./assets --path resources --override
+
+  # Stop on the first error
+  kestra nsfiles upload my.namespace ./assets --path resources --fail-fast
+
+  # Upload with JSON output
+  kestra nsfiles upload my.namespace ./assets --path resources --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runNamespaceFilesUpload(client, args[0], args[1], destination, override, failFast, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&destination, "path", "", "Destination path within the namespace")
+	_ = cmd.MarkFlagRequired("path")
+	cmd.Flags().BoolVar(&override, "override", false, "Override destination files if they already exist")
+	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first upload error")
+
+	return cmd
+}
+
+func newNamespaceFilesDeleteCommand() *cobra.Command {
+	var targetPath string
+	var recursive bool
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:          "delete <namespace>",
+		Short:        "Delete namespace files.",
+		SilenceUsage: true,
+		Long: `Delete a namespace file or directory.
+
+Deleting directories requires --recursive. Missing targets return an error by default.
+Use --force to continue even when some targets are missing.`,
+		Example: `  # Delete a file
+  kestra nsfiles delete my.namespace --path workflows/example.yaml
+
+  # Delete a directory recursively
+  kestra nsfiles delete my.namespace --path workflows --recursive
+
+  # Ignore missing targets
+  kestra nsfiles delete my.namespace --path workflows/example.yaml --force
+
+  # Delete with JSON output
+  kestra nsfiles delete my.namespace --path workflows/example.yaml --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runNamespaceFilesDelete(client, args[0], targetPath, recursive, force, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&targetPath, "path", "", "Path within the namespace")
+	_ = cmd.MarkFlagRequired("path")
+	cmd.Flags().BoolVar(&recursive, "recursive", false, "Delete directories recursively")
+	cmd.Flags().BoolVar(&force, "force", false, "Continue even if the target does not exist")
+
+	return cmd
+}
+
 func runNamespaceFilesList(client *Client, namespace, path string, recursive bool, renderer *Renderer) error {
 	normalizedPath := normalizeNamespacePath(path)
 	entries, err := collectNamespaceFiles(client, namespace, normalizedPath, recursive)
@@ -170,6 +277,21 @@ func runNamespaceFilesGet(client *Client, namespace, path, revision string, rend
 	return err
 }
 
+type namespaceFileUploadResult struct {
+	Source      string `json:"source"`
+	Destination string `json:"destination"`
+	Size        int64  `json:"size,omitempty"`
+	Success     bool   `json:"success"`
+	Error       string `json:"error,omitempty"`
+}
+
+type namespaceFileUploadSummary struct {
+	Total   int                         `json:"total"`
+	Success int                         `json:"success"`
+	Failed  int                         `json:"failed"`
+	Results []namespaceFileUploadResult `json:"results"`
+}
+
 type namespaceFileEntry struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
@@ -177,8 +299,112 @@ type namespaceFileEntry struct {
 	Modified string `json:"modified"`
 }
 
+type localNamespaceUploadFile struct {
+	Path     string
+	Relative string
+	Size     int64
+}
+
+func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, renderer *Renderer) error {
+	normalizedDest := normalizeNamespacePath(destination)
+	if normalizedDest == "" {
+		return fmt.Errorf("destination path is required")
+	}
+
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return fmt.Errorf("failed to access local path '%s': %w", localPath, err)
+	}
+
+	uploadTargets := make([]namespaceFileUploadResult, 0)
+	var items []namespaceFileUploadResult
+
+	if info.IsDir() {
+		files, err := collectNamespaceUploadFiles(localPath)
+		if err != nil {
+			return fmt.Errorf("failed to scan directory '%s': %w", localPath, err)
+		}
+		if len(files) == 0 {
+			return fmt.Errorf("no files found in directory '%s'", localPath)
+		}
+		destRoot := joinNamespacePath(normalizedDest, filepath.Base(localPath))
+		items = make([]namespaceFileUploadResult, 0, len(files))
+		for _, file := range files {
+			entry := namespaceFileUploadResult{
+				Source:      file.Path,
+				Destination: joinNamespacePath(destRoot, filepath.ToSlash(file.Relative)),
+				Size:        file.Size,
+			}
+			items = append(items, entry)
+		}
+	} else {
+		items = []namespaceFileUploadResult{{
+			Source:      localPath,
+			Destination: normalizedDest,
+			Size:        info.Size(),
+		}}
+	}
+
+	failed := 0
+	for _, item := range items {
+		result := uploadNamespaceFile(client, namespace, item.Source, item.Destination, item.Size, override)
+		uploadTargets = append(uploadTargets, result)
+		if !result.Success {
+			failed++
+			if failFast {
+				break
+			}
+		}
+	}
+
+	if err := renderNamespaceFilesUploadResults(uploadTargets, renderer); err != nil {
+		return err
+	}
+	if failed > 0 {
+		return fmt.Errorf("upload completed with %d error(s)", failed)
+	}
+	return nil
+}
+
+func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recursive bool, force bool, renderer *Renderer) error {
+	return fmt.Errorf("delete command not implemented")
+}
+
 func collectNamespaceFiles(client *Client, namespace, path string, recursive bool) ([]namespaceFileEntry, error) {
 	return collectNamespaceFilesWithPrefix(client, namespace, path, path, recursive)
+}
+
+func collectNamespaceUploadFiles(rootPath string) ([]localNamespaceUploadFile, error) {
+	var files []localNamespaceUploadFile
+	rootPath = filepath.Clean(rootPath)
+	return files, filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(d.Name(), ".") && path != rootPath {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(rootPath, path)
+		if err != nil {
+			return err
+		}
+		files = append(files, localNamespaceUploadFile{
+			Path:     path,
+			Relative: rel,
+			Size:     info.Size(),
+		})
+		return nil
+	})
 }
 
 func collectNamespaceFilesWithPrefix(client *Client, namespace, path, prefix string, recursive bool) ([]namespaceFileEntry, error) {
@@ -242,6 +468,20 @@ func listNamespaceDirectory(client *Client, namespace, path string) ([]kestra.Fi
 	return attributes, nil
 }
 
+func lookupNamespaceFileStats(client *Client, namespace, path string) (*kestra.FileAttributes, bool, error) {
+	attributes, resp, err := client.API.FilesAPI.FileMetadatas(client.Ctx, namespace, client.Tenant).Path(path).Execute()
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			return nil, false, nil
+		}
+		return nil, false, formatSDKError(err)
+	}
+	if attributes == nil {
+		return nil, false, fmt.Errorf("namespace file stats not found")
+	}
+	return attributes, true, nil
+}
+
 func getNamespaceFileStats(client *Client, namespace, path string) (kestra.FileAttributes, error) {
 	attributes, _, err := client.API.FilesAPI.FileMetadatas(client.Ctx, namespace, client.Tenant).Path(path).Execute()
 	if err != nil {
@@ -269,6 +509,144 @@ func getNamespaceFileContent(client *Client, namespace, path string, revision *i
 	}
 
 	return file, nil
+}
+
+func ensureNamespaceDirectories(client *Client, namespace, dirPath string) error {
+	normalized := normalizeNamespacePath(dirPath)
+	if normalized == "" {
+		return nil
+	}
+
+	segments := strings.Split(normalized, "/")
+	current := ""
+	for _, segment := range segments {
+		if segment == "" {
+			continue
+		}
+		current = joinNamespacePath(current, segment)
+		attrs, exists, err := lookupNamespaceFileStats(client, namespace, current)
+		if err != nil {
+			return err
+		}
+		if exists {
+			if attrs.GetType() != kestra.FILEATTRIBUTESFILETYPE_Directory {
+				return fmt.Errorf("path '%s' exists and is not a directory", current)
+			}
+			continue
+		}
+
+		_, err = client.API.FilesAPI.CreateNamespaceDirectory(client.Ctx, namespace, client.Tenant).Path(current).Execute()
+		if err != nil {
+			attrs, exists, statErr := lookupNamespaceFileStats(client, namespace, current)
+			if statErr == nil && exists && attrs.GetType() == kestra.FILEATTRIBUTESFILETYPE_Directory {
+				continue
+			}
+			return formatSDKError(err)
+		}
+	}
+
+	return nil
+}
+
+func deleteNamespaceFilePath(client *Client, namespace, path string) error {
+	_, err := client.API.FilesAPI.DeleteFileDirectory(client.Ctx, namespace, client.Tenant).Path(path).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	return nil
+}
+
+func uploadNamespaceFile(client *Client, namespace, source, destination string, size int64, override bool) namespaceFileUploadResult {
+	result := namespaceFileUploadResult{
+		Source:      source,
+		Destination: destination,
+		Size:        size,
+		Success:     false,
+	}
+
+	if destination == "" {
+		result.Error = "destination path is required"
+		return result
+	}
+
+	attrs, exists, err := lookupNamespaceFileStats(client, namespace, destination)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	if exists {
+		if attrs.GetType() == kestra.FILEATTRIBUTESFILETYPE_Directory {
+			result.Error = fmt.Sprintf("destination '%s' is a directory", destination)
+			return result
+		}
+		if !override {
+			result.Error = fmt.Sprintf("file already exists at '%s'; use --override to replace", destination)
+			return result
+		}
+		if err := deleteNamespaceFilePath(client, namespace, destination); err != nil {
+			result.Error = err.Error()
+			return result
+		}
+	}
+
+	if err := ensureNamespaceDirectories(client, namespace, path.Dir(destination)); err != nil {
+		result.Error = err.Error()
+		return result
+	}
+
+	file, err := os.Open(source)
+	if err != nil {
+		result.Error = fmt.Sprintf("failed to open file: %v", err)
+		return result
+	}
+
+	_, err = client.API.FilesAPI.CreateNamespaceFile(client.Ctx, namespace, client.Tenant).
+		Path(destination).
+		FileContent(file).
+		Execute()
+	if err != nil {
+		result.Error = formatSDKError(err).Error()
+		return result
+	}
+
+	result.Success = true
+	return result
+}
+
+func renderNamespaceFilesUploadResults(results []namespaceFileUploadResult, renderer *Renderer) error {
+	failed := 0
+	for _, result := range results {
+		if !result.Success {
+			failed++
+		}
+	}
+	summary := namespaceFileUploadSummary{
+		Total:   len(results),
+		Success: len(results) - failed,
+		Failed:  failed,
+		Results: results,
+	}
+
+	return renderer.Render(summary, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "SOURCE\tDESTINATION\tSIZE\tSTATUS\tERROR")
+		for _, result := range results {
+			status := "OK"
+			errMsg := "-"
+			if !result.Success {
+				status = "FAILED"
+				errMsg = result.Error
+			}
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\t%s\n",
+				result.Source,
+				result.Destination,
+				result.Size,
+				status,
+				errMsg,
+			)
+		}
+		fmt.Fprintf(w, "\n%d file(s) uploaded successfully, %d failed\n", summary.Success, summary.Failed)
+		return nil
+	})
 }
 
 func cleanupNamespaceTempFile(file *os.File) {
