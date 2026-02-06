@@ -292,6 +292,20 @@ type namespaceFileUploadSummary struct {
 	Results []namespaceFileUploadResult `json:"results"`
 }
 
+type namespaceFileDeleteResult struct {
+	Path    string `json:"path"`
+	Type    string `json:"type"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
+
+type namespaceFileDeleteSummary struct {
+	Total   int                         `json:"total"`
+	Success int                         `json:"success"`
+	Failed  int                         `json:"failed"`
+	Results []namespaceFileDeleteResult `json:"results"`
+}
+
 type namespaceFileEntry struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
@@ -367,7 +381,94 @@ func runNamespaceFilesUpload(client *Client, namespace, localPath, destination s
 }
 
 func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recursive bool, force bool, renderer *Renderer) error {
-	return fmt.Errorf("delete command not implemented")
+	normalizedPath := normalizeNamespacePath(targetPath)
+	if normalizedPath == "" {
+		return fmt.Errorf("path is required")
+	}
+
+	attrs, exists, err := lookupNamespaceFileStats(client, namespace, normalizedPath)
+	if err != nil {
+		return err
+	}
+
+	results := make([]namespaceFileDeleteResult, 0)
+	if !exists {
+		results = append(results, namespaceFileDeleteResult{
+			Path:    normalizedPath,
+			Type:    "unknown",
+			Success: false,
+			Error:   fmt.Sprintf("path '%s' does not exist", normalizedPath),
+		})
+		if err := renderNamespaceFilesDeleteResults(results, renderer); err != nil {
+			return err
+		}
+		if force {
+			return nil
+		}
+		return fmt.Errorf("delete completed with 1 error(s)")
+	}
+
+	if attrs.GetType() == kestra.FILEATTRIBUTESFILETYPE_Directory && !recursive {
+		results = append(results, namespaceFileDeleteResult{
+			Path:    normalizedPath,
+			Type:    "directory",
+			Success: false,
+			Error:   "target is a directory; use --recursive to delete",
+		})
+		if err := renderNamespaceFilesDeleteResults(results, renderer); err != nil {
+			return err
+		}
+		return fmt.Errorf("delete completed with 1 error(s)")
+	}
+
+	deleteTargets := []namespaceFileDeleteResult{}
+	if attrs.GetType() == kestra.FILEATTRIBUTESFILETYPE_Directory {
+		entries, err := collectNamespaceFiles(client, namespace, normalizedPath, true)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			deleteTargets = append(deleteTargets, namespaceFileDeleteResult{
+				Path: entry.Name,
+				Type: strings.ToLower(entry.Type),
+			})
+		}
+		deleteTargets = append(deleteTargets, namespaceFileDeleteResult{
+			Path: normalizedPath,
+			Type: "directory",
+		})
+		deleteTargets = sortDeleteTargets(deleteTargets)
+	} else {
+		deleteTargets = append(deleteTargets, namespaceFileDeleteResult{
+			Path: normalizedPath,
+			Type: "file",
+		})
+	}
+
+	failed := 0
+	for _, target := range deleteTargets {
+		err := deleteNamespaceFilePath(client, namespace, target.Path)
+		result := namespaceFileDeleteResult{
+			Path: target.Path,
+			Type: target.Type,
+		}
+		if err != nil {
+			result.Success = false
+			result.Error = err.Error()
+			failed++
+		} else {
+			result.Success = true
+		}
+		results = append(results, result)
+	}
+
+	if err := renderNamespaceFilesDeleteResults(results, renderer); err != nil {
+		return err
+	}
+	if failed > 0 && !force {
+		return fmt.Errorf("delete completed with %d error(s)", failed)
+	}
+	return nil
 }
 
 func collectNamespaceFiles(client *Client, namespace, path string, recursive bool) ([]namespaceFileEntry, error) {
@@ -645,6 +746,57 @@ func renderNamespaceFilesUploadResults(results []namespaceFileUploadResult, rend
 			)
 		}
 		fmt.Fprintf(w, "\n%d file(s) uploaded successfully, %d failed\n", summary.Success, summary.Failed)
+		return nil
+	})
+}
+
+func sortDeleteTargets(targets []namespaceFileDeleteResult) []namespaceFileDeleteResult {
+	sorted := make([]namespaceFileDeleteResult, len(targets))
+	copy(sorted, targets)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		depthI := strings.Count(sorted[i].Path, "/")
+		depthJ := strings.Count(sorted[j].Path, "/")
+		if depthI != depthJ {
+			return depthI > depthJ
+		}
+		if sorted[i].Type != sorted[j].Type {
+			return sorted[i].Type != "directory"
+		}
+		return sorted[i].Path > sorted[j].Path
+	})
+	return sorted
+}
+
+func renderNamespaceFilesDeleteResults(results []namespaceFileDeleteResult, renderer *Renderer) error {
+	failed := 0
+	for _, result := range results {
+		if !result.Success {
+			failed++
+		}
+	}
+	summary := namespaceFileDeleteSummary{
+		Total:   len(results),
+		Success: len(results) - failed,
+		Failed:  failed,
+		Results: results,
+	}
+
+	return renderer.Render(summary, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "PATH\tTYPE\tSTATUS\tERROR")
+		for _, result := range results {
+			status := "OK"
+			errMsg := "-"
+			if !result.Success {
+				status = "FAILED"
+				errMsg = result.Error
+			}
+			typeValue := result.Type
+			if typeValue == "" {
+				typeValue = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", result.Path, typeValue, status, errMsg)
+		}
+		fmt.Fprintf(w, "\n%d path(s) deleted successfully, %d failed\n", summary.Success, summary.Failed)
 		return nil
 	})
 }
