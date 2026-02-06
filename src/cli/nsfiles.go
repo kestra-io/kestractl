@@ -26,6 +26,7 @@ func newNamespaceFilesCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newNamespaceFilesListCommand())
+	cmd.AddCommand(newNamespaceFilesGetCommand())
 
 	return cmd
 }
@@ -73,6 +74,47 @@ Supports listing the root or a specific directory path, with optional recursion.
 	return cmd
 }
 
+func newNamespaceFilesGetCommand() *cobra.Command {
+	var path string
+	var revision string
+
+	cmd := &cobra.Command{
+		Use:   "get <namespace>",
+		Short: "Get namespace file content.",
+		Long: `Retrieve a namespace file and stream its raw bytes to stdout.
+
+If the provided path is a directory, the command returns a directory listing.`,
+		Example: `  # Get a file's raw content
+  kestra nsfiles get my.namespace --path workflows/example.yaml
+
+  # Get a specific revision
+  kestra nsfiles get my.namespace --path workflows/example.yaml --revision 3
+
+  # List a directory instead of reading a file
+  kestra nsfiles get my.namespace --path workflows/`,
+		Aliases: []string{"cat"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runNamespaceFilesGet(client, args[0], path, revision, renderer, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&path, "path", "", "Path within the namespace")
+	_ = cmd.MarkFlagRequired("path")
+	cmd.Flags().StringVar(&revision, "revision", "", "Revision number to fetch")
+
+	return cmd
+}
+
 func runNamespaceFilesList(client *Client, namespace, path string, recursive bool, renderer *Renderer) error {
 	normalizedPath := normalizeNamespacePath(path)
 	entries, err := collectNamespaceFiles(client, namespace, normalizedPath, recursive)
@@ -95,6 +137,31 @@ func runNamespaceFilesList(client *Client, namespace, path string, recursive boo
 		}
 		return nil
 	})
+}
+
+func runNamespaceFilesGet(client *Client, namespace, path, revision string, renderer *Renderer, out io.Writer) error {
+	normalizedPath := normalizeNamespacePath(path)
+	if normalizedPath == "" {
+		return runNamespaceFilesList(client, namespace, normalizedPath, false, renderer)
+	}
+
+	attributes, err := getNamespaceFileStats(client, namespace, normalizedPath)
+	if err != nil {
+		return err
+	}
+
+	if strings.EqualFold(attributes.Type, "Directory") {
+		return runNamespaceFilesList(client, namespace, normalizedPath, false, renderer)
+	}
+
+	resp, err := getNamespaceFileContent(client, namespace, normalizedPath, revision)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	_, err = io.Copy(out, resp.Body)
+	return err
 }
 
 type namespaceFileAttributes struct {
@@ -164,18 +231,10 @@ func collectNamespaceFilesWithPrefix(client *Client, namespace, path, prefix str
 }
 
 func listNamespaceDirectory(client *Client, namespace, path string) ([]namespaceFileAttributes, error) {
-	cfg := client.API.GetConfig()
-	baseURL := ""
-	if len(cfg.Servers) > 0 {
-		baseURL = cfg.Servers[0].URL
+	baseURL, cfg, err := namespaceFilesBaseURL(client)
+	if err != nil {
+		return nil, err
 	}
-	if baseURL == "" && cfg.Scheme != "" && cfg.Host != "" {
-		baseURL = fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
-	}
-	if baseURL == "" {
-		return nil, fmt.Errorf("missing API base URL")
-	}
-	baseURL = strings.TrimRight(baseURL, "/")
 
 	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/files/directory",
 		baseURL,
@@ -234,6 +293,144 @@ func listNamespaceDirectory(client *Client, namespace, path string) ([]namespace
 	}
 
 	return attributes, nil
+}
+
+func getNamespaceFileStats(client *Client, namespace, path string) (namespaceFileAttributes, error) {
+	baseURL, cfg, err := namespaceFilesBaseURL(client)
+	if err != nil {
+		return namespaceFileAttributes{}, err
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/files/stats",
+		baseURL,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(namespace),
+	)
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return namespaceFileAttributes{}, err
+	}
+
+	query := req.URL.Query()
+	if path != "" {
+		query.Set("path", path)
+	}
+	req.URL.RawQuery = query.Encode()
+
+	req.Header.Set("Accept", "application/json")
+	if cfg.UserAgent != "" {
+		req.Header.Set("User-Agent", cfg.UserAgent)
+	}
+	for header, value := range cfg.DefaultHeader {
+		req.Header.Add(header, value)
+	}
+
+	applyNamespaceAuth(client.Ctx, req)
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return namespaceFileAttributes{}, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return namespaceFileAttributes{}, err
+	}
+
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return namespaceFileAttributes{}, formatNamespaceFilesHTTPError(resp.Status, body)
+	}
+
+	if len(body) == 0 {
+		return namespaceFileAttributes{}, nil
+	}
+
+	var attributes namespaceFileAttributes
+	if err := json.Unmarshal(body, &attributes); err != nil {
+		return namespaceFileAttributes{}, err
+	}
+
+	return attributes, nil
+}
+
+func getNamespaceFileContent(client *Client, namespace, path, revision string) (*http.Response, error) {
+	baseURL, cfg, err := namespaceFilesBaseURL(client)
+	if err != nil {
+		return nil, err
+	}
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/files",
+		baseURL,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(namespace),
+	)
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	query := req.URL.Query()
+	if path != "" {
+		query.Set("path", path)
+	}
+	if revision != "" {
+		query.Set("revision", revision)
+	}
+	req.URL.RawQuery = query.Encode()
+
+	req.Header.Set("Accept", "application/octet-stream")
+	if cfg.UserAgent != "" {
+		req.Header.Set("User-Agent", cfg.UserAgent)
+	}
+	for header, value := range cfg.DefaultHeader {
+		req.Header.Add(header, value)
+	}
+
+	applyNamespaceAuth(client.Ctx, req)
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, formatNamespaceFilesHTTPError(resp.Status, body)
+	}
+
+	return resp, nil
+}
+
+func namespaceFilesBaseURL(client *Client) (string, *kestra.Configuration, error) {
+	cfg := client.API.GetConfig()
+	baseURL := ""
+	if len(cfg.Servers) > 0 {
+		baseURL = cfg.Servers[0].URL
+	}
+	if baseURL == "" && cfg.Scheme != "" && cfg.Host != "" {
+		baseURL = fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
+	}
+	if baseURL == "" {
+		return "", nil, fmt.Errorf("missing API base URL")
+	}
+	return strings.TrimRight(baseURL, "/"), cfg, nil
 }
 
 func applyNamespaceAuth(ctx context.Context, req *http.Request) {
