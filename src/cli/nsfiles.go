@@ -1,9 +1,22 @@
 package cli
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"reflect"
+	"sort"
+	"strings"
+	"text/tabwriter"
+	"time"
+	"unsafe"
 
 	"github.com/spf13/cobra"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 )
 
 func newNamespaceFilesCommand() *cobra.Command {
@@ -61,5 +74,232 @@ Supports listing the root or a specific directory path, with optional recursion.
 }
 
 func runNamespaceFilesList(client *Client, namespace, path string, recursive bool, renderer *Renderer) error {
-	return fmt.Errorf("namespace files list not implemented")
+	normalizedPath := normalizeNamespacePath(path)
+	entries, err := collectNamespaceFiles(client, namespace, normalizedPath, recursive)
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Name < entries[j].Name
+	})
+
+	return renderer.Render(entries, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Name\tType\tSize\tModified")
+		for _, entry := range entries {
+			modified := entry.Modified
+			if modified == "" {
+				modified = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", entry.Name, entry.Type, entry.Size, modified)
+		}
+		return nil
+	})
+}
+
+type namespaceFileAttributes struct {
+	FileName         string `json:"fileName"`
+	LastModifiedTime int64  `json:"lastModifiedTime"`
+	CreationTime     int64  `json:"creationTime"`
+	Type             string `json:"type"`
+	Size             int64  `json:"size"`
+}
+
+type namespaceFileEntry struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Size     int64  `json:"size"`
+	Modified string `json:"modified"`
+}
+
+func collectNamespaceFiles(client *Client, namespace, path string, recursive bool) ([]namespaceFileEntry, error) {
+	return collectNamespaceFilesWithPrefix(client, namespace, path, path, recursive)
+}
+
+func collectNamespaceFilesWithPrefix(client *Client, namespace, path, prefix string, recursive bool) ([]namespaceFileEntry, error) {
+	attributes, err := listNamespaceDirectory(client, namespace, path)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]namespaceFileEntry, 0, len(attributes))
+	for _, attr := range attributes {
+		name := strings.TrimSpace(attr.FileName)
+		if name == "" {
+			continue
+		}
+
+		entryName := name
+		if prefix != "" {
+			entryName = prefix + "/" + name
+		}
+
+		entry := namespaceFileEntry{
+			Name:     entryName,
+			Type:     attr.Type,
+			Size:     attr.Size,
+			Modified: formatNamespaceFileModified(attr.LastModifiedTime, attr.CreationTime),
+		}
+
+		if strings.EqualFold(attr.Type, "Directory") {
+			entry.Size = 0
+			if entry.Modified == "" {
+				entry.Modified = ""
+			}
+		}
+
+		entries = append(entries, entry)
+
+		if recursive && strings.EqualFold(attr.Type, "Directory") {
+			childPath := joinNamespacePath(path, name)
+			childEntries, err := collectNamespaceFilesWithPrefix(client, namespace, childPath, entryName, recursive)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, childEntries...)
+		}
+	}
+
+	return entries, nil
+}
+
+func listNamespaceDirectory(client *Client, namespace, path string) ([]namespaceFileAttributes, error) {
+	cfg := client.API.GetConfig()
+	baseURL := ""
+	if len(cfg.Servers) > 0 {
+		baseURL = cfg.Servers[0].URL
+	}
+	if baseURL == "" && cfg.Scheme != "" && cfg.Host != "" {
+		baseURL = fmt.Sprintf("%s://%s", cfg.Scheme, cfg.Host)
+	}
+	if baseURL == "" {
+		return nil, fmt.Errorf("missing API base URL")
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/files/directory",
+		baseURL,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(namespace),
+	)
+
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	query := req.URL.Query()
+	if path != "" {
+		query.Set("path", path)
+	}
+	req.URL.RawQuery = query.Encode()
+
+	req.Header.Set("Accept", "application/json")
+	if cfg.UserAgent != "" {
+		req.Header.Set("User-Agent", cfg.UserAgent)
+	}
+	for header, value := range cfg.DefaultHeader {
+		req.Header.Add(header, value)
+	}
+
+	applyNamespaceAuth(client.Ctx, req)
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, formatNamespaceFilesHTTPError(resp.Status, body)
+	}
+
+	if len(body) == 0 {
+		return []namespaceFileAttributes{}, nil
+	}
+
+	var attributes []namespaceFileAttributes
+	if err := json.Unmarshal(body, &attributes); err != nil {
+		return nil, err
+	}
+
+	return attributes, nil
+}
+
+func applyNamespaceAuth(ctx context.Context, req *http.Request) {
+	if ctx == nil || req == nil {
+		return
+	}
+
+	if token, ok := ctx.Value(kestra.ContextAccessToken).(string); ok && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		return
+	}
+
+	if auth, ok := ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+}
+
+func formatNamespaceFilesHTTPError(status string, body []byte) error {
+	sdkErr := &kestra.GenericOpenAPIError{}
+	setGenericOpenAPIErrorFields(sdkErr, body, status)
+	return formatSDKError(sdkErr)
+}
+
+func setGenericOpenAPIErrorFields(err *kestra.GenericOpenAPIError, body []byte, message string) {
+	val := reflect.ValueOf(err).Elem()
+	bodyField := val.FieldByName("body")
+	reflect.NewAt(bodyField.Type(), unsafe.Pointer(bodyField.UnsafeAddr())).Elem().SetBytes(body)
+
+	if message == "" {
+		return
+	}
+
+	msgField := val.FieldByName("error")
+	reflect.NewAt(msgField.Type(), unsafe.Pointer(msgField.UnsafeAddr())).Elem().SetString(message)
+}
+
+func normalizeNamespacePath(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" || trimmed == "/" || trimmed == "." {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		trimmed = strings.TrimPrefix(trimmed, "/")
+	}
+	trimmed = strings.TrimSuffix(trimmed, "/")
+	if trimmed == "" || trimmed == "." {
+		return ""
+	}
+	return trimmed
+}
+
+func joinNamespacePath(base, child string) string {
+	if base == "" {
+		return child
+	}
+	return base + "/" + child
+}
+
+func formatNamespaceFileModified(lastModified, created int64) string {
+	timestamp := lastModified
+	if timestamp == 0 {
+		timestamp = created
+	}
+	if timestamp == 0 {
+		return ""
+	}
+	timeValue := time.Unix(0, timestamp*int64(time.Millisecond)).UTC()
+	return timeValue.Format(time.RFC3339)
 }
