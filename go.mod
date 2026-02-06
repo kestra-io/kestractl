@@ -3,7 +3,7 @@ module github.com/kestra-io/kestra-cli
 go 1.25
 
 require (
-	github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260123183957-5a64f79c211e
+	github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260205153444-ae910960a9ed
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0

@@ -13,6 +13,8 @@ github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2
 github.com/inconshreveable/mousetrap v1.1.0/go.mod h1:vpF70FUmC8bwa3OWnCshd2FqLfsEA9PFc4w1p2J65bw=
 github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260123183957-5a64f79c211e h1:Ue8vqxBzuY7JcXc0dOGK3EgnKx/a60QOakC6kFOlnoo=
 github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260123183957-5a64f79c211e/go.mod h1:oglBUmW8SztlkA6PRAS1mPXWR+yUNHo2U0K4n327u9Y=
+github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260205153444-ae910960a9ed h1:2EslElR/I9Sflwb96Qt5IcP7iq1BJVRmW+83jDJ9oSY=
+github.com/kestra-io/client-sdk/go-sdk v0.0.0-20260205153444-ae910960a9ed/go.mod h1:oglBUmW8SztlkA6PRAS1mPXWR+yUNHo2U0K4n327u9Y=
 github.com/kr/pretty v0.3.1 h1:flRD4NNwYAUpkphVc1HcthR4KEIFJ65n8Mw5qdRn3LE=
 github.com/kr/pretty v0.3.1/go.mod h1:hoEshYVHaxMs3cyo3Yncou5ZscifuDolrwPKZanG3xk=
 github.com/kr/text v0.2.0 h1:5Nx0Ya0ZqY2ygV366QzturHI13Jq95ApcVaJBhpS+AY=
