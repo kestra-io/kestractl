@@ -2,8 +2,7 @@
   "branches": [
     {
       "name": "main",
-      "prerelease": true,
-      "preid": "alpha"
+      "prerelease": "alpha"
     },
     {
       "name": "dummy-branch",
