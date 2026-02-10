@@ -1,4 +1,4 @@
-# KestraCtl CLI
+# Kestra CLI
 
 A Go-based command-line interface for managing Kestra flows, executions, and namespaces.
 
