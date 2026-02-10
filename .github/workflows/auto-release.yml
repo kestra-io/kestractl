@@ -45,7 +45,7 @@ jobs:
           node-version: "20"
 
       - name: Install semantic-release
-        run: npm install -g semantic-release
+        run: npm install -g semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator conventional-changelog-conventionalcommits
 
       - name: Create tag from conventional commits
         env:
