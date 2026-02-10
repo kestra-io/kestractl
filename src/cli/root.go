@@ -40,9 +40,9 @@ var globalFlags GlobalFlags
 // NewRootCommand builds the root CLI command.
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "kestra",
-		Short: "Kestra CLI - Manage flows, namespaces, and executions",
-		Long: `Kestra CLI is a command-line tool for managing Kestra workflows.
+		Use:   "kestractl",
+		Short: "kestractl - Manage flows, namespaces, and executions",
+		Long: `kestractl is a command-line tool for managing Kestra workflows.
 
 It provides commands to manage flows, namespaces, and executions,
 with support for multiple authentication contexts and output formats.`,
@@ -77,7 +77,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVarP(&globalFlags.Password, FlagPassword, "", "", "basic auth password")
 	root.PersistentFlags().StringVar(&globalFlags.Tenant, FlagTenant, "", "Tenant name")
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
-	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestra/config.yaml)")
+	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestractl/config.yaml)")
 	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "verbose output (warning: it will print credentials in http requests")
 
 	root.AddCommand(newVersionCommand())
@@ -93,7 +93,7 @@ with support for multiple authentication contexts and output formats.`,
 // initializeConfig sets up Viper to handle configuration from multiple sources.
 func initializeConfig(cmd *cobra.Command) error {
 	// 1. Set up Viper to use environment variables
-	viper.SetEnvPrefix("KESTRA")
+	viper.SetEnvPrefix("KESTRACTL")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 
@@ -109,7 +109,7 @@ func initializeConfig(cmd *cobra.Command) error {
 			// If we can't get home dir, only search current directory
 			viper.AddConfigPath(".")
 		} else {
-			viper.AddConfigPath(home + "/.kestra")
+			viper.AddConfigPath(home + "/.kestractl")
 			viper.AddConfigPath(".")
 		}
 		viper.SetConfigName("config")
@@ -170,7 +170,7 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Show version information.",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Kestra CLI v%s\n", cliVersion)
+			fmt.Printf("kestractl v%s\n", cliVersion)
 		},
 	}
 }

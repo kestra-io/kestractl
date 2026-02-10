@@ -18,7 +18,7 @@ Command (Cobra) → NewClient() → client.API.* → Kestra SDK → API
 
 ## Adding a New Command
 
-Follow these steps to add a new resource command (e.g., `kestra secrets list`).
+Follow these steps to add a new resource command (e.g., `kestractl secrets list`).
 
 ### Step 1: Create the Command File
 
@@ -59,10 +59,10 @@ func newSecretsListCommand() *cobra.Command {
 
 Returns a table showing secret keys and their namespace.`,
         Example: `  # List all secrets in a namespace
-  kestra secrets list my.namespace
+  kestractl secrets list my.namespace
 
   # List secrets with JSON output
-  kestra secrets list my.namespace --output json`,
+  kestractl secrets list my.namespace --output json`,
         Aliases: []string{"ls"},
         Args:    cobra.ExactArgs(1),
         RunE: func(cmd *cobra.Command, args []string) error {
@@ -185,7 +185,7 @@ func TestSecretsListCommand_Help(t *testing.T) {
     Long: `Detailed description with
 formatting and usage guidelines.`,
     Example: `  # Example with comment
-  kestra secrets list my.namespace`,
+  kestractl secrets list my.namespace`,
     Aliases: []string{"ls"},              // Common shortcuts
     Args:    cobra.ExactArgs(1),          // Argument validation
 }
