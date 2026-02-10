@@ -146,6 +146,12 @@ func initializeConfig(cmd *cobra.Command) error {
 			if !viper.IsSet(FlagToken) {
 				viper.SetDefault(FlagToken, viper.GetString("contexts."+defaultContext+".token"))
 			}
+			if !viper.IsSet(FlagUsername) {
+				viper.SetDefault(FlagUsername, viper.GetString("contexts."+defaultContext+".username"))
+			}
+			if !viper.IsSet(FlagPassword) {
+				viper.SetDefault(FlagPassword, viper.GetString("contexts."+defaultContext+".password"))
+			}
 		}
 	}
 
