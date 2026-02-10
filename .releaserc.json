@@ -4,6 +4,10 @@
       "name": "main",
       "prerelease": true,
       "preid": "alpha"
+    },
+    {
+      "name": "dummy-branch",
+      "_description": "used as a dummy 'release' branch when we want to turn our 'main' branch to a pre-release"
     }
   ],
   "tagFormat": "${version}",
