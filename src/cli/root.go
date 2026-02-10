@@ -84,6 +84,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newConfigCommand())
 	root.AddCommand(newFlowsCommand())
 	root.AddCommand(newNamespacesCommand())
+	root.AddCommand(newNamespaceFilesCommand())
 	root.AddCommand(newExecutionsCommand())
 
 	return root
