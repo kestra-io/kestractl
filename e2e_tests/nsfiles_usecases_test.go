@@ -33,7 +33,8 @@ func TestNsfilesUpload_e2e(t *testing.T) {
 	_, _, err := RunAuthenticatedCliCmd(t, "nsfiles", "get", "system", "--path", fileNsPath)
 	require.Error(t, err, "file should not exist before test")
 
-	_, _, err = RunAuthenticatedCliCmd(t, "nsfiles", "upload", "system", "./README.MD", "--path", fileNsPath)
+	_, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "upload", "system", "./README.MD", "--path", fileNsPath)
+	require.Empty(t, stderr)
 	require.NoError(t, err)
 
 	stdout, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "get", "system", "--path", fileNsPath)
