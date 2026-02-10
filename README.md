@@ -87,6 +87,7 @@ All commands support global flags for connection and output configuration:
 - `--tenant` - Tenant name
 - `--output` / `-o` - Output format (`table` or `json`)
 - `--config` - Custom config file path (default: `~/.kestra/config.yaml`)
+- `--verbose` / `-v` - Verbose output (warning: prints credentials in HTTP requests)
 
 ### Config Management
 
@@ -112,6 +113,9 @@ kestra config remove dev
 ```bash
 # List flows in a namespace (alias: ls)
 kestra flows list my.namespace
+
+# List flows across all namespaces
+kestra flows list
 
 # Get a specific flow (aliases: show, describe)
 kestra flows get my.namespace my-flow
@@ -165,6 +169,46 @@ kestra namespaces list
 
 # Filter namespaces with query
 kestra namespaces list --query my.namespace
+```
+
+### Namespace Files (nsfiles)
+
+```bash
+# List files at the namespace root (alias: ls)
+kestra nsfiles list my.namespace
+
+# List files in a directory
+kestra nsfiles list my.namespace --path workflows/
+
+# List files recursively
+kestra nsfiles list my.namespace --path workflows/ --recursive
+
+# Get a file's raw content (alias: cat)
+kestra nsfiles get my.namespace --path workflows/example.yaml
+
+# Get a specific revision
+kestra nsfiles get my.namespace --path workflows/example.yaml --revision 3
+
+# Upload a single file
+kestra nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+
+# Upload a directory (recursive)
+kestra nsfiles upload my.namespace ./assets --path resources
+
+# Override existing files
+kestra nsfiles upload my.namespace ./assets --path resources --override
+
+# Stop on the first error
+kestra nsfiles upload my.namespace ./assets --path resources --fail-fast
+
+# Delete a file
+kestra nsfiles delete my.namespace --path workflows/example.yaml
+
+# Delete a directory recursively
+kestra nsfiles delete my.namespace --path workflows --recursive
+
+# Ignore missing targets
+kestra nsfiles delete my.namespace --path workflows/example.yaml --force
 ```
 
 ### Output Formats
