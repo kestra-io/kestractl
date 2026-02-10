@@ -5,7 +5,7 @@ A Go-based command-line interface for managing Kestra flows, executions, and nam
 ## Installation
 
 ```bash
-# Download dependencies (requires Go 1.21+)
+# Download dependencies (requires Go 1.25+)
 go mod download
 
 # Build the binary
@@ -253,7 +253,7 @@ Configuration follows the [12-factor app](https://12factor.net/config) methodolo
 ### Project Structure
 
 ```
-kestra-cli/
+kestractl/
 ├── main.go                    # Entrypoint - calls cli.Execute()
 ├── go.mod                     # Dependencies: cobra, viper, kestra SDK, yaml
 └── src/cli/
@@ -303,5 +303,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed instructions on adding new c
 
 ## Requirements
 
-- Go 1.21 or newer
+- Go 1.25 or newer
 - Access to a Kestra instance and API token

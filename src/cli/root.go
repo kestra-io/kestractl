@@ -11,7 +11,11 @@ import (
 	"github.com/spf13/viper"
 )
 
-const cliVersion = "0.1.0"
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
 
 // Flag names
 const (
@@ -170,7 +174,13 @@ func newVersionCommand() *cobra.Command {
 		Use:   "version",
 		Short: "Show version information.",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("kestractl v%s\n", cliVersion)
+			fmt.Printf("kestractl v%s\n", version)
+			if commit != "none" {
+				fmt.Printf("commit: %s\n", commit)
+			}
+			if buildDate != "unknown" {
+				fmt.Printf("built: %s\n", buildDate)
+			}
 		},
 	}
 }
