@@ -37,9 +37,9 @@ func NewAuthManager(configDir string) *AuthManager {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			// Fall back to current directory if we cannot determine the home directory.
-			configDir = ".kestra"
+			configDir = ".kestractl"
 		} else {
-			configDir = filepath.Join(home, ".kestra")
+			configDir = filepath.Join(home, ".kestractl")
 		}
 	}
 
@@ -136,7 +136,7 @@ func (m *AuthManager) GetContext(name string) (*AuthContext, error) {
 	if name == "" {
 		name = cfg.DefaultContext
 		if name == "" {
-			return nil, errors.New("no default context configured; use 'kestra config add' first")
+			return nil, errors.New("no default context configured; use 'kestractl config add' first")
 		}
 	}
 

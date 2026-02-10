@@ -37,13 +37,13 @@ func newExecutionsKillCommand() *cobra.Command {
 This command sends a kill request to all executions currently in RUNNING state.
 Use the --namespace and --flow-id flags to target specific executions.`,
 		Example: `  # Kill all running executions
-  kestra executions kill-running
+	  kestractl executions kill-running
 
-  # Kill running executions in a specific namespace
-  kestra executions kill-running --namespace my.namespace
+	  # Kill running executions in a specific namespace
+	  kestractl executions kill-running --namespace my.namespace
 
-  # Kill running executions for a specific flow
-  kestra executions kill-running --namespace my.namespace --flow-id my-flow`,
+	  # Kill running executions for a specific flow
+	  kestractl executions kill-running --namespace my.namespace --flow-id my-flow`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -107,13 +107,13 @@ func newExecutionsRunCommand() *cobra.Command {
 The command returns immediately by default. Use --wait to poll until
 the execution completes (SUCCESS, FAILED, or other terminal state).`,
 		Example: `  # Trigger a flow
-  kestra executions run my.namespace my-flow
+	  kestractl executions run my.namespace my-flow
 
-  # Trigger and wait for completion
-  kestra executions run my.namespace my-flow --wait
+	  # Trigger and wait for completion
+	  kestractl executions run my.namespace my-flow --wait
 
-  # Get JSON output
-  kestra executions run my.namespace my-flow --output json`,
+	  # Get JSON output
+	  kestractl executions run my.namespace my-flow --output json`,
 		Aliases: []string{"trigger", "execute"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -194,10 +194,10 @@ func newExecutionsGetCommand() *cobra.Command {
 
 The command displays execution status, timing, labels, and other metadata.`,
 		Example: `  # Get execution details
-  kestra executions get 2TLGqHrXC9k8BczKJe5djX
+	  kestractl executions get 2TLGqHrXC9k8BczKJe5djX
 
-  # Get execution details as JSON
-  kestra executions get 2TLGqHrXC9k8BczKJe5djX --output json`,
+	  # Get execution details as JSON
+	  kestractl executions get 2TLGqHrXC9k8BczKJe5djX --output json`,
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

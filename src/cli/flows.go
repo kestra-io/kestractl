@@ -60,13 +60,13 @@ func newFlowsListCommand() *cobra.Command {
 
 Returns a table showing flow ID, namespace, description, and revision number.`,
 		Example: `  # List all flows in a namespace
-  kestra flows list my.namespace
+	  kestractl flows list my.namespace
 
-  # List flows across all namespaces
-  kestra flows list
+	  # List flows across all namespaces
+	  kestractl flows list
 
-  # List flows with JSON output
-  kestra flows list my.namespace --output json`,
+	  # List flows with JSON output
+	  kestractl flows list my.namespace --output json`,
 		Aliases: []string{"ls"},
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -164,10 +164,10 @@ func newFlowsGetCommand() *cobra.Command {
 
 The default output format is JSON as it preserves the complete flow definition.`,
 		Example: `  # Get a flow as JSON
-  kestra flows get my.namespace my-flow
+	  kestractl flows get my.namespace my-flow
 
-  # Get a flow as a table
-  kestra flows get my.namespace my-flow --output table`,
+	  # Get a flow as a table
+	  kestractl flows get my.namespace my-flow --output table`,
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -240,25 +240,25 @@ Use --override to update existing flows.
 By default, when deploying multiple flows, all files are processed even if some fail.
 Use --fail-fast to stop on the first error.`,
 		Example: `  # Deploy a single flow
-  kestra flows deploy flow.yaml
+	  kestractl flows deploy flow.yaml
 
-  # Deploy all flows in a directory (recursive)
-  kestra flows deploy ./flows/
+	  # Deploy all flows in a directory (recursive)
+	  kestractl flows deploy ./flows/
 
-  # Deploy with namespace override (all flows go to specified namespace)
-  kestra flows deploy ./flows/ --namespace prod.namespace
+	  # Deploy with namespace override (all flows go to specified namespace)
+	  kestractl flows deploy ./flows/ --namespace prod.namespace
 
-  # Stop on first error (fail-fast)
-  kestra flows deploy ./flows/ --fail-fast
+	  # Stop on first error (fail-fast)
+	  kestractl flows deploy ./flows/ --fail-fast
 
-  # Override existing flows
-  kestra flows deploy ./flows/ --override
+	  # Override existing flows
+	  kestractl flows deploy ./flows/ --override
 
-  # Combine flags
-  kestra flows deploy ./flows/ --namespace prod --override --fail-fast
+	  # Combine flags
+	  kestractl flows deploy ./flows/ --namespace prod --override --fail-fast
 
-  # Deploy with JSON output
-  kestra flows deploy flow.yaml --output json`,
+	  # Deploy with JSON output
+	  kestractl flows deploy flow.yaml --output json`,
 		Aliases: []string{"create", "apply"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -295,13 +295,13 @@ Hidden files and directories (starting with .) are skipped.
 Validation fails if any flow has constraint violations.
 Warnings, infos, deprecations, and outdated flags are reported but do not fail validation.`,
 		Example: `  # Validate a single flow
-  kestra flows validate flow.yaml
+	  kestractl flows validate flow.yaml
 
-  # Validate all flows in a directory (recursive)
-  kestra flows validate ./flows/
+	  # Validate all flows in a directory (recursive)
+	  kestractl flows validate ./flows/
 
-  # Validate with JSON output
-  kestra flows validate ./flows/ --output json`,
+	  # Validate with JSON output
+	  kestractl flows validate ./flows/ --output json`,
 		Aliases: []string{"check"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

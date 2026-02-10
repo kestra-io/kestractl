@@ -43,16 +43,16 @@ func newNamespaceFilesListCommand() *cobra.Command {
 
 Supports listing the root or a specific directory path, with optional recursion.`,
 		Example: `  # List files at the namespace root
-  kestra nsfiles list my.namespace
+	  kestractl nsfiles list my.namespace
 
-  # List files in a directory
-  kestra nsfiles list my.namespace --path workflows/
+	  # List files in a directory
+	  kestractl nsfiles list my.namespace --path workflows/
 
-  # List files recursively
-  kestra nsfiles list my.namespace --path workflows/ --recursive
+	  # List files recursively
+	  kestractl nsfiles list my.namespace --path workflows/ --recursive
 
-  # List files with JSON output
-  kestra nsfiles list my.namespace --output json`,
+	  # List files with JSON output
+	  kestractl nsfiles list my.namespace --output json`,
 		Aliases: []string{"ls"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -86,13 +86,13 @@ func newNamespaceFilesGetCommand() *cobra.Command {
 
 If the provided path is a directory, the command returns a directory listing.`,
 		Example: `  # Get a file's raw content
-  kestra nsfiles get my.namespace --path workflows/example.yaml
+	  kestractl nsfiles get my.namespace --path workflows/example.yaml
 
-  # Get a specific revision
-  kestra nsfiles get my.namespace --path workflows/example.yaml --revision 3
+	  # Get a specific revision
+	  kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
 
-  # List a directory instead of reading a file
-  kestra nsfiles get my.namespace --path workflows/`,
+	  # List a directory instead of reading a file
+	  kestractl nsfiles get my.namespace --path workflows/`,
 		Aliases: []string{"cat"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -135,19 +135,19 @@ By default, uploads fail if a destination file exists. Use --override to replace
 
 When uploading multiple files, failures are collected unless --fail-fast is set.`,
 		Example: `  # Upload a single file
-  kestra nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+	  kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
 
-  # Upload a directory (recursive)
-  kestra nsfiles upload my.namespace ./assets --path resources
+	  # Upload a directory (recursive)
+	  kestractl nsfiles upload my.namespace ./assets --path resources
 
-  # Override existing files
-  kestra nsfiles upload my.namespace ./assets --path resources --override
+	  # Override existing files
+	  kestractl nsfiles upload my.namespace ./assets --path resources --override
 
-  # Stop on the first error
-  kestra nsfiles upload my.namespace ./assets --path resources --fail-fast
+	  # Stop on the first error
+	  kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
 
-  # Upload with JSON output
-  kestra nsfiles upload my.namespace ./assets --path resources --output json`,
+	  # Upload with JSON output
+	  kestractl nsfiles upload my.namespace ./assets --path resources --output json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
@@ -185,16 +185,16 @@ func newNamespaceFilesDeleteCommand() *cobra.Command {
 Deleting directories requires --recursive. Missing targets return an error by default.
 Use --force to continue even when some targets are missing.`,
 		Example: `  # Delete a file
-  kestra nsfiles delete my.namespace --path workflows/example.yaml
+	  kestractl nsfiles delete my.namespace --path workflows/example.yaml
 
-  # Delete a directory recursively
-  kestra nsfiles delete my.namespace --path workflows --recursive
+	  # Delete a directory recursively
+	  kestractl nsfiles delete my.namespace --path workflows --recursive
 
-  # Ignore missing targets
-  kestra nsfiles delete my.namespace --path workflows/example.yaml --force
+	  # Ignore missing targets
+	  kestractl nsfiles delete my.namespace --path workflows/example.yaml --force
 
-  # Delete with JSON output
-  kestra nsfiles delete my.namespace --path workflows/example.yaml --output json`,
+	  # Delete with JSON output
+	  kestractl nsfiles delete my.namespace --path workflows/example.yaml --output json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())

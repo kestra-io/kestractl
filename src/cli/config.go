@@ -36,7 +36,7 @@ func newConfigShowCommand() *cobra.Command {
 
 			if len(contexts) == 0 {
 				fmt.Println("No authentication contexts configured.")
-				fmt.Println("Use 'kestra config add' to add a new context.")
+				fmt.Println("Use 'kestractl config add' to add a new context.")
 				return nil
 			}
 

@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const KESTRA_CLI_GENERATED_FOR_E2E = "KESTRA_CLI_GENERATED_FOR_E2E"
+const KESTRACTL_CLI_GENERATED_FOR_E2E = "KESTRACTL_CLI_GENERATED_FOR_E2E"
 
 var (
 	builtCli    string
@@ -27,7 +27,7 @@ func RunAuthenticatedCliCmd(t *testing.T, args ...string) (stdout string, stderr
 
 /*
 *
-this function will build a Kestra cli with go build in a tmp dir, and run it using exec.CommandContext, then returns stdout and stderr
+this function will build a KestraCtl cli with go build in a tmp dir, and run it using exec.CommandContext, then returns stdout and stderr
 */
 func RunCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err error) {
 	t.Helper()
@@ -58,9 +58,9 @@ func RunCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err 
 
 func cliExeName() string {
 	if runtime.GOOS == "windows" {
-		return "e2e-kestra-cli.exe"
+		return "e2e-kestractl.exe"
 	}
-	return "e2e-kestra-cli"
+	return "e2e-kestractl"
 }
 
 func findRepoRoot(start string) (string, error) {
@@ -80,11 +80,11 @@ func findRepoRoot(start string) (string, error) {
 
 /*
 *
-get the generated CLI path from KESTRA_CLI_GENERATED_FOR_E2E env var,
-OR build this CLI in a tmp dir and update KESTRA_CLI_GENERATED_FOR_E2E env var
+get the generated CLI path from KESTRACTL_CLI_GENERATED_FOR_E2E env var,
+OR build this CLI in a tmp dir and update KESTRACTL_CLI_GENERATED_FOR_E2E env var
 */
 func getCliPathForE2E() (string, error) {
-	if v := strings.TrimSpace(os.Getenv(KESTRA_CLI_GENERATED_FOR_E2E)); v != "" {
+	if v := strings.TrimSpace(os.Getenv(KESTRACTL_CLI_GENERATED_FOR_E2E)); v != "" {
 		return v, nil
 	}
 
@@ -96,7 +96,7 @@ func getCliPathForE2E() (string, error) {
 	// get ../this-working-dir
 	repoRoot := filepath.Dir(wd)
 
-	tmpDir, err := os.MkdirTemp("", "kestra-cli-e2e-*")
+	tmpDir, err := os.MkdirTemp("", "kestractl-cli-e2e-*")
 	if err != nil {
 		return "", err
 
@@ -117,7 +117,7 @@ func getCliPathForE2E() (string, error) {
 
 	builtCli = outPath
 	// Make it available to the rest of the process and any sub-process that inherits env.
-	_ = os.Setenv(KESTRA_CLI_GENERATED_FOR_E2E, outPath)
+	_ = os.Setenv(KESTRACTL_CLI_GENERATED_FOR_E2E, outPath)
 
 	if builtCliErr != nil {
 		return "", builtCliErr

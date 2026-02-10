@@ -9,7 +9,7 @@ A Go-based command-line interface for managing Kestra flows, executions, and nam
 go mod download
 
 # Build the binary
-go build -o kestra
+go build -o kestractl
 ```
 
 You can also install it into your `$GOBIN`:
@@ -23,10 +23,10 @@ go install ./...
 Configure your Kestra instance and credentials:
 
 ```bash
-kestra config add default http://localhost:8080 main --token YOUR_TOKEN --default
+kestractl config add default http://localhost:8080 main --token YOUR_TOKEN --default
 ```
 
-This creates a configuration file at `~/.kestra/config.yaml`:
+This creates a configuration file at `~/.kestractl/config.yaml`:
 
 ```yaml
 contexts:
@@ -44,14 +44,14 @@ You can manage multiple Kestra environments (development, staging, production):
 
 ```bash
 # Add multiple contexts
-kestra config add dev http://localhost:8080 main --token DEV_TOKEN
-kestra config add prod https://prod.kestra.io production --token PROD_TOKEN
+kestractl config add dev http://localhost:8080 main --token DEV_TOKEN
+kestractl config add prod https://prod.kestra.io production --token PROD_TOKEN
 
 # List all contexts
-kestra config show
+kestractl config show
 
 # Switch between contexts
-kestra config use prod
+kestractl config use prod
 ```
 
 ### Environment Variables
@@ -59,10 +59,10 @@ kestra config use prod
 You can also configure the CLI using environment variables, which override config file settings:
 
 ```bash
-export KESTRA_HOST=http://localhost:8080
-export KESTRA_TENANT=main
-export KESTRA_TOKEN=YOUR_TOKEN
-export KESTRA_OUTPUT=json  # Optional: table or json
+export KESTRACTL_HOST=http://localhost:8080
+export KESTRACTL_TENANT=main
+export KESTRACTL_TOKEN=YOUR_TOKEN
+export KESTRACTL_OUTPUT=json  # Optional: table or json
 ```
 
 ### Configuration Precedence
@@ -70,12 +70,12 @@ export KESTRA_OUTPUT=json  # Optional: table or json
 Following the [12-factor app](https://12factor.net/config) methodology, configuration is resolved in this order (highest to lowest):
 
 1. **Command-line flags** (`--host`, `--token`, etc.) - Highest priority
-2. **Environment variables** (`KESTRA_HOST`, `KESTRA_TOKEN`, etc.)
-3. **Config file** (`~/.kestra/config.yaml` or custom via `--config`)
+2. **Environment variables** (`KESTRACTL_HOST`, `KESTRACTL_TOKEN`, etc.)
+3. **Config file** (`~/.kestractl/config.yaml` or custom via `--config`)
 4. **Default values** - Lowest priority
 
 This allows you to:
-- Store credentials securely in `~/.kestra/config.yaml` for daily use
+- Store credentials securely in `~/.kestractl/config.yaml` for daily use
 - Override with environment variables in CI/CD pipelines
 - Override with flags for one-off commands
 
@@ -86,155 +86,155 @@ All commands support global flags for connection and output configuration:
 - `--token` / `-t` - API authentication token
 - `--tenant` - Tenant name
 - `--output` / `-o` - Output format (`table` or `json`)
-- `--config` - Custom config file path (default: `~/.kestra/config.yaml`)
+- `--config` - Custom config file path (default: `~/.kestractl/config.yaml`)
 - `--verbose` / `-v` - Verbose output (warning: prints credentials in HTTP requests)
 
 ### Config Management
 
 ```bash
 # Add a new context
-kestra config add dev http://localhost:8080 main --token YOUR_TOKEN
+kestractl config add dev http://localhost:8080 main --token YOUR_TOKEN
 
 # Add and set as default
-kestra config add prod https://prod.kestra.io production --token PROD_TOKEN --default
+kestractl config add prod https://prod.kestra.io production --token PROD_TOKEN --default
 
 # List all contexts
-kestra config show
+kestractl config show
 
 # Switch default context
-kestra config use prod
+kestractl config use prod
 
 # Remove a context
-kestra config remove dev
+kestractl config remove dev
 ```
 
 ### Flows
 
 ```bash
 # List flows in a namespace (alias: ls)
-kestra flows list my.namespace
+kestractl flows list my.namespace
 
 # List flows across all namespaces
-kestra flows list
+kestractl flows list
 
 # Get a specific flow (aliases: show, describe)
-kestra flows get my.namespace my-flow
+kestractl flows get my.namespace my-flow
 
 # Deploy a single flow from YAML (aliases: create, apply)
-kestra flows deploy path/to/flow.yaml
+kestractl flows deploy path/to/flow.yaml
 
 # Deploy all flows in a directory (recursive)
-kestra flows deploy ./flows/
+kestractl flows deploy ./flows/
 
 # Deploy with namespace override (all flows go to specified namespace)
-kestra flows deploy ./flows/ --namespace prod.namespace
+kestractl flows deploy ./flows/ --namespace prod.namespace
 
 # Override existing flows
-kestra flows deploy ./flows/ --override
+kestractl flows deploy ./flows/ --override
 
 # Stop on first error (fail-fast)
-kestra flows deploy ./flows/ --fail-fast
+kestractl flows deploy ./flows/ --fail-fast
 
 # Combine flags
-kestra flows deploy ./flows/ --namespace prod --override --fail-fast
+kestractl flows deploy ./flows/ --namespace prod --override --fail-fast
 
 # Validate a single flow
-kestra flows validate path/to/flow.yaml
+kestractl flows validate path/to/flow.yaml
 
 # Validate all flows in a directory (recursive)
-kestra flows validate ./flows/
+kestractl flows validate ./flows/
 ```
 
 ### Executions
 
 ```bash
 # Trigger a flow execution (aliases: trigger, execute)
-kestra executions run my.namespace my-flow
+kestractl executions run my.namespace my-flow
 
 # Trigger and wait for completion
-kestra executions run my.namespace my-flow --wait
+kestractl executions run my.namespace my-flow --wait
 
 # Get execution details (aliases: show, describe)
-kestra executions get 2TLGqHrXC9k8BczKJe5djX
+kestractl executions get 2TLGqHrXC9k8BczKJe5djX
 
 # Kill running executions
-kestra executions kill-running
+kestractl executions kill-running
 ```
 
 ### Namespaces
 
 ```bash
 # List all namespaces (alias: ls)
-kestra namespaces list
+kestractl namespaces list
 
 # Filter namespaces with query
-kestra namespaces list --query my.namespace
+kestractl namespaces list --query my.namespace
 ```
 
 ### Namespace Files (nsfiles)
 
 ```bash
 # List files at the namespace root (alias: ls)
-kestra nsfiles list my.namespace
+kestractl nsfiles list my.namespace
 
 # List files in a directory
-kestra nsfiles list my.namespace --path workflows/
+kestractl nsfiles list my.namespace --path workflows/
 
 # List files recursively
-kestra nsfiles list my.namespace --path workflows/ --recursive
+kestractl nsfiles list my.namespace --path workflows/ --recursive
 
 # Get a file's raw content (alias: cat)
-kestra nsfiles get my.namespace --path workflows/example.yaml
+kestractl nsfiles get my.namespace --path workflows/example.yaml
 
 # Get a specific revision
-kestra nsfiles get my.namespace --path workflows/example.yaml --revision 3
+kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
 
 # Upload a single file
-kestra nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
 
 # Upload a directory (recursive)
-kestra nsfiles upload my.namespace ./assets --path resources
+kestractl nsfiles upload my.namespace ./assets --path resources
 
 # Override existing files
-kestra nsfiles upload my.namespace ./assets --path resources --override
+kestractl nsfiles upload my.namespace ./assets --path resources --override
 
 # Stop on the first error
-kestra nsfiles upload my.namespace ./assets --path resources --fail-fast
+kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
 
 # Delete a file
-kestra nsfiles delete my.namespace --path workflows/example.yaml
+kestractl nsfiles delete my.namespace --path workflows/example.yaml
 
 # Delete a directory recursively
-kestra nsfiles delete my.namespace --path workflows --recursive
+kestractl nsfiles delete my.namespace --path workflows --recursive
 
 # Ignore missing targets
-kestra nsfiles delete my.namespace --path workflows/example.yaml --force
+kestractl nsfiles delete my.namespace --path workflows/example.yaml --force
 ```
 
 ### Output Formats
 
 ```bash
 # Table output (default, human-readable)
-kestra flows list my.namespace
+kestractl flows list my.namespace
 
 # JSON output (for scripting)
-kestra flows list my.namespace --output json
+kestractl flows list my.namespace --output json
 ```
 
 ### Overriding Configuration
 
 ```bash
 # Override config settings with flags
-kestra flows get my.namespace my-flow \
+kestractl flows get my.namespace my-flow \
   --host https://kestra.example.com \
   --tenant production \
   --token YOUR_TOKEN
 
 # Or use environment variables
-KESTRA_HOST=https://kestra.example.com \
-KESTRA_TENANT=production \
-KESTRA_TOKEN=YOUR_TOKEN \
-  kestra flows list my.namespace
+KESTRACTL_HOST=https://kestra.example.com \
+KESTRACTL_TENANT=production \
+KESTRACTL_TOKEN=YOUR_TOKEN \
+  kestractl flows list my.namespace
 ```
 
 ## Architecture
@@ -259,7 +259,7 @@ kestra-cli/
 └── src/cli/
     ├── root.go                # Root command, global flags, Viper initialization
     ├── client.go              # Client wrapper for SDK with Viper config resolution
-    ├── auth.go                # AuthManager - ~/.kestra/config.yaml persistence (YAML)
+	    ├── auth.go                # AuthManager - ~/.kestractl/config.yaml persistence (YAML)
     ├── helpers.go             # Output formatting utilities
     ├── config.go              # Config subcommands (add, show, use, remove)
     ├── flows.go               # Flows commands (list, get, deploy)
@@ -288,7 +288,7 @@ kestra-cli/
 
 ```bash
 go build ./...
-./kestra --help
+./kestractl --help
 ```
 
 ### Testing

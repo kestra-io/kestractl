@@ -10,13 +10,13 @@ func TestHelpFlag(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Empty(t, stderr)
-	require.Contains(t, stdout, "Kestra CLI is a command-line tool")
+	require.Contains(t, stdout, "kestractl is a command-line tool")
 }
 func TestUnknownCmd(t *testing.T) {
 	_, stderr, _ := RunCliCmd(t, "unknownCMD")
 
 	require.Contains(t, stderr, "Error: unknown command \"unknownCMD\"")
-	require.Contains(t, stderr, "Run 'kestra --help' for usage.")
+	require.Contains(t, stderr, "Run 'kestractl --help' for usage.")
 }
 func TestUnknownFlag(t *testing.T) {
 	_, stderr, _ := RunCliCmd(t, "--unknownFlag")

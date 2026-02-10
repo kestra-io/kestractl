@@ -1,7 +1,7 @@
 # e2e tests
 this a separate and unrelated (GO dependencies wise) GO project to tests our Kestra CLI.
 
-it will build a temporary executable binary or kestra cli, and then use go.Command(..) to run real commands
+it will build a temporary executable binary or kestractl cli, and then use go.Command(..) to run real commands
 it requires a running Kestra ee instance with this configuration: [docker-setup](docker-setup)
 
 ## run tests

@@ -28,13 +28,13 @@ func newNamespacesListCommand() *cobra.Command {
 
 Optionally filter results using the --query flag to search for specific namespaces.`,
 		Example: `  # List all namespaces
-  kestra namespaces list
+	  kestractl namespaces list
 
-  # Filter namespaces with a search query
-  kestra namespaces list --query my.namespace
+	  # Filter namespaces with a search query
+	  kestractl namespaces list --query my.namespace
 
-  # List namespaces as JSON
-  kestra namespaces list --output json`,
+	  # List namespaces as JSON
+	  kestractl namespaces list --output json`,
 		Aliases: []string{"ls"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
