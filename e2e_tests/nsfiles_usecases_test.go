@@ -18,3 +18,10 @@ func TestNsfilesUpload_namespaceNotFound(t *testing.T) {
 
 	require.Error(t, err)
 }
+
+func TestNsfilesUpload_allowRelative(t *testing.T) {
+	_, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "upload", "company", "./", "--path", "./")
+	// TODO
+	require.Empty(t, stderr)
+	require.NoError(t, err)
+}
