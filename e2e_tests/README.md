@@ -7,13 +7,13 @@ it requires a running Kestra ee instance with this configuration: [docker-setup]
 ## run tests
 either use a running Kestra ee instance and do 
 ```
-# in directory kestra-cli/e2e_tests
+# in directory kestractl/e2e_tests
 go test ./...
 ```
 
 or 
 
 ```
-# in directory kestra-cli
+# in directory kestractl
 sh -c run-e2e-tests.sh
 ```

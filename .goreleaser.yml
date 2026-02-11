@@ -1,0 +1,55 @@
+version: 2
+
+project_name: kestractl
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: kestractl
+    main: .
+    binary: kestractl
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X github.com/kestra-io/kestractl/src/cli.version={{.Version}} -X github.com/kestra-io/kestractl/src/cli.commit={{.Commit}} -X github.com/kestra-io/kestractl/src/cli.buildDate={{.Date}}
+
+archives:
+  - id: binary
+    ids:
+      - kestractl
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if eq .Os \"windows\" }}.exe{{ end }}"
+    formats: [binary]
+  - id: archive
+    ids:
+      - kestractl
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  name_template: "{{ .Version }}"
+  prerelease: auto
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"

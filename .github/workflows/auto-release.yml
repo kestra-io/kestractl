@@ -1,0 +1,59 @@
+name: Auto Release
+# when a semver commit worthy of being release reach the main branch, increment semver version and release it automatically
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PERSONAL_TOKEN }}
+      - name: Git - Configure
+        run: |
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Run tests
+        run: go test ./src/...
+
+      - name: GCP - Auth with github service account
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: configure docker access to GCP registry for EE image
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev
+
+      - name: Build local CLI and test it E2E
+        env:
+          APPLICATION_SECRETS: ${{ secrets.APPLICATION_SECRETS }}
+        run: |
+          echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+          sh run-e2e-tests.sh
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install semantic-release
+        run: npm install -g semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator conventional-changelog-conventionalcommits
+
+      - name: Create tag from conventional commits
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release

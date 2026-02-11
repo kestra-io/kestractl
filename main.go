@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/kestra-io/kestra-cli/src/cli"
+	"github.com/kestra-io/kestractl/src/cli"
 )
 
 func main() {

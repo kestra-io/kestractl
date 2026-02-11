@@ -1,4 +1,4 @@
-module github.com/kestra-io/kestra-cli
+module github.com/kestra-io/kestractl
 
 go 1.25
 

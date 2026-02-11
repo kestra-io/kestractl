@@ -1,0 +1,27 @@
+{
+  "branches": [
+    {
+      "name": "main",
+      "prerelease": "alpha"
+    },
+    {
+      "name": "dummy-branch",
+      "__description": "used as a dummy 'release' branch when we want to turn our 'main' branch to a pre-release"
+    }
+  ],
+  "tagFormat": "${version}",
+  "plugins": [
+    [
+      "@semantic-release/commit-analyzer",
+      {
+        "preset": "conventionalcommits"
+      }
+    ],
+    [
+      "@semantic-release/release-notes-generator",
+      {
+        "preset": "conventionalcommits"
+      }
+    ]
+  ]
+}
