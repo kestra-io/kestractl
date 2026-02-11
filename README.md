@@ -117,7 +117,7 @@ kestractl flows list my.namespace
 # List flows across all namespaces
 kestractl flows list
 
-# Get a specific flow (aliases: show, describe)
+# Get a flow source (aliases: show, describe)
 kestractl flows get my.namespace my-flow
 
 # Deploy a single flow from YAML (aliases: create, apply)
