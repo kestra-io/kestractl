@@ -190,16 +190,16 @@ kestractl nsfiles get my.namespace --path workflows/example.yaml
 kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
 
 # Upload a single file
-kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
 
 # Upload a directory (recursive)
-kestractl nsfiles upload my.namespace ./assets --path resources
+kestractl nsfiles upload my.namespace ./assets resources
 
 # Override existing files
-kestractl nsfiles upload my.namespace ./assets --path resources --override
+kestractl nsfiles upload my.namespace ./assets resources --override
 
 # Stop on the first error
-kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
+kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
 # Delete a file
 kestractl nsfiles delete my.namespace --path workflows/example.yaml

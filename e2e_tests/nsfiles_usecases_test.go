@@ -13,8 +13,8 @@ func TestNsfilesList_fileNotFound(t *testing.T) {
 }
 
 func TestNsfilesUpload_namespaceNotFound(t *testing.T) {
-	t.Skip("to handle, right now it uploads the file without the namespace being created") // TODO
-	_, _, err := RunAuthenticatedCliCmd(t, "nsfiles", "upload", "unknownnamespace", "./", "--path", "./o")
+	_, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "upload", "unknownnamespace", "./", "./o")
 
 	require.Error(t, err)
+	require.Contains(t, stderr, "namespace 'unknownnamespace' does not exist")
 }

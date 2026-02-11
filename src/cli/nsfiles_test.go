@@ -55,7 +55,7 @@ func TestNamespaceFilesGetCommand_Flags(t *testing.T) {
 func TestNamespaceFilesUploadCommand_Flags(t *testing.T) {
 	cmd := newNamespaceFilesUploadCommand()
 
-	flags := []string{"path", "override", "fail-fast"}
+	flags := []string{"allow-missing-namespace", "override", "fail-fast"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
@@ -120,8 +120,8 @@ func TestNamespaceFilesUploadCommand_Help(t *testing.T) {
 	}
 
 	expected := []string{
-		"upload <namespace> <local-path>",
-		"--path",
+		"upload <namespace> <local-path> <path>",
+		"--allow-missing-namespace",
 		"--override",
 		"--fail-fast",
 	}

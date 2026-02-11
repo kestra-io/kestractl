@@ -117,12 +117,12 @@ If the provided path is a directory, the command returns a directory listing.`,
 }
 
 func newNamespaceFilesUploadCommand() *cobra.Command {
-	var destination string
 	var override bool
 	var failFast bool
+	var allowMissingNamespace bool
 
 	cmd := &cobra.Command{
-		Use:          "upload <namespace> <local-path>",
+		Use:          "upload <namespace> <local-path> <path>",
 		Short:        "Upload namespace files.",
 		SilenceUsage: true,
 		Long: `Upload a local file or directory to a namespace path.
@@ -131,24 +131,25 @@ When a directory is provided, all files are uploaded recursively.
 Hidden files and directories (starting with .) are skipped.
 
 The destination path is required and missing directories are created automatically.
+The namespace must already exist unless --allow-missing-namespace is set.
 By default, uploads fail if a destination file exists. Use --override to replace files.
 
 When uploading multiple files, failures are collected unless --fail-fast is set.`,
 		Example: `  # Upload a single file
-	  kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+	  kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
 
 	  # Upload a directory (recursive)
-	  kestractl nsfiles upload my.namespace ./assets --path resources
+	  kestractl nsfiles upload my.namespace ./assets resources
 
 	  # Override existing files
-	  kestractl nsfiles upload my.namespace ./assets --path resources --override
+	  kestractl nsfiles upload my.namespace ./assets resources --override
 
 	  # Stop on the first error
-	  kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
+	  kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
 	  # Upload with JSON output
-	  kestractl nsfiles upload my.namespace ./assets --path resources --output json`,
-		Args: cobra.ExactArgs(2),
+	  kestractl nsfiles upload my.namespace ./assets resources --output json`,
+		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -159,14 +160,13 @@ When uploading multiple files, failures are collected unless --fail-fast is set.
 				return err
 			}
 
-			return runNamespaceFilesUpload(client, args[0], args[1], destination, override, failFast, renderer)
+			return runNamespaceFilesUpload(client, args[0], args[1], args[2], override, failFast, allowMissingNamespace, renderer)
 		},
 	}
 
-	cmd.Flags().StringVar(&destination, "path", "", "Destination path within the namespace")
-	_ = cmd.MarkFlagRequired("path")
 	cmd.Flags().BoolVar(&override, "override", false, "Override destination files if they already exist")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first upload error")
+	cmd.Flags().BoolVar(&allowMissingNamespace, "allow-missing-namespace", false, "Allow uploads when the namespace does not exist")
 
 	return cmd
 }
@@ -319,10 +319,20 @@ type localNamespaceUploadFile struct {
 	Size     int64
 }
 
-func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, renderer *Renderer) error {
+func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, allowMissingNamespace bool, renderer *Renderer) error {
 	normalizedDest := normalizeNamespacePath(destination)
 	if normalizedDest == "" {
 		return fmt.Errorf("destination path is required")
+	}
+
+	if !allowMissingNamespace {
+		exists, err := namespaceExists(client, namespace)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("namespace '%s' does not exist", namespace)
+		}
 	}
 
 	info, err := os.Stat(localPath)
@@ -567,6 +577,17 @@ func listNamespaceDirectory(client *Client, namespace, path string) ([]kestra.Fi
 	}
 
 	return attributes, nil
+}
+
+func namespaceExists(client *Client, namespace string) (bool, error) {
+	_, resp, err := client.API.NamespacesAPI.Namespace(client.Ctx, namespace, client.Tenant).Execute()
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			return false, nil
+		}
+		return false, formatSDKError(err)
+	}
+	return true, nil
 }
 
 func lookupNamespaceFileStats(client *Client, namespace, path string) (*kestra.FileAttributes, bool, error) {
