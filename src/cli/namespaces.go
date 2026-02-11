@@ -75,19 +75,14 @@ func runNamespacesList(client *Client, query string, renderer *Renderer) error {
 		jsonResults := make([]map[string]any, len(fallback))
 		for i, ns := range fallback {
 			jsonResults[i] = map[string]any{
-				"id":      ns.ID,
-				"deleted": ns.Deleted,
+				"id": ns.ID,
 			}
 		}
 
 		return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
-			fmt.Fprintln(w, "ID\tDeleted")
+			fmt.Fprintln(w, "ID")
 			for _, ns := range fallback {
-				deleted := "false"
-				if ns.Deleted {
-					deleted = "true"
-				}
-				fmt.Fprintf(w, "%s\t%s\n", ns.ID, deleted)
+				fmt.Fprintf(w, "%s\n", ns.ID)
 			}
 			fmt.Fprintf(w, "\nTotal namespaces: %d\n", len(fallback))
 			return nil
@@ -99,19 +94,14 @@ func runNamespacesList(client *Client, query string, renderer *Renderer) error {
 	jsonResults := make([]map[string]any, len(results))
 	for i, ns := range results {
 		jsonResults[i] = map[string]any{
-			"id":      ns.GetId(),
-			"deleted": ns.GetDeleted(),
+			"id": ns.GetId(),
 		}
 	}
 
 	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "ID\tDeleted")
+		fmt.Fprintln(w, "ID")
 		for _, ns := range results {
-			deleted := "false"
-			if ns.GetDeleted() {
-				deleted = "true"
-			}
-			fmt.Fprintf(w, "%s\t%s\n", ns.GetId(), deleted)
+			fmt.Fprintf(w, "%s\n", ns.GetId())
 		}
 		fmt.Fprintf(w, "\nTotal namespaces: %d\n", len(results))
 		return nil
