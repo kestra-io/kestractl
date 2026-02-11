@@ -475,7 +475,7 @@ func formatValidateResults(violations []kestra.ValidateConstraintViolation, file
 				deprecations,
 			)
 		}
-		fmt.Fprintf(w, "\n%d flow(s) valid, %d failed\n", valid, failed)
+		fmt.Fprintf(w, "\n%d valid flow(s), %d failed\n", valid, failed)
 		return nil
 	}); err != nil {
 		return err
