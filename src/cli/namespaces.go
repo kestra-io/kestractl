@@ -10,7 +10,7 @@ import (
 func newNamespacesCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "namespaces",
-		Short: "Manage namespaces",
+		Short: "Manage namespaces (create, list, delete)",
 	}
 
 	cmd.AddCommand(newNamespacesListCommand())

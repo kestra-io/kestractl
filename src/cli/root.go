@@ -178,7 +178,7 @@ func Execute() error {
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Show version information.",
+		Short: "Show CLI version information",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("kestractl v%s\n", version)
 			if commit != "none" {

@@ -15,7 +15,7 @@ import (
 func newExecutionsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "executions",
-		Short: "Manage executions",
+		Short: "Manage executions (start, list, cancel, delete)",
 	}
 
 	cmd.AddCommand(newExecutionsKillCommand())

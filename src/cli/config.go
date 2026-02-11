@@ -12,7 +12,7 @@ import (
 func newConfigCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage configuration and authentication",
+		Short: "Manage CLI configuration and authentication",
 	}
 
 	cmd.AddCommand(newConfigShowCommand())

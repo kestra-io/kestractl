@@ -41,7 +41,7 @@ type ValidateResult struct {
 func newFlowsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flows",
-		Short: "Manage flows",
+		Short: "Manage flows (create, update, list, delete)",
 	}
 
 	cmd.AddCommand(newFlowsListCommand())

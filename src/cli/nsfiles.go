@@ -21,7 +21,7 @@ import (
 func newNamespaceFilesCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "nsfiles",
-		Short: "Manage namespace files",
+		Short: "Manage namespace files (upload, list, delete)",
 	}
 
 	cmd.AddCommand(newNamespaceFilesListCommand())
