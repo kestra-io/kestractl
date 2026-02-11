@@ -44,7 +44,7 @@ func TestNamespaceFilesListCommand_Flags(t *testing.T) {
 func TestNamespaceFilesGetCommand_Flags(t *testing.T) {
 	cmd := newNamespaceFilesGetCommand()
 
-	flags := []string{"path", "revision"}
+	flags := []string{"revision"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
@@ -66,7 +66,7 @@ func TestNamespaceFilesUploadCommand_Flags(t *testing.T) {
 func TestNamespaceFilesDeleteCommand_Flags(t *testing.T) {
 	cmd := newNamespaceFilesDeleteCommand()
 
-	flags := []string{"path", "recursive", "force"}
+	flags := []string{"recursive", "force"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
@@ -101,8 +101,7 @@ func TestNamespaceFilesGetCommand_Help(t *testing.T) {
 	}
 
 	expected := []string{
-		"get <namespace>",
-		"--path",
+		"get <namespace> <path>",
 		"--revision",
 	}
 	for _, s := range expected {
@@ -140,8 +139,7 @@ func TestNamespaceFilesDeleteCommand_Help(t *testing.T) {
 	}
 
 	expected := []string{
-		"delete <namespace>",
-		"--path",
+		"delete <namespace> <path>",
 		"--recursive",
 		"--force",
 	}

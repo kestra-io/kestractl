@@ -182,10 +182,10 @@ kestractl nsfiles list my.namespace --path workflows/
 kestractl nsfiles list my.namespace --path workflows/ --recursive
 
 # Get a file's raw content (alias: cat)
-kestractl nsfiles get my.namespace --path workflows/example.yaml
+kestractl nsfiles get my.namespace workflows/example.yaml
 
 # Get a specific revision
-kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
+kestractl nsfiles get my.namespace workflows/example.yaml --revision 3
 
 # Upload a single file
 kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
@@ -200,13 +200,13 @@ kestractl nsfiles upload my.namespace ./assets resources --override
 kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
 # Delete a file
-kestractl nsfiles delete my.namespace --path workflows/example.yaml
+kestractl nsfiles delete my.namespace workflows/example.yaml
 
 # Delete a directory recursively
-kestractl nsfiles delete my.namespace --path workflows --recursive
+kestractl nsfiles delete my.namespace workflows --recursive
 
 # Ignore missing targets
-kestractl nsfiles delete my.namespace --path workflows/example.yaml --force
+kestractl nsfiles delete my.namespace workflows/example.yaml --force
 ```
 
 ### Output Formats
