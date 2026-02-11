@@ -157,8 +157,6 @@ kestractl executions run my.namespace my-flow --wait
 # Get execution details (aliases: show, describe)
 kestractl executions get 2TLGqHrXC9k8BczKJe5djX
 
-# Kill running executions
-kestractl executions kill-running
 ```
 
 ### Namespaces
@@ -264,7 +262,7 @@ kestractl/
     ├── config.go              # Config subcommands (add, show, use, remove)
     ├── flows.go               # Flows commands (list, get, deploy)
     ├── flows_test.go          # Unit tests
-    ├── executions.go          # Executions commands (run, get, kill-running)
+    ├── executions.go          # Executions commands (run, get)
     ├── executions_test.go     # Unit tests
     ├── namespaces.go          # Namespaces commands (list)
     ├── namespaces_test.go     # Unit tests

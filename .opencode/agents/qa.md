@@ -31,7 +31,6 @@ Workflow:
    - `./kestractl executions run <namespace> <flow_id>`
    - `./kestractl executions run <namespace> <flow_id> --wait`
    - `./kestractl executions get <execution_id>` (use the ID from the run above)
-   - `./kestractl executions kill-running` (run only if `KESTRA_QA_ALLOW_KILL_RUNNING=true`, otherwise skip and report)
 4. Report results concisely and call out any failures with exact command output summaries.
 
 Constraints:
