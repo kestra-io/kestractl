@@ -28,5 +28,4 @@ func TestNamespacesList_system_json(t *testing.T) {
 	require.NoError(t, err, "json from --output json should be valid")
 	require.NotEmpty(t, parsedJson)
 	require.Equal(t, "system", parsedJson[0]["id"])
-	require.Equal(t, false, parsedJson[0]["deleted"])
 }

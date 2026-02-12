@@ -117,7 +117,7 @@ kestractl flows list my.namespace
 # List flows across all namespaces
 kestractl flows list
 
-# Get a specific flow (aliases: show, describe)
+# Get a flow source (aliases: show, describe)
 kestractl flows get my.namespace my-flow
 
 # Deploy a single flow from YAML (aliases: create, apply)
@@ -157,8 +157,6 @@ kestractl executions run my.namespace my-flow --wait
 # Get execution details (aliases: show, describe)
 kestractl executions get 2TLGqHrXC9k8BczKJe5djX
 
-# Kill running executions
-kestractl executions kill-running
 ```
 
 ### Namespaces
@@ -184,31 +182,31 @@ kestractl nsfiles list my.namespace --path workflows/
 kestractl nsfiles list my.namespace --path workflows/ --recursive
 
 # Get a file's raw content (alias: cat)
-kestractl nsfiles get my.namespace --path workflows/example.yaml
+kestractl nsfiles get my.namespace workflows/example.yaml
 
 # Get a specific revision
-kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
+kestractl nsfiles get my.namespace workflows/example.yaml --revision 3
 
 # Upload a single file
-kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
 
 # Upload a directory (recursive)
-kestractl nsfiles upload my.namespace ./assets --path resources
+kestractl nsfiles upload my.namespace ./assets resources
 
 # Override existing files
-kestractl nsfiles upload my.namespace ./assets --path resources --override
+kestractl nsfiles upload my.namespace ./assets resources --override
 
 # Stop on the first error
-kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
+kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
 # Delete a file
-kestractl nsfiles delete my.namespace --path workflows/example.yaml
+kestractl nsfiles delete my.namespace workflows/example.yaml
 
 # Delete a directory recursively
-kestractl nsfiles delete my.namespace --path workflows --recursive
+kestractl nsfiles delete my.namespace workflows --recursive
 
 # Ignore missing targets
-kestractl nsfiles delete my.namespace --path workflows/example.yaml --force
+kestractl nsfiles delete my.namespace workflows/example.yaml --force
 ```
 
 ### Output Formats
@@ -264,7 +262,7 @@ kestractl/
     ├── config.go              # Config subcommands (add, show, use, remove)
     ├── flows.go               # Flows commands (list, get, deploy)
     ├── flows_test.go          # Unit tests
-    ├── executions.go          # Executions commands (run, get, kill-running)
+    ├── executions.go          # Executions commands (run, get)
     ├── executions_test.go     # Unit tests
     ├── namespaces.go          # Namespaces commands (list)
     ├── namespaces_test.go     # Unit tests

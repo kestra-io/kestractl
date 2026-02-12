@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -41,7 +42,7 @@ type ValidateResult struct {
 func newFlowsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "flows",
-		Short: "Manage flows",
+		Short: "Manage flows (create, update, list, delete)",
 	}
 
 	cmd.AddCommand(newFlowsListCommand())
@@ -159,15 +160,15 @@ func listAllFlows(client *Client) ([]kestra.Flow, error) {
 func newFlowsGetCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "get <namespace> <flow_id>",
-		Short: "Get a specific flow.",
-		Long: `Retrieve the full definition of a specific flow.
+		Short: "Get a flow definition.",
+		Long: `Retrieve the flow source and write it to stdout.
 
-The default output format is JSON as it preserves the complete flow definition.`,
-		Example: `  # Get a flow as JSON
+Use --output json to include metadata alongside the source.`,
+		Example: `  # Get a flow source (YAML)
 	  kestractl flows get my.namespace my-flow
 
-	  # Get a flow as a table
-	  kestractl flows get my.namespace my-flow --output table`,
+	  # Get a flow as JSON with source
+	  kestractl flows get my.namespace my-flow --output json`,
 		Aliases: []string{"show", "describe"},
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -193,29 +194,27 @@ func runFlowsGet(client *Client, namespace, flowID string, renderer *Renderer) e
 	if err != nil {
 		return formatSDKError(err)
 	}
-
-	result := map[string]any{
-		"id":        flow.GetId(),
-		"namespace": flow.GetNamespace(),
-		"revision":  flow.GetRevision(),
+	if flow == nil {
+		return fmt.Errorf("flow not found")
 	}
 
-	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "Property\tValue")
+	source := flow.GetSource()
 
-		keys := make([]string, 0, len(result))
-		for key := range result {
-			keys = append(keys, key)
+	if renderer.IsJSON() {
+		result := map[string]any{
+			"id":        flow.GetId(),
+			"namespace": flow.GetNamespace(),
+			"revision":  flow.GetRevision(),
+			"source":    source,
 		}
-		sort.Strings(keys)
+		return renderer.RenderJSON(result)
+	}
 
-		for _, key := range keys {
-			val := toPrettyString(result[key])
-			val = strings.ReplaceAll(val, "\n", "\\n")
-			fmt.Fprintf(w, "%s\t%s\n", key, val)
-		}
-		return nil
-	})
+	if source == "" {
+		return fmt.Errorf("flow source is empty")
+	}
+	_, err = io.WriteString(renderer.Writer(), source)
+	return err
 }
 
 func newFlowsDeployCommand() *cobra.Command {
@@ -476,7 +475,7 @@ func formatValidateResults(violations []kestra.ValidateConstraintViolation, file
 				deprecations,
 			)
 		}
-		fmt.Fprintf(w, "\n%d flow(s) valid, %d failed\n", valid, failed)
+		fmt.Fprintf(w, "\n%d valid flow(s), %d failed\n", valid, failed)
 		return nil
 	}); err != nil {
 		return err

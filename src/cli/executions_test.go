@@ -39,24 +39,6 @@ func TestExecutionsGetCommand_NoArgs(t *testing.T) {
 	}
 }
 
-func TestExecutionsKillCommand_RequiresNamespaceWithFlowID(t *testing.T) {
-	// Override client to avoid config errors
-	original := newClientFunc
-	newClientFunc = func() (*Client, error) {
-		return &Client{Tenant: "main"}, nil
-	}
-	defer func() { newClientFunc = original }()
-
-	cmd := newExecutionsKillCommand()
-	_, err := executeCommand(cmd, "--flow-id", "some-flow")
-	if err == nil {
-		t.Fatal("expected error when flow-id is provided without namespace")
-	}
-	if !strings.Contains(err.Error(), "--namespace is required") {
-		t.Fatalf("expected namespace required error, got: %v", err)
-	}
-}
-
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		input    any

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -15,85 +14,13 @@ import (
 func newExecutionsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "executions",
-		Short: "Manage executions",
+		Short: "Manage executions (start, list, cancel, delete)",
 	}
 
-	cmd.AddCommand(newExecutionsKillCommand())
 	cmd.AddCommand(newExecutionsRunCommand())
 	cmd.AddCommand(newExecutionsGetCommand())
 
 	return cmd
-}
-
-func newExecutionsKillCommand() *cobra.Command {
-	var namespace string
-	var flowID string
-
-	cmd := &cobra.Command{
-		Use:   "kill-running",
-		Short: "Kill executions in RUNNING state.",
-		Long: `Kill all running executions, optionally filtered by namespace and flow ID.
-
-This command sends a kill request to all executions currently in RUNNING state.
-Use the --namespace and --flow-id flags to target specific executions.`,
-		Example: `  # Kill all running executions
-	  kestractl executions kill-running
-
-	  # Kill running executions in a specific namespace
-	  kestractl executions kill-running --namespace my.namespace
-
-	  # Kill running executions for a specific flow
-	  kestractl executions kill-running --namespace my.namespace --flow-id my-flow`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			if flowID != "" && namespace == "" {
-				return errors.New("--namespace is required when --flow-id is provided")
-			}
-
-			client, err := NewClient()
-			if err != nil {
-				return err
-			}
-
-			return runExecutionsKill(client, namespace, flowID, renderer)
-		},
-	}
-
-	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
-	cmd.Flags().StringVarP(&flowID, "flow-id", "f", "", "Filter by flow ID (requires --namespace)")
-
-	return cmd
-}
-
-func runExecutionsKill(client *Client, namespace, flowID string, renderer *Renderer) error {
-	// Note: The SDK doesn't fully support filtering yet
-	if namespace != "" {
-		return errors.New("filter by namespace not yet implemented in SDK")
-	}
-	if flowID != "" {
-		return errors.New("filter by flowID not yet implemented in SDK")
-	}
-
-	result, _, err := client.API.ExecutionsAPI.KillExecutionsByQuery(client.Ctx, client.Tenant).Execute()
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "Kill request sent successfully!")
-		fmt.Fprintln(w, "Filters: none (all running executions)")
-		fmt.Fprintln(w, "State: RUNNING")
-
-		if count, ok := result["count"]; ok {
-			fmt.Fprintf(w, "Executions killed: %v\n", count)
-		} else if message, ok := result["message"]; ok {
-			fmt.Fprintf(w, "Message: %v\n", message)
-		}
-		return nil
-	})
 }
 
 func newExecutionsRunCommand() *cobra.Command {

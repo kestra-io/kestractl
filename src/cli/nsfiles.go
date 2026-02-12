@@ -21,7 +21,7 @@ import (
 func newNamespaceFilesCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "nsfiles",
-		Short: "Manage namespace files",
+		Short: "Manage namespace files (upload, list, delete)",
 	}
 
 	cmd.AddCommand(newNamespaceFilesListCommand())
@@ -76,25 +76,30 @@ Supports listing the root or a specific directory path, with optional recursion.
 }
 
 func newNamespaceFilesGetCommand() *cobra.Command {
-	var path string
 	var revision string
 
 	cmd := &cobra.Command{
-		Use:   "get <namespace>",
+		Use:   "get <namespace> <path>",
 		Short: "Get namespace file content.",
 		Long: `Retrieve a namespace file and stream its raw bytes to stdout.
 
 If the provided path is a directory, the command returns a directory listing.`,
 		Example: `  # Get a file's raw content
-	  kestractl nsfiles get my.namespace --path workflows/example.yaml
+	  kestractl nsfiles get my.namespace workflows/example.yaml
 
 	  # Get a specific revision
-	  kestractl nsfiles get my.namespace --path workflows/example.yaml --revision 3
+	  kestractl nsfiles get my.namespace workflows/example.yaml --revision 3
 
 	  # List a directory instead of reading a file
-	  kestractl nsfiles get my.namespace --path workflows/`,
+	  kestractl nsfiles get my.namespace workflows/`,
 		Aliases: []string{"cat"},
-		Args:    cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				_ = cmd.Usage()
+				return fmt.Errorf("namespace and path are required")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -105,24 +110,22 @@ If the provided path is a directory, the command returns a directory listing.`,
 				return err
 			}
 
-			return runNamespaceFilesGet(client, args[0], path, revision, renderer, cmd.OutOrStdout())
+			return runNamespaceFilesGet(client, args[0], args[1], revision, renderer, cmd.OutOrStdout())
 		},
 	}
 
-	cmd.Flags().StringVar(&path, "path", "", "Path within the namespace")
-	_ = cmd.MarkFlagRequired("path")
 	cmd.Flags().StringVar(&revision, "revision", "", "Revision number to fetch")
 
 	return cmd
 }
 
 func newNamespaceFilesUploadCommand() *cobra.Command {
-	var destination string
 	var override bool
 	var failFast bool
+	var allowMissingNamespace bool
 
 	cmd := &cobra.Command{
-		Use:          "upload <namespace> <local-path>",
+		Use:          "upload <namespace> <local-path> <path>",
 		Short:        "Upload namespace files.",
 		SilenceUsage: true,
 		Long: `Upload a local file or directory to a namespace path.
@@ -131,24 +134,31 @@ When a directory is provided, all files are uploaded recursively.
 Hidden files and directories (starting with .) are skipped.
 
 The destination path is required and missing directories are created automatically.
+The namespace must already exist unless --allow-missing-namespace is set.
 By default, uploads fail if a destination file exists. Use --override to replace files.
 
 When uploading multiple files, failures are collected unless --fail-fast is set.`,
 		Example: `  # Upload a single file
-	  kestractl nsfiles upload my.namespace ./local.txt --path workflows/local.txt
+	  kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
 
 	  # Upload a directory (recursive)
-	  kestractl nsfiles upload my.namespace ./assets --path resources
+	  kestractl nsfiles upload my.namespace ./assets resources
 
 	  # Override existing files
-	  kestractl nsfiles upload my.namespace ./assets --path resources --override
+	  kestractl nsfiles upload my.namespace ./assets resources --override
 
 	  # Stop on the first error
-	  kestractl nsfiles upload my.namespace ./assets --path resources --fail-fast
+	  kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
 	  # Upload with JSON output
-	  kestractl nsfiles upload my.namespace ./assets --path resources --output json`,
-		Args: cobra.ExactArgs(2),
+	  kestractl nsfiles upload my.namespace ./assets resources --output json`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 3 {
+				_ = cmd.Usage()
+				return fmt.Errorf("namespace, local path, and destination path are required")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -159,25 +169,23 @@ When uploading multiple files, failures are collected unless --fail-fast is set.
 				return err
 			}
 
-			return runNamespaceFilesUpload(client, args[0], args[1], destination, override, failFast, renderer)
+			return runNamespaceFilesUpload(client, args[0], args[1], args[2], override, failFast, allowMissingNamespace, renderer)
 		},
 	}
 
-	cmd.Flags().StringVar(&destination, "path", "", "Destination path within the namespace")
-	_ = cmd.MarkFlagRequired("path")
 	cmd.Flags().BoolVar(&override, "override", false, "Override destination files if they already exist")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first upload error")
+	cmd.Flags().BoolVar(&allowMissingNamespace, "allow-missing-namespace", false, "Allow uploads when the namespace does not exist")
 
 	return cmd
 }
 
 func newNamespaceFilesDeleteCommand() *cobra.Command {
-	var targetPath string
 	var recursive bool
 	var force bool
 
 	cmd := &cobra.Command{
-		Use:          "delete <namespace>",
+		Use:          "delete <namespace> <path>",
 		Short:        "Delete namespace files.",
 		SilenceUsage: true,
 		Long: `Delete a namespace file or directory.
@@ -185,17 +193,23 @@ func newNamespaceFilesDeleteCommand() *cobra.Command {
 Deleting directories requires --recursive. Missing targets return an error by default.
 Use --force to continue even when some targets are missing.`,
 		Example: `  # Delete a file
-	  kestractl nsfiles delete my.namespace --path workflows/example.yaml
+	  kestractl nsfiles delete my.namespace workflows/example.yaml
 
 	  # Delete a directory recursively
-	  kestractl nsfiles delete my.namespace --path workflows --recursive
+	  kestractl nsfiles delete my.namespace workflows --recursive
 
 	  # Ignore missing targets
-	  kestractl nsfiles delete my.namespace --path workflows/example.yaml --force
+	  kestractl nsfiles delete my.namespace workflows/example.yaml --force
 
 	  # Delete with JSON output
-	  kestractl nsfiles delete my.namespace --path workflows/example.yaml --output json`,
-		Args: cobra.ExactArgs(1),
+	  kestractl nsfiles delete my.namespace workflows/example.yaml --output json`,
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				_ = cmd.Usage()
+				return fmt.Errorf("namespace and path are required")
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -206,12 +220,10 @@ Use --force to continue even when some targets are missing.`,
 				return err
 			}
 
-			return runNamespaceFilesDelete(client, args[0], targetPath, recursive, force, renderer)
+			return runNamespaceFilesDelete(client, args[0], args[1], recursive, force, renderer)
 		},
 	}
 
-	cmd.Flags().StringVar(&targetPath, "path", "", "Path within the namespace")
-	_ = cmd.MarkFlagRequired("path")
 	cmd.Flags().BoolVar(&recursive, "recursive", false, "Delete directories recursively")
 	cmd.Flags().BoolVar(&force, "force", false, "Continue even if the target does not exist")
 
@@ -319,10 +331,20 @@ type localNamespaceUploadFile struct {
 	Size     int64
 }
 
-func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, renderer *Renderer) error {
+func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, allowMissingNamespace bool, renderer *Renderer) error {
 	normalizedDest := normalizeNamespacePath(destination)
 	if normalizedDest == "" {
 		return fmt.Errorf("destination path is required")
+	}
+
+	if !allowMissingNamespace {
+		exists, err := namespaceExists(client, namespace)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("namespace '%s' does not exist", namespace)
+		}
 	}
 
 	info, err := os.Stat(localPath)
@@ -567,6 +589,17 @@ func listNamespaceDirectory(client *Client, namespace, path string) ([]kestra.Fi
 	}
 
 	return attributes, nil
+}
+
+func namespaceExists(client *Client, namespace string) (bool, error) {
+	_, resp, err := client.API.NamespacesAPI.Namespace(client.Ctx, namespace, client.Tenant).Execute()
+	if err != nil {
+		if resp != nil && resp.StatusCode == 404 {
+			return false, nil
+		}
+		return false, formatSDKError(err)
+	}
+	return true, nil
 }
 
 func lookupNamespaceFileStats(client *Client, namespace, path string) (*kestra.FileAttributes, bool, error) {

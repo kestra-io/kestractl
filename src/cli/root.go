@@ -150,6 +150,12 @@ func initializeConfig(cmd *cobra.Command) error {
 			if !viper.IsSet(FlagToken) {
 				viper.SetDefault(FlagToken, viper.GetString("contexts."+defaultContext+".token"))
 			}
+			if !viper.IsSet(FlagUsername) {
+				viper.SetDefault(FlagUsername, viper.GetString("contexts."+defaultContext+".username"))
+			}
+			if !viper.IsSet(FlagPassword) {
+				viper.SetDefault(FlagPassword, viper.GetString("contexts."+defaultContext+".password"))
+			}
 		}
 	}
 
@@ -172,7 +178,7 @@ func Execute() error {
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
-		Short: "Show version information.",
+		Short: "Show CLI version information",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("kestractl v%s\n", version)
 			if commit != "none" {
