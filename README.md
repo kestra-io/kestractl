@@ -88,7 +88,6 @@ export KESTRACTL_HOST=http://localhost:8080
 export KESTRACTL_TENANT=main
 export KESTRACTL_TOKEN=YOUR_TOKEN
 export KESTRACTL_OUTPUT=json  # Optional: table or json
-export KESTRACTL_TELEMETRY_DISABLED=true  # Optional: disable CLI telemetry
 ```
 
 ### Configuration Precedence
