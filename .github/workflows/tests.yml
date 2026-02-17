@@ -36,3 +36,8 @@ jobs:
         run: |
           echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
           sh run-e2e-tests.sh
+
+      - name: Check installer is working
+        run: |
+          cat ./install-scripts/install.sh | VERSION=1.0.0-alpha.5 INSTALL_DIR=./ bash
+          ./kestractl --help
