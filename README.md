@@ -88,6 +88,7 @@ export KESTRACTL_HOST=http://localhost:8080
 export KESTRACTL_TENANT=main
 export KESTRACTL_TOKEN=YOUR_TOKEN
 export KESTRACTL_OUTPUT=json  # Optional: table or json
+export KESTRACTL_TELEMETRY_DISABLED=true  # Optional: disable CLI telemetry
 ```
 
 ### Configuration Precedence
@@ -103,6 +104,12 @@ This allows you to:
 - Store credentials securely in `~/.kestractl/config.yaml` for daily use
 - Override with environment variables in CI/CD pipelines
 - Override with flags for one-off commands
+
+### Telemetry
+
+The CLI sends anonymous telemetry to help the Kestra team understand real usage and improve the product over time, and it never blocks command execution.
+
+Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 
 ## Usage
 
