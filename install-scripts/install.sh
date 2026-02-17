@@ -16,10 +16,38 @@ require() {
 }
 
 download() {
+  local url="$1"
+  local output="$2"
+  local http_code
+
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$1" -o "$2"
+    http_code="$(curl -sSL -w "%{http_code}" -o "$output" "$url" || true)"
+    if [ -z "$http_code" ]; then
+      rm -f "$output"
+      err "Download failed: $url"
+    fi
+    if [ "$http_code" = "404" ]; then
+      rm -f "$output"
+      err "Download not found (404): $url"
+    fi
+    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 400 ]; then
+      rm -f "$output"
+      err "Download failed (HTTP $http_code): $url"
+    fi
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$1"
+    http_code="$(wget -q --server-response --spider "$url" 2>&1 | awk '/^  HTTP/{code=$2} END{print code}')"
+    if [ -z "$http_code" ]; then
+      err "Download failed: $url"
+    fi
+    if [ "$http_code" = "404" ]; then
+      err "Download not found (404): $url"
+    fi
+    if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 400 ]; then
+      err "Download failed (HTTP $http_code): $url"
+    fi
+    if ! wget -qO "$output" "$url"; then
+      err "Download failed: $url"
+    fi
   else
     err "curl or wget is required"
   fi
@@ -106,6 +134,7 @@ install "$tmp_dir/$asset_name" "$INSTALL_DIR/$BINARY_NAME"
 printf "%s installed to %s/%s\n" "$BINARY_NAME" "$INSTALL_DIR" "$BINARY_NAME"
 
 if [ "$INSTALL_DIR" = "${HOME}/.local/bin" ]; then
-  printf "Add %s to your PATH if needed:\n" "$INSTALL_DIR"
-  printf "  export PATH=\"%s:$PATH\"\n" "$INSTALL_DIR"
+  printf "\nAdd %s to your PATH if needed:\n" "$INSTALL_DIR"
+  printf "\tPATH='\$PATH:${INSTALL_DIR}'\n"
+  printf "\nget started with: kestractl --help\n"
 fi
