@@ -8,13 +8,13 @@ A Go-based command-line interface for managing Kestra flows, executions, and nam
 Install the latest release (macOS/Linux):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
+VERSION=1.0.0-alpha.5 curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
 ```
 
 Install a specific version or custom directory:
 
 ```bash
-VERSION=0.1.0 INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
+VERSION=1.0.0-alpha.5 INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
 ```
 
 ### or choose and download the proper binary for your OS/arch
