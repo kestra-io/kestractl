@@ -6,6 +6,7 @@ import (
 	"github.com/spf13/pflag"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -54,6 +55,7 @@ with support for multiple authentication contexts and output formats.`,
 			if err := initializeConfig(cmd); err != nil {
 				return err
 			}
+			initializeTelemetry()
 			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
 				if viper.ConfigFileUsed() != "" {
 					fmt.Printf("config location: %s\n", viper.ConfigFileUsed())
@@ -172,7 +174,21 @@ func initializeConfig(cmd *cobra.Command) error {
 
 // Execute runs the CLI.
 func Execute() error {
-	return NewRootCommand().Execute()
+	root := NewRootCommand()
+	start := time.Now()
+
+	executedCommand, err := root.ExecuteC()
+
+	commandPath := root.CommandPath()
+	if executedCommand != nil {
+		commandPath = executedCommand.CommandPath()
+	}
+
+	activeTelemetry.CaptureCommand(commandPath, err, time.Since(start))
+	activeTelemetry.Close()
+	activeTelemetry = noopTelemetry{}
+
+	return err
 }
 
 func newVersionCommand() *cobra.Command {

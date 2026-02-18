@@ -104,6 +104,12 @@ This allows you to:
 - Override with environment variables in CI/CD pipelines
 - Override with flags for one-off commands
 
+### Telemetry
+
+The CLI sends anonymous telemetry to help the Kestra team understand real usage and improve the product over time, and it never blocks command execution.
+
+Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
+
 ## Usage
 
 All commands support global flags for connection and output configuration:
