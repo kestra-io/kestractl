@@ -19,7 +19,9 @@ import (
 
 const (
 	telemetryDisabledEnv      = "KESTRACTL_TELEMETRY_DISABLED"
+	telemetryGitHubActionEnv  = "KESTRACTL_GITHUB_ACTION"
 	telemetryEventCommandDone = "cli_command_executed"
+	telemetryEventGHADone     = "gha_command_executed"
 	installationIDFileName    = "installation_id"
 )
 
@@ -51,9 +53,17 @@ func (t posthogTelemetry) CaptureCommand(commandPath string, commandErr error, d
 
 	_ = t.client.Enqueue(posthog.Capture{
 		DistinctId: t.distinctID,
-		Event:      telemetryEventCommandDone,
+		Event:      telemetryEventName(),
 		Properties: properties,
 	})
+}
+
+func telemetryEventName() string {
+	if envEnabled(os.Getenv(telemetryGitHubActionEnv)) {
+		return telemetryEventGHADone
+	}
+
+	return telemetryEventCommandDone
 }
 
 func (t posthogTelemetry) Close() {

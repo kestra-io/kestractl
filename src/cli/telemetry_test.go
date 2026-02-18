@@ -205,3 +205,26 @@ func TestTelemetryDisabled(t *testing.T) {
 		t.Fatal("expected telemetry to be enabled")
 	}
 }
+
+func TestTelemetryEventName(t *testing.T) {
+	t.Run("default event", func(t *testing.T) {
+		t.Setenv(telemetryGitHubActionEnv, "")
+		if event := telemetryEventName(); event != telemetryEventCommandDone {
+			t.Fatalf("expected %q, got %q", telemetryEventCommandDone, event)
+		}
+	})
+
+	t.Run("gha event when enabled", func(t *testing.T) {
+		t.Setenv(telemetryGitHubActionEnv, "true")
+		if event := telemetryEventName(); event != telemetryEventGHADone {
+			t.Fatalf("expected %q, got %q", telemetryEventGHADone, event)
+		}
+	})
+
+	t.Run("default event when disabled", func(t *testing.T) {
+		t.Setenv(telemetryGitHubActionEnv, "false")
+		if event := telemetryEventName(); event != telemetryEventCommandDone {
+			t.Fatalf("expected %q, got %q", telemetryEventCommandDone, event)
+		}
+	})
+}
