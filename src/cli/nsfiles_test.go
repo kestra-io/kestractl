@@ -149,3 +149,22 @@ func TestNamespaceFilesDeleteCommand_Help(t *testing.T) {
 		}
 	}
 }
+
+func TestNamespaceInFallbackList(t *testing.T) {
+	items := []namespaceListItem{
+		{ID: "team.alpha", Deleted: false},
+		{ID: "team.beta", Deleted: true},
+	}
+
+	if !namespaceInFallbackList(items, "team.alpha") {
+		t.Fatal("expected team.alpha to be considered existing")
+	}
+
+	if namespaceInFallbackList(items, "team.beta") {
+		t.Fatal("expected deleted namespace to be considered missing")
+	}
+
+	if namespaceInFallbackList(items, "team.gamma") {
+		t.Fatal("expected unknown namespace to be considered missing")
+	}
+}
