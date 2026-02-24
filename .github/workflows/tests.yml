@@ -39,5 +39,9 @@ jobs:
 
       - name: Check installer is working
         run: |
-          cat ./install-scripts/install.sh | VERSION=1.0.0-alpha.5 INSTALL_DIR=./ bash
+          cat ./install-scripts/install.sh | INSTALL_DIR=./ bash
+          ./kestractl --help
+      - name: Check installer is working when specifying version
+        run: |
+          cat ./install-scripts/install.sh | VERSION=1.0.0 INSTALL_DIR=./ bash
           ./kestractl --help
