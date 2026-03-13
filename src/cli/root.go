@@ -91,6 +91,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newFlowsCommand())
 	root.AddCommand(newNamespacesCommand())
 	root.AddCommand(newNamespaceFilesCommand())
+	root.AddCommand(newKVCommand())
 	root.AddCommand(newExecutionsCommand())
 
 	return root

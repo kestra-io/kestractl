@@ -200,6 +200,28 @@ kestractl namespaces list
 kestractl namespaces list --query my.namespace
 ```
 
+### Key-Value Store (kv)
+
+```bash
+# List all key-value entries
+kestractl kv list
+
+# List key-value entries in a namespace
+kestractl kv list my.namespace
+
+# Set a key with explicit type
+kestractl kv set my.namespace STRING api_key "my-secret"
+
+# Update an existing key (fails if key does not exist)
+kestractl kv update my.namespace NUMBER retries 3
+
+# Read a key
+kestractl kv get my.namespace api_key
+
+# Delete a key
+kestractl kv delete my.namespace api_key
+```
+
 ### Namespace Files (nsfiles)
 
 ```bash
