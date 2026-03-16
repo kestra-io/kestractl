@@ -618,14 +618,19 @@ func lookupNamespaceFileStats(client *Client, namespace, path string) (*kestra.F
 
 func getNamespaceFileStats(client *Client, namespace, path string) (kestra.FileAttributes, error) {
 	attributes, _, err := client.API.FilesAPI.FileMetadatas(client.Ctx, namespace, client.Tenant).Path(path).Execute()
+
+	if is404Error(err) || attributes == nil {
+		return kestra.FileAttributes{}, fmt.Errorf("namespace file stats not found")
+	}
 	if err != nil {
 		return kestra.FileAttributes{}, formatSDKError(err)
 	}
-	if attributes == nil {
-		return kestra.FileAttributes{}, fmt.Errorf("namespace file stats not found")
-	}
 
 	return *attributes, nil
+}
+
+func is404Error(err error) bool {
+	return err != nil && err.Error() == "404"
 }
 
 func getNamespaceFileContent(client *Client, namespace, path string, revision *int32) (*os.File, error) {
@@ -635,11 +640,12 @@ func getNamespaceFileContent(client *Client, namespace, path string, revision *i
 	}
 
 	file, _, err := req.Execute()
+
+	if is404Error(err) || file == nil {
+		return nil, fmt.Errorf("namespace file content not found")
+	}
 	if err != nil {
 		return nil, formatSDKError(err)
-	}
-	if file == nil {
-		return nil, fmt.Errorf("namespace file content not found")
 	}
 
 	return file, nil

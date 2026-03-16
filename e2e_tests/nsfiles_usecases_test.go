@@ -10,7 +10,8 @@ import (
 func TestNsfilesList_fileNotFound(t *testing.T) {
 	_, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "get", "company", "unknown-file.txt")
 
-	require.Contains(t, stderr, "File '/unknown-file.txt' was not found in namespace 'company'")
+	require.Contains(t, stderr, "Error: namespace file")
+	require.Contains(t, stderr, "not found")
 	require.Error(t, err)
 }
 
