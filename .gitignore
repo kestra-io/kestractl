@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 # Cursor Editor files
 .cursor/
 .cursor/**
