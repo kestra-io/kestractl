@@ -3,6 +3,14 @@ name: Tests
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    secrets:
+      GCP_SERVICE_ACCOUNT:
+        required: true
+      APPLICATION_SECRETS:
+        required: true
+      APPLICATION_SECRETS_ONLINE:
+        required: true
 
 permissions:
   contents: read
@@ -23,20 +31,6 @@ jobs:
       - name: Run tests
         run: go test ./src/...
 
-      - name: GCP - Auth with github service account
-        uses: 'google-github-actions/auth@v2'
-        with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-      - name: configure docker access to GCP registry for EE image
-        run: gcloud auth configure-docker europe-west1-docker.pkg.dev
-        
-      - name: Build local CLI and test it E2E
-        env:
-          APPLICATION_SECRETS: ${{ secrets.APPLICATION_SECRETS }}
-        run: |
-          echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
-          sh run-e2e-tests.sh
-
       - name: Check installer is working
         run: |
           cat ./install-scripts/install.sh | INSTALL_DIR=./ bash
@@ -45,3 +39,60 @@ jobs:
         run: |
           cat ./install-scripts/install.sh | VERSION=1.0.0 INSTALL_DIR=./ bash
           ./kestractl --help
+
+  e2e-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.matrix.outputs.versions }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Build matrix from compatible versions
+        id: matrix
+        run: |
+          versions=$(awk 'NF { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); printf "%s\"%s\"", sep, $0; sep="," } END { print "" }' COMPATIBLE_KESTRA_VERSION.properties)
+          echo "versions=[${versions}]" >> "$GITHUB_OUTPUT"
+
+  e2e-tests:
+    needs: e2e-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        kestra_version: ${{ fromJSON(needs.e2e-matrix.outputs.versions) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: GCP - Auth with github service account
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: configure docker access to GCP registry for EE image
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev
+
+      - name: Build local CLI and test it E2E
+        env:
+          KESTRA_VERSION: ${{ matrix.kestra_version }}
+          APPLICATION_SECRETS: ${{ secrets.APPLICATION_SECRETS }}
+          APPLICATION_SECRETS_ONLINE: ${{ secrets.APPLICATION_SECRETS_ONLINE }}
+        run: |
+          version="${KESTRA_VERSION#v}"
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+          if [ "$major" -lt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -le 2 ]; }; then
+            echo "using old APPLICATION_SECRETS for Kestra v1.2 and lower"
+            echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+          else
+            echo "using APPLICATION_SECRETS_ONLINE for Kestra v1.3 and higher"
+            echo $APPLICATION_SECRETS_ONLINE | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+          fi
+          
+          sh run-e2e-tests.sh $KESTRA_VERSION
