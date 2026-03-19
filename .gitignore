@@ -19,3 +19,5 @@ wheels/
 .idea
 
 .planning/.*
+
+.claude/settings.local.json
