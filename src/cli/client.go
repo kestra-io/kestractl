@@ -60,6 +60,14 @@ func newClientDefault() (*Client, error) {
 	}
 	cfg.Debug = isVerbose
 
+	parsed, err := parseHeaders(globalFlags.Headers)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range parsed {
+		cfg.AddDefaultHeader(k, v)
+	}
+
 	client := kestra.NewAPIClient(cfg)
 
 	ctx := context.Background()
@@ -101,6 +109,19 @@ func resolveConfig() (string, string, string, string, string, error) {
 	host = normalizeHost(host)
 
 	return host, tenant, token, username, password, nil
+}
+
+// parseHeaders parses a slice of "Key:Value" strings into a map.
+func parseHeaders(headers []string) (map[string]string, error) {
+	result := make(map[string]string, len(headers))
+	for _, h := range headers {
+		parts := strings.SplitN(h, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+			return nil, fmt.Errorf("invalid header format %q: expected 'Key:Value'", h)
+		}
+		result[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return result, nil
 }
 
 func normalizeHost(host string) string {
