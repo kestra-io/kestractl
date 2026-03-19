@@ -93,6 +93,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newNamespaceFilesCommand())
 	root.AddCommand(newKVCommand())
 	root.AddCommand(newExecutionsCommand())
+	root.AddCommand(newWorkersCommand())
 
 	return root
 }
