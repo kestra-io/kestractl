@@ -28,6 +28,7 @@ const (
 	FlagOutput   = "output"
 	FlagConfig   = "config"
 	FlagVerbose  = "verbose"
+	FlagHeader   = "header"
 )
 
 // GlobalFlags holds flags that are available to all commands
@@ -38,6 +39,7 @@ type GlobalFlags struct {
 	Password string
 	Tenant   string
 	Output   string
+	Headers  []string
 }
 
 var globalFlags GlobalFlags
@@ -85,6 +87,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestractl/config.yaml)")
 	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "verbose output (warning: it will print credentials in http requests")
+	root.PersistentFlags().StringArray(FlagHeader, nil, "Extra HTTP header to include in all requests (format: 'Key:Value', repeatable)")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())
@@ -169,6 +172,7 @@ func initializeConfig(cmd *cobra.Command) error {
 	globalFlags.Password = viper.GetString(FlagPassword)
 	globalFlags.Tenant = viper.GetString(FlagTenant)
 	globalFlags.Output = viper.GetString(FlagOutput)
+	globalFlags.Headers = viper.GetStringSlice(FlagHeader)
 
 	return nil
 }

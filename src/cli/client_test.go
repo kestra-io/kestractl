@@ -59,6 +59,28 @@ func TestTryParseNamespaceListFromError(t *testing.T) {
 	}
 }
 
+func TestParseHeaders(t *testing.T) {
+	t.Run("custom header", func(t *testing.T) {
+		got, err := parseHeaders([]string{"X-Custom-Header:my-value"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["X-Custom-Header"] != "my-value" {
+			t.Fatalf("expected 'my-value', got %q", got["X-Custom-Header"])
+		}
+	})
+
+	t.Run("cookie header", func(t *testing.T) {
+		got, err := parseHeaders([]string{"Cookie:session=abc123; user=john"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got["Cookie"] != "session=abc123; user=john" {
+			t.Fatalf("expected 'session=abc123; user=john', got %q", got["Cookie"])
+		}
+	})
+}
+
 func TestNormalizeHost(t *testing.T) {
 	tests := []struct {
 		name string
