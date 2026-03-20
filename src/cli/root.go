@@ -30,6 +30,15 @@ const (
 	FlagVerbose  = "verbose"
 )
 
+// AnnotationOffline can be set in a command's Annotations to indicate that it
+// runs entirely offline and does not require a running Kestra instance.
+// Commands with this annotation skip config initialization in PersistentPreRunE.
+//
+// Usage:
+//
+//	Annotations: map[string]string{AnnotationOffline: "true"}
+const AnnotationOffline = "offline"
+
 // GlobalFlags holds flags that are available to all commands
 type GlobalFlags struct {
 	Host     string
@@ -52,6 +61,9 @@ func NewRootCommand() *cobra.Command {
 It provides commands to manage flows, namespaces, and executions,
 with support for multiple authentication contexts and output formats.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Annotations[AnnotationOffline] == "true" {
+				return nil
+			}
 			if err := initializeConfig(cmd); err != nil {
 				return err
 			}
