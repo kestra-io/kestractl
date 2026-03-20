@@ -175,9 +175,8 @@ func initializeConfig(cmd *cobra.Command) error {
 	globalFlags.Password = viper.GetString(FlagPassword)
 	globalFlags.Tenant = viper.GetString(FlagTenant)
 	globalFlags.Output = viper.GetString(FlagOutput)
-	// When cmd is the root command, cmd.Flags() excludes its own persistent flags, so
-	// viper.BindPFlags misses FlagHeader and GetStringSlice returns the wrong value.
-	// Read directly from the root persistent flagset when the flag was explicitly set.
+	// cmd.Flags() excludes root's own persistent flags, so BindPFlags misses FlagHeader.
+	// Read directly from the persistent flagset when explicitly set by the user.
 	if f := cmd.Root().PersistentFlags().Lookup(FlagHeader); f != nil && f.Changed {
 		globalFlags.Headers, _ = cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
 	} else {
