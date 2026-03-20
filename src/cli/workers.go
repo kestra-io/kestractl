@@ -33,7 +33,11 @@ func newRegistrationTokensGenerateCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "generate",
 		Short: "Generate a worker registration token",
-		Args:  cobra.NoArgs,
+		Long: `Generate a worker registration token.
+
+This command runs entirely offline and does not require a running Kestra instance.`,
+		Annotations: map[string]string{AnnotationOffline: "true"},
+		Args:        cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runRegistrationTokensGenerate(cmd)
 		},

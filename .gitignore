@@ -16,6 +16,8 @@ wheels/
 # Cursor rules file
 .cursor/rules
 
+.claude/settings.local.json
+
 .idea
 
 .planning/.*
