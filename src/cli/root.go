@@ -162,6 +162,9 @@ func initializeConfig(cmd *cobra.Command) error {
 			if !viper.IsSet(FlagPassword) {
 				viper.SetDefault(FlagPassword, viper.GetString("contexts."+defaultContext+".password"))
 			}
+			if !viper.IsSet(FlagHeader) {
+				viper.SetDefault(FlagHeader, viper.GetStringSlice("contexts."+defaultContext+".headers"))
+			}
 		}
 	}
 
@@ -172,7 +175,13 @@ func initializeConfig(cmd *cobra.Command) error {
 	globalFlags.Password = viper.GetString(FlagPassword)
 	globalFlags.Tenant = viper.GetString(FlagTenant)
 	globalFlags.Output = viper.GetString(FlagOutput)
-	globalFlags.Headers = viper.GetStringSlice(FlagHeader)
+	// cmd.Flags() excludes root's own persistent flags, so BindPFlags misses FlagHeader.
+	// Read directly from the persistent flagset when explicitly set by the user.
+	if f := cmd.Root().PersistentFlags().Lookup(FlagHeader); f != nil && f.Changed {
+		globalFlags.Headers, _ = cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
+	} else {
+		globalFlags.Headers = viper.GetStringSlice(FlagHeader)
+	}
 
 	return nil
 }
