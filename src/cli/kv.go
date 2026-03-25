@@ -455,6 +455,8 @@ func extractKVTypedValue(resp *kestra.KVControllerKvDetail) *kvTypedValue {
 			result.Value = value
 		} else if value, ok := resp.Value["Value"]; ok {
 			result.Value = value
+		} else {
+			result.Value = resp.Value
 		}
 	}
 

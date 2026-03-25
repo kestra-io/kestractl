@@ -179,6 +179,31 @@ func TestExtractKVTypedValue(t *testing.T) {
 	}
 }
 
+func TestExtractKVTypedValue_JSONObject(t *testing.T) {
+	resp := kestra.NewKVControllerKvDetail()
+	resp.SetType(kestra.KVTYPE_JSON)
+	resp.SetValue(map[string]any{"feature": true, "count": 2})
+
+	typed := extractKVTypedValue(resp)
+	if typed == nil {
+		t.Fatal("expected typed value, got nil")
+	}
+	if typed.Type != "JSON" {
+		t.Fatalf("expected JSON, got %s", typed.Type)
+	}
+
+	valueMap, ok := typed.Value.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map value, got %T", typed.Value)
+	}
+	if valueMap["feature"] != true {
+		t.Fatalf("expected feature=true, got %v", valueMap["feature"])
+	}
+	if valueMap["count"] != 2 {
+		t.Fatalf("expected count=2, got %v", valueMap["count"])
+	}
+}
+
 func TestTryParseKVTypedValueFromError(t *testing.T) {
 	payload := map[string]any{"type": "JSON", "value": map[string]any{"a": 1.0}}
 	body, err := json.Marshal(payload)
