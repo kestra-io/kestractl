@@ -7,9 +7,9 @@ on:
     secrets:
       GCP_SERVICE_ACCOUNT:
         required: true
-      APPLICATION_SECRETS:
+      KESTRA_EE_UNIT_TEST_LICENSE_FILE:
         required: true
-      APPLICATION_SECRETS_ONLINE:
+      KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE:
         required: true
 
 permissions:
@@ -80,19 +80,19 @@ jobs:
       - name: Build local CLI and test it E2E
         env:
           KESTRA_VERSION: ${{ matrix.kestra_version }}
-          APPLICATION_SECRETS: ${{ secrets.KESTRA_EE_UNIT_TEST_LICENSE_FILE }}
-          APPLICATION_SECRETS_ONLINE: ${{ secrets.KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE }}
+          KESTRA_EE_UNIT_TEST_LICENSE_FILE: ${{ secrets.KESTRA_EE_UNIT_TEST_LICENSE_FILE }}
+          KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE: ${{ secrets.KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE }}
         run: |
           version="${KESTRA_VERSION#v}"
           major="${version%%.*}"
           rest="${version#*.}"
           minor="${rest%%.*}"
           if [ "$major" -lt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -le 2 ]; }; then
-            echo "using old APPLICATION_SECRETS for Kestra v1.2 and lower"
-            echo $APPLICATION_SECRETS | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+            echo "using old KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE for Kestra v1.2 and lower"
+            echo KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
           else
-            echo "using APPLICATION_SECRETS_ONLINE for Kestra v1.3 and higher"
-            echo $APPLICATION_SECRETS_ONLINE | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
+            echo "using KESTRA_EE_UNIT_TEST_LICENSE_FILE for Kestra v1.3 and higher"
+            echo KESTRA_EE_UNIT_TEST_LICENSE_FILE | base64 -d > ./e2e_tests/docker-setup/application-secrets.yml
           fi
           
           sh run-e2e-tests.sh $KESTRA_VERSION
