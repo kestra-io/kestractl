@@ -60,6 +60,8 @@ contexts:
     tenant: main
     auth_method: token
     token: YOUR_TOKEN
+    headers:                     # Optional: persisted extra HTTP headers
+      - "X-Custom-Header:value"
 default_context: default
 ```
 
@@ -87,7 +89,8 @@ You can also configure the CLI using environment variables, which override confi
 export KESTRACTL_HOST=http://localhost:8080
 export KESTRACTL_TENANT=main
 export KESTRACTL_TOKEN=YOUR_TOKEN
-export KESTRACTL_OUTPUT=json  # Optional: table or json
+export KESTRACTL_OUTPUT=json                       # Optional: table or json
+export KESTRACTL_HEADER="X-Custom-Header:value"   # Optional: extra HTTP header
 ```
 
 ### Configuration Precedence
@@ -116,6 +119,7 @@ All commands support global flags for connection and output configuration:
 - `--host` - Kestra host URL
 - `--token` / `-t` - API authentication token
 - `--tenant` - Tenant name
+- `--header` - Extra HTTP header to include in all requests (format: `Key:Value`, repeatable)
 - `--output` / `-o` - Output format (`table` or `json`)
 - `--config` - Custom config file path (default: `~/.kestractl/config.yaml`)
 - `--verbose` / `-v` - Verbose output (warning: prints credentials in HTTP requests)
@@ -128,6 +132,10 @@ kestractl config add dev http://localhost:8080 main --token YOUR_TOKEN
 
 # Add and set as default
 kestractl config add prod https://prod.kestra.io production --token PROD_TOKEN --default
+
+# Add with extra HTTP headers (persisted in the context)
+kestractl config add dev http://localhost:8080 main --token YOUR_TOKEN \
+  --header "X-Custom-Header:value" --header "Authorization:Bearer extra"
 
 # List all contexts
 kestractl config show
@@ -198,6 +206,33 @@ kestractl namespaces list
 
 # Filter namespaces with query
 kestractl namespaces list --query my.namespace
+```
+
+### Key-Value Store (kv)
+
+Supported types: `STRING`, `NUMBER`, `BOOLEAN`, `DATETIME`, `DATE`, `DURATION`, `JSON`
+
+```bash
+# List all key-value entries
+kestractl kv list
+
+# List key-value entries in a namespace
+kestractl kv list my.namespace
+
+# Set a key — format: kv set <namespace> <type> <key> <value>
+kestractl kv set my.namespace STRING api_key "my-secret"
+kestractl kv set my.namespace NUMBER retries 3
+kestractl kv set my.namespace BOOLEAN enabled true
+kestractl kv set my.namespace JSON settings '{"feature":true}'
+
+# Update an existing key (fails if key does not exist)
+kestractl kv update my.namespace NUMBER retries 5
+
+# Read a key (shows type and value)
+kestractl kv get my.namespace api_key
+
+# Delete a key (alias: rm)
+kestractl kv delete my.namespace api_key
 ```
 
 ### Namespace Files (nsfiles)
@@ -288,15 +323,20 @@ kestractl/
 └── src/cli/
     ├── root.go                # Root command, global flags, Viper initialization
     ├── client.go              # Client wrapper for SDK with Viper config resolution
-	    ├── auth.go                # AuthManager - ~/.kestractl/config.yaml persistence (YAML)
-    ├── helpers.go             # Output formatting utilities
+    ├── auth.go                # AuthManager - ~/.kestractl/config.yaml persistence (YAML)
+    ├── render.go              # Renderer: table or JSON output
+    ├── telemetry.go           # PostHog event per command (disable via env var)
     ├── config.go              # Config subcommands (add, show, use, remove)
-    ├── flows.go               # Flows commands (list, get, deploy)
+    ├── flows.go               # Flows commands (list, get, deploy, validate)
     ├── flows_test.go          # Unit tests
     ├── executions.go          # Executions commands (run, get)
     ├── executions_test.go     # Unit tests
     ├── namespaces.go          # Namespaces commands (list)
     ├── namespaces_test.go     # Unit tests
+    ├── kv.go                  # KV store commands (list, get, set, update, delete)
+    ├── kv_test.go             # Unit tests
+    ├── nsfiles.go             # Namespace files commands (list, get, upload, delete)
+    ├── nsfiles_test.go        # Unit tests
     └── testdata/              # Test fixtures
         └── flow.yaml
 ```

@@ -11,13 +11,14 @@ import (
 
 // AuthContext describes an authentication context for Kestra.
 type AuthContext struct {
-	Name       string `json:"name" yaml:"-"` // Name is used as map key, not serialized to YAML
-	Host       string `json:"host" yaml:"host"`
-	Tenant     string `json:"tenant" yaml:"tenant"`
-	AuthMethod string `json:"auth_method" yaml:"auth_method"`
-	Token      string `json:"token,omitempty" yaml:"token,omitempty"`
-	Username   string `json:"username,omitempty" yaml:"username,omitempty"`
-	Password   string `json:"password,omitempty" yaml:"password,omitempty"`
+	Name       string   `json:"name" yaml:"-"` // Name is used as map key, not serialized to YAML
+	Host       string   `json:"host" yaml:"host"`
+	Tenant     string   `json:"tenant" yaml:"tenant"`
+	AuthMethod string   `json:"auth_method" yaml:"auth_method"`
+	Token      string   `json:"token,omitempty" yaml:"token,omitempty"`
+	Username   string   `json:"username,omitempty" yaml:"username,omitempty"`
+	Password   string   `json:"password,omitempty" yaml:"password,omitempty"`
+	Headers    []string `json:"headers,omitempty" yaml:"headers,omitempty"`
 }
 
 type authConfig struct {

@@ -28,7 +28,17 @@ const (
 	FlagOutput   = "output"
 	FlagConfig   = "config"
 	FlagVerbose  = "verbose"
+	FlagHeader   = "header"
 )
+
+// AnnotationOffline can be set in a command's Annotations to indicate that it
+// runs entirely offline and does not require a running Kestra instance.
+// Commands with this annotation skip config initialization in PersistentPreRunE.
+//
+// Usage:
+//
+//	Annotations: map[string]string{AnnotationOffline: "true"}
+const AnnotationOffline = "offline"
 
 // GlobalFlags holds flags that are available to all commands
 type GlobalFlags struct {
@@ -38,6 +48,7 @@ type GlobalFlags struct {
 	Password string
 	Tenant   string
 	Output   string
+	Headers  []string
 }
 
 var globalFlags GlobalFlags
@@ -52,6 +63,9 @@ func NewRootCommand() *cobra.Command {
 It provides commands to manage flows, namespaces, and executions,
 with support for multiple authentication contexts and output formats.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Annotations[AnnotationOffline] == "true" {
+				return nil
+			}
 			if err := initializeConfig(cmd); err != nil {
 				return err
 			}
@@ -85,13 +99,16 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestractl/config.yaml)")
 	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "verbose output (warning: it will print credentials in http requests")
+	root.PersistentFlags().StringArray(FlagHeader, nil, "Extra HTTP header to include in all requests (format: 'Key:Value', repeatable)")
 
 	root.AddCommand(newVersionCommand())
 	root.AddCommand(newConfigCommand())
 	root.AddCommand(newFlowsCommand())
 	root.AddCommand(newNamespacesCommand())
 	root.AddCommand(newNamespaceFilesCommand())
+	root.AddCommand(newKVCommand())
 	root.AddCommand(newExecutionsCommand())
+	root.AddCommand(newWorkersCommand())
 
 	return root
 }
@@ -158,6 +175,9 @@ func initializeConfig(cmd *cobra.Command) error {
 			if !viper.IsSet(FlagPassword) {
 				viper.SetDefault(FlagPassword, viper.GetString("contexts."+defaultContext+".password"))
 			}
+			if !viper.IsSet(FlagHeader) {
+				viper.SetDefault(FlagHeader, viper.GetStringSlice("contexts."+defaultContext+".headers"))
+			}
 		}
 	}
 
@@ -168,6 +188,13 @@ func initializeConfig(cmd *cobra.Command) error {
 	globalFlags.Password = viper.GetString(FlagPassword)
 	globalFlags.Tenant = viper.GetString(FlagTenant)
 	globalFlags.Output = viper.GetString(FlagOutput)
+	// cmd.Flags() excludes root's own persistent flags, so BindPFlags misses FlagHeader.
+	// Read directly from the persistent flagset when explicitly set by the user.
+	if f := cmd.Root().PersistentFlags().Lookup(FlagHeader); f != nil && f.Changed {
+		globalFlags.Headers, _ = cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
+	} else {
+		globalFlags.Headers = viper.GetStringSlice(FlagHeader)
+	}
 
 	return nil
 }

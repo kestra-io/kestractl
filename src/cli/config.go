@@ -85,6 +85,10 @@ func newConfigAddCommand() *cobra.Command {
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, host, tenant := args[0], normalizeHost(args[1]), args[2]
+			headers, err := cmd.Flags().GetStringArray(FlagHeader)
+			if err != nil {
+				return err
+			}
 
 			var authMethod string
 			if strings.TrimSpace(token) != "" {
@@ -104,6 +108,7 @@ func newConfigAddCommand() *cobra.Command {
 				Token:      token,
 				Username:   username,
 				Password:   password,
+				Headers:    headers,
 			}
 
 			if err := manager.AddContext(ctx); err != nil {
