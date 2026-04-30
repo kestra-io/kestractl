@@ -65,7 +65,18 @@ func newPluginsInstallCommand() *cobra.Command {
 	return cmd
 }
 
+// resolveVersion maps symbolic version aliases to their concrete equivalents.
+func resolveVersion(version string) string {
+	switch strings.ToLower(version) {
+	case "develop", "latest":
+		return "999.999.999"
+	default:
+		return version
+	}
+}
+
 func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int) error {
+	kestraVersion = resolveVersion(kestraVersion)
 	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
 
 	plugins, err := fetchPluginList(kestraVersion)
