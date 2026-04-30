@@ -162,9 +162,18 @@ func fetchPluginList(kestraVersion string) ([]pluginArtifact, error) {
 	return plugins, nil
 }
 
+// pluginFileName returns the Kestra-compatible filename for a plugin artifact.
+// Format: <groupId>__<artifactId>__<version>.jar, with dots replaced by underscores
+// in groupId and version (e.g. io_kestra_plugin__plugin-kafka__1_6_0.jar).
+func pluginFileName(p pluginArtifact) string {
+	groupID := strings.ReplaceAll(p.GroupID, ".", "_")
+	version := strings.ReplaceAll(p.Version, ".", "_")
+	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
+}
+
 func downloadJAR(p pluginArtifact, destDir string) (int64, error) {
 	url := mavenJARURL(p)
-	destPath := filepath.Join(destDir, p.ArtifactID+"-"+p.Version+".jar")
+	destPath := filepath.Join(destDir, pluginFileName(p))
 
 	resp, err := http.Get(url) //nolint:gosec // URL is constructed from trusted API data
 	if err != nil {

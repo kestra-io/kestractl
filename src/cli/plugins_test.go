@@ -104,10 +104,10 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 
 	// Spot-check one file from each group.
 	for _, name := range []string{
-		"storage-gcs-1.1.4.jar",
-		"plugin-kafka-1.6.0.jar",
-		"plugin-jdbc-postgres-1.10.1.jar",
-		"plugin-ee-core-1.3.9.jar",
+		"io_kestra_storage__storage-gcs__1_1_4.jar",
+		"io_kestra_plugin__plugin-kafka__1_6_0.jar",
+		"io_kestra_plugin__plugin-jdbc-postgres__1_10_1.jar",
+		"io_kestra_plugin_ee__plugin-ee-core__1_3_9.jar",
 	} {
 		path := filepath.Join(tmpDir, name)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -198,6 +198,36 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	}
 	if !strings.Contains(output, "1 failed") {
 		t.Errorf("expected '1 failed' summary in output, got:\n%s", output)
+	}
+}
+
+func TestPluginFileName(t *testing.T) {
+	tests := []struct {
+		plugin   pluginArtifact
+		wantName string
+	}{
+		{
+			plugin:   pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+			wantName: "io_kestra_plugin__plugin-kafka__1_6_0.jar",
+		},
+		{
+			plugin:   pluginArtifact{GroupID: "io.kestra.storage", ArtifactID: "storage-gcs", Version: "1.1.4"},
+			wantName: "io_kestra_storage__storage-gcs__1_1_4.jar",
+		},
+		{
+			plugin:   pluginArtifact{GroupID: "io.kestra.plugin.ee", ArtifactID: "plugin-ee-core", Version: "1.3.9"},
+			wantName: "io_kestra_plugin_ee__plugin-ee-core__1_3_9.jar",
+		},
+		{
+			plugin:   pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-serdes", Version: "0.20.0-SNAPSHOT"},
+			wantName: "io_kestra_plugin__plugin-serdes__0_20_0-SNAPSHOT.jar",
+		},
+	}
+	for _, tt := range tests {
+		got := pluginFileName(tt.plugin)
+		if got != tt.wantName {
+			t.Errorf("pluginFileName(%+v)\n  got:  %s\n  want: %s", tt.plugin, got, tt.wantName)
+		}
 	}
 }
 
