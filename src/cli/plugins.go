@@ -42,16 +42,16 @@ func newPluginsCommand() *cobra.Command {
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
-	cmd.AddCommand(newPluginsInstallCommand())
+	cmd.AddCommand(newPluginsDownloadCommand())
 	return cmd
 }
 
-func newPluginsInstallCommand() *cobra.Command {
+func newPluginsDownloadCommand() *cobra.Command {
 	var pluginsDir string
 	var concurrency int
 
 	cmd := &cobra.Command{
-		Use:   "install <version>",
+		Use:   "download <version>",
 		Short: "Download all plugins for a given Kestra version from Maven Central",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
