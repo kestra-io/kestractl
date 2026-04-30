@@ -242,6 +242,26 @@ func TestPluginsInstallCommand_Flags(t *testing.T) {
 	}
 }
 
+func TestResolveVersion(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"develop", "999.999.999"},
+		{"DEVELOP", "999.999.999"},
+		{"latest", "999.999.999"},
+		{"LATEST", "999.999.999"},
+		{"1.3.9", "1.3.9"},
+		{"2.0.0", "2.0.0"},
+	}
+	for _, tt := range tests {
+		got := resolveVersion(tt.input)
+		if got != tt.want {
+			t.Errorf("resolveVersion(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestPluginsInstallCommand_RequiresVersion(t *testing.T) {
 	cmd := newPluginsInstallCommand()
 	_, err := executeCommand(cmd)
