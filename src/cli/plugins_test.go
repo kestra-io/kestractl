@@ -232,8 +232,8 @@ func TestMavenJARURL(t *testing.T) {
 	}
 }
 
-func TestPluginsInstallCommand_Flags(t *testing.T) {
-	cmd := newPluginsInstallCommand()
+func TestPluginsDownloadCommand_Flags(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
 
 	for _, flag := range []string{"plugins-dir", "concurrency"} {
 		if cmd.Flags().Lookup(flag) == nil {
@@ -262,8 +262,8 @@ func TestResolveVersion(t *testing.T) {
 	}
 }
 
-func TestPluginsInstallCommand_RequiresVersion(t *testing.T) {
-	cmd := newPluginsInstallCommand()
+func TestPluginsDownloadCommand_RequiresVersion(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
 	_, err := executeCommand(cmd)
 	if err == nil {
 		t.Fatal("expected error when version argument is missing")
