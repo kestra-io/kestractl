@@ -222,6 +222,7 @@ func newFlowsDeployCommand() *cobra.Command {
 		override          bool
 		namespaceOverride string
 		failFast          bool
+		recursive         bool
 	)
 
 	cmd := &cobra.Command{
@@ -230,7 +231,8 @@ func newFlowsDeployCommand() *cobra.Command {
 		SilenceUsage: true,
 		Long: `Deploy flow definitions from a local YAML file or directory to Kestra.
 
-When a directory is provided, all .yaml and .yml files are deployed recursively.
+When a directory is provided, all .yaml and .yml files are deployed recursively by default.
+Pass --recursive=false to scan only the top-level directory.
 Hidden files and directories (starting with .) are skipped.
 
 By default, the deployment will fail if a flow already exists.
@@ -243,6 +245,9 @@ Use --fail-fast to stop on the first error.`,
 
 	  # Deploy all flows in a directory (recursive)
 	  kestractl flows deploy ./flows/
+
+	  # Deploy only top-level flows in a directory (no recursion)
+	  kestractl flows deploy ./flows/ --recursive=false
 
 	  # Deploy with namespace override (all flows go to specified namespace)
 	  kestractl flows deploy ./flows/ --namespace prod.namespace
@@ -270,25 +275,29 @@ Use --fail-fast to stop on the first error.`,
 				return err
 			}
 
-			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast, renderer)
+			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast, recursive, renderer)
 		},
 	}
 
 	cmd.Flags().BoolVar(&override, "override", false, "Override the flow if it already exists")
 	cmd.Flags().StringVar(&namespaceOverride, "namespace", "", "Override the namespace for all deployed flows")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first deployment error")
+	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
 
 	return cmd
 }
 
 func newFlowsValidateCommand() *cobra.Command {
+	var recursive bool
+
 	cmd := &cobra.Command{
 		Use:          "validate <path>",
 		Short:        "Validate flows from a YAML file or directory.",
 		SilenceUsage: true,
 		Long: `Validate flow definitions from a local YAML file or directory.
 
-When a directory is provided, all .yaml and .yml files are validated recursively.
+When a directory is provided, all .yaml and .yml files are validated recursively by default.
+Pass --recursive=false to scan only the top-level directory.
 Hidden files and directories (starting with .) are skipped.
 
 Validation fails if any flow has constraint violations.
@@ -298,6 +307,9 @@ Warnings, infos, deprecations, and outdated flags are reported but do not fail v
 
 	  # Validate all flows in a directory (recursive)
 	  kestractl flows validate ./flows/
+
+	  # Validate only top-level flows in a directory (no recursion)
+	  kestractl flows validate ./flows/ --recursive=false
 
 	  # Validate with JSON output
 	  kestractl flows validate ./flows/ --output json`,
@@ -314,14 +326,16 @@ Warnings, infos, deprecations, and outdated flags are reported but do not fail v
 				return err
 			}
 
-			return runFlowsValidate(client, args[0], renderer)
+			return runFlowsValidate(client, args[0], recursive, renderer)
 		},
 	}
+
+	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
 
 	return cmd
 }
 
-func runFlowsValidate(client *Client, path string, renderer *Renderer) error {
+func runFlowsValidate(client *Client, path string, recursive bool, renderer *Renderer) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("failed to access path '%s': %w", path, err)
@@ -329,7 +343,7 @@ func runFlowsValidate(client *Client, path string, renderer *Renderer) error {
 
 	var files []string
 	if info.IsDir() {
-		files, err = collectFlowFiles(path)
+		files, err = collectFlowFiles(path, recursive)
 		if err != nil {
 			return fmt.Errorf("failed to scan directory '%s': %w", path, err)
 		}
@@ -495,7 +509,7 @@ func appendUniqueString(list []string, value string) []string {
 	return append(list, value)
 }
 
-func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool, renderer *Renderer) error {
+func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool, recursive bool, renderer *Renderer) error {
 	// Check if path is a file or directory
 	info, err := os.Stat(path)
 	if err != nil {
@@ -504,8 +518,7 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 
 	var files []string
 	if info.IsDir() {
-		// Collect all YAML files recursively
-		files, err = collectFlowFiles(path)
+		files, err = collectFlowFiles(path, recursive)
 		if err != nil {
 			return fmt.Errorf("failed to scan directory '%s': %w", path, err)
 		}
@@ -533,9 +546,10 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 	return formatDeployResults(results, len(files) == 1, renderer)
 }
 
-// collectFlowFiles recursively collects all .yaml and .yml files from a directory.
+// collectFlowFiles collects .yaml and .yml files from a directory.
 // Hidden files and directories (starting with .) are skipped.
-func collectFlowFiles(rootPath string) ([]string, error) {
+// When recursive is false, only the top-level directory is scanned.
+func collectFlowFiles(rootPath string, recursive bool) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -548,12 +562,15 @@ func collectFlowFiles(rootPath string) ([]string, error) {
 			}
 			return nil
 		}
-		// Collect .yaml and .yml files
-		if !d.IsDir() {
-			ext := strings.ToLower(filepath.Ext(path))
-			if ext == ".yaml" || ext == ".yml" {
-				files = append(files, path)
+		if d.IsDir() {
+			if !recursive && path != rootPath {
+				return filepath.SkipDir
 			}
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".yaml" || ext == ".yml" {
+			files = append(files, path)
 		}
 		return nil
 	})
