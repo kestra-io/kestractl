@@ -183,7 +183,7 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 func TestCollectFlowFiles(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 
-	files, err := collectFlowFiles(testDir)
+	files, err := collectFlowFiles(testDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -206,10 +206,32 @@ func TestCollectFlowFiles(t *testing.T) {
 	}
 }
 
+func TestCollectFlowFiles_NonRecursive(t *testing.T) {
+	testDir := "testdata/deploy_folder_test"
+
+	files, err := collectFlowFiles(testDir, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Non-recursive should find only top-level flow1.yaml, flow2.yaml, flow-invalid.yaml
+	// Should NOT find subdir/flow3.yaml, .hidden.yaml, or invalid.txt
+	expectedCount := 3
+	if len(files) != expectedCount {
+		t.Fatalf("expected %d files, got %d: %v", expectedCount, len(files), files)
+	}
+
+	for _, f := range files {
+		if strings.Contains(f, "subdir") {
+			t.Fatalf("file in subdirectory should not be included when recursive=false: %s", f)
+		}
+	}
+}
+
 func TestCollectFlowFiles_NestedDirs(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 
-	files, err := collectFlowFiles(testDir)
+	files, err := collectFlowFiles(testDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -230,7 +252,7 @@ func TestCollectFlowFiles_NestedDirs(t *testing.T) {
 func TestCollectFlowFiles_MixedExtensions(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 
-	files, err := collectFlowFiles(testDir)
+	files, err := collectFlowFiles(testDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -247,7 +269,7 @@ func TestCollectFlowFiles_MixedExtensions(t *testing.T) {
 func TestCollectFlowFiles_HiddenFiles(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 
-	files, err := collectFlowFiles(testDir)
+	files, err := collectFlowFiles(testDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -264,7 +286,7 @@ func TestCollectFlowFiles_HiddenFiles(t *testing.T) {
 func TestCollectFlowFiles_SortedOrder(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 
-	files, err := collectFlowFiles(testDir)
+	files, err := collectFlowFiles(testDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -278,7 +300,7 @@ func TestCollectFlowFiles_SortedOrder(t *testing.T) {
 }
 
 func TestCollectFlowFiles_NonexistentDir(t *testing.T) {
-	_, err := collectFlowFiles("/nonexistent/directory")
+	_, err := collectFlowFiles("/nonexistent/directory", true)
 	if err == nil {
 		t.Fatal("expected error for nonexistent directory")
 	}
@@ -292,7 +314,7 @@ func TestCollectFlowFiles_EmptyDir(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	files, err := collectFlowFiles(tmpDir)
+	files, err := collectFlowFiles(tmpDir, true)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -323,7 +345,7 @@ func TestFlowsDeployCommand_Flags(t *testing.T) {
 	cmd := newFlowsDeployCommand()
 
 	// Check that all expected flags exist
-	flags := []string{"override", "namespace", "fail-fast"}
+	flags := []string{"override", "namespace", "fail-fast", "recursive"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
@@ -344,6 +366,7 @@ func TestFlowsDeployCommand_Help(t *testing.T) {
 		"--override",
 		"--namespace",
 		"--fail-fast",
+		"--recursive",
 		"directory",
 		"recursive",
 	}
@@ -364,6 +387,7 @@ func TestFlowsValidateCommand_Help(t *testing.T) {
 	// Check for key elements in help text
 	expectedStrings := []string{
 		"validate <path>",
+		"--recursive",
 		"directory",
 		"recursive",
 		"json",
