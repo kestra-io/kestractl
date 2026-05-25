@@ -1,9 +1,72 @@
 package cli
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 )
+
+func newTestClient(t *testing.T, serverURL string) *Client {
+	t.Helper()
+	cfg := kestra.NewConfiguration()
+	cfg.Servers = kestra.ServerConfigurations{{URL: serverURL}}
+	return &Client{
+		API:    kestra.NewAPIClient(cfg),
+		Ctx:    context.Background(),
+		Tenant: "main",
+	}
+}
+
+func TestNamespaceExists_OSSResponseMissingDeleted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"main"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	exists, err := namespaceExists(newTestClient(t, server.URL), "main")
+	if err != nil {
+		t.Fatalf("expected no error for 200 response, got: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected namespace to be reported as existing")
+	}
+}
+
+func TestNamespaceExists_404(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+
+	exists, err := namespaceExists(newTestClient(t, server.URL), "missing")
+	if err != nil {
+		t.Fatalf("expected no error for 404 response, got: %v", err)
+	}
+	if exists {
+		t.Fatal("expected namespace to be reported as missing")
+	}
+}
+
+func TestNamespaceExists_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	exists, err := namespaceExists(newTestClient(t, server.URL), "main")
+	if err == nil {
+		t.Fatal("expected error for 500 response, got nil")
+	}
+	if exists {
+		t.Fatal("expected namespace to be reported as missing on server error")
+	}
+}
 
 func TestNamespaceFilesCommand_Structure(t *testing.T) {
 	cmd := newNamespaceFilesCommand()
