@@ -592,14 +592,36 @@ func listNamespaceDirectory(client *Client, namespace, path string) ([]kestra.Fi
 }
 
 func namespaceExists(client *Client, namespace string) (bool, error) {
-	_, resp, err := client.API.NamespacesAPI.Namespace(client.Ctx, namespace, client.Tenant).Execute()
+	req := client.API.NamespacesAPI.SearchNamespaces(client.Ctx, client.Tenant).
+		Page(1).
+		Size(1000).
+		Existing(true).
+		Q(namespace)
+
+	resp, _, err := req.Execute()
 	if err != nil {
-		if resp != nil && resp.StatusCode == 404 {
-			return false, nil
+		if fallback := tryParseNamespaceListFromError(err); fallback != nil {
+			return namespaceInFallbackList(fallback, namespace), nil
 		}
 		return false, formatSDKError(err)
 	}
-	return true, nil
+
+	for _, item := range resp.GetResults() {
+		if item.GetId() == namespace {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func namespaceInFallbackList(items []namespaceListItem, namespace string) bool {
+	for _, item := range items {
+		if item.ID == namespace && !item.Deleted {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupNamespaceFileStats(client *Client, namespace, path string) (*kestra.FileAttributes, bool, error) {
