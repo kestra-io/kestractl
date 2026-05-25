@@ -48,7 +48,11 @@ go install ./...
 Configure your Kestra instance and credentials:
 
 ```bash
+# Token auth
 kestractl config add default http://localhost:8080 main --token YOUR_TOKEN --default
+
+# Basic auth (username + password)
+kestractl config add default http://localhost:8080 main --username you@example.com --password YOUR_PASSWORD --default
 ```
 
 This creates a configuration file at `~/.kestractl/config.yaml`:
@@ -118,6 +122,8 @@ Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 All commands support global flags for connection and output configuration:
 - `--host` - Kestra host URL
 - `--token` / `-t` - API authentication token
+- `--username` - Basic auth username (alternative to `--token`)
+- `--password` - Basic auth password (alternative to `--token`)
 - `--tenant` - Tenant name
 - `--header` - Extra HTTP header to include in all requests (format: `Key:Value`, repeatable)
 - `--output` / `-o` - Output format (`table` or `json`)
@@ -265,6 +271,9 @@ kestractl nsfiles upload my.namespace ./assets resources --override
 # Stop on the first error
 kestractl nsfiles upload my.namespace ./assets resources --fail-fast
 
+# Skip the pre-flight namespace existence check
+kestractl nsfiles upload my.namespace ./assets resources --allow-missing-namespace
+
 # Delete a file
 kestractl nsfiles delete my.namespace workflows/example.yaml
 
@@ -273,6 +282,29 @@ kestractl nsfiles delete my.namespace workflows --recursive
 
 # Ignore missing targets
 kestractl nsfiles delete my.namespace workflows/example.yaml --force
+```
+
+### Plugins
+
+```bash
+# Download every plugin JAR for a given Kestra version into ./plugins
+kestractl plugins download 1.3.9
+
+# Custom output directory
+kestractl plugins download 1.3.9 --plugins-dir ./vendor/plugins
+
+# Parallel downloads
+kestractl plugins download 1.3.9 --concurrency 4
+
+# `develop` and `latest` are aliases for the in-development version
+kestractl plugins download develop
+```
+
+### Workers
+
+```bash
+# Generate a worker registration token (runs offline, no Kestra instance required)
+kestractl workers registration-tokens generate
 ```
 
 ### Output Formats
@@ -323,9 +355,13 @@ kestractl/
 └── src/cli/
     ├── root.go                # Root command, global flags, Viper initialization
     ├── client.go              # Client wrapper for SDK with Viper config resolution
+    ├── client_test.go         # Unit tests
     ├── auth.go                # AuthManager - ~/.kestractl/config.yaml persistence (YAML)
+    ├── auth_test.go           # Unit tests
     ├── render.go              # Renderer: table or JSON output
+    ├── render_test.go         # Unit tests
     ├── telemetry.go           # PostHog event per command (disable via env var)
+    ├── telemetry_test.go      # Unit tests
     ├── config.go              # Config subcommands (add, show, use, remove)
     ├── flows.go               # Flows commands (list, get, deploy, validate)
     ├── flows_test.go          # Unit tests
@@ -337,6 +373,10 @@ kestractl/
     ├── kv_test.go             # Unit tests
     ├── nsfiles.go             # Namespace files commands (list, get, upload, delete)
     ├── nsfiles_test.go        # Unit tests
+    ├── plugins.go             # Plugins commands (download)
+    ├── plugins_test.go        # Unit tests
+    ├── workers.go             # Workers commands (registration-tokens generate)
+    ├── workers_test.go        # Unit tests
     └── testdata/              # Test fixtures
         └── flow.yaml
 ```
