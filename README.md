@@ -1,6 +1,6 @@
 # Kestra CLI
 
-A Go-based command-line interface for managing Kestra flows, executions, and namespaces.
+A Go-based command-line interface for managing Kestra flows, executions, namespaces, and IAM users.
 
 ## Installation
 
@@ -307,6 +307,47 @@ kestractl plugins download develop
 kestractl workers registration-tokens generate
 ```
 
+### Users (Enterprise Edition)
+
+User management requires Kestra Enterprise Edition. Users are instance-level resources.
+
+> Use `--user-password` to set a user's password — not `--password`, which is the
+> global basic-auth flag used to authenticate the CLI itself.
+
+```bash
+# List / filter users (alias: ls)
+kestractl users list
+kestractl users list --query alice --output json
+
+# Get user details (alias: show, describe)
+kestractl users get <user_id>
+
+# Create a user (--email is required)
+kestractl users create --email alice@example.com --first-name Alice --user-password 'S3cret!'
+
+# Create a super-admin
+kestractl users create --email bob@example.com --superadmin
+
+# Update a user — only the flags you pass change; other attributes are preserved
+kestractl users update <user_id> --first-name Alicia
+kestractl users update <user_id> --superadmin=false
+
+# Set a user's password
+kestractl users set-password <user_id> --user-password 'N3wPass!'
+
+# Set the groups a user belongs to in the active tenant (no --group clears them)
+kestractl users set-groups <user_id> --group <group_id>
+
+# Delete a user (alias: rm) — prompts for confirmation unless --yes
+kestractl users delete <user_id>
+kestractl users delete <user_id> --yes
+
+# Manage a user's API tokens (the full token is shown only once, at creation)
+kestractl users tokens create <user_id> --name ci-token
+kestractl users tokens list <user_id>
+kestractl users tokens delete <user_id> <token_id>
+```
+
 ### Output Formats
 
 ```bash
@@ -377,6 +418,8 @@ kestractl/
     ├── plugins_test.go        # Unit tests
     ├── workers.go             # Workers commands (registration-tokens generate)
     ├── workers_test.go        # Unit tests
+    ├── users.go               # IAM users commands (list, get, create, update, delete, set-groups, set-password, tokens)
+    ├── users_test.go          # Unit tests
     └── testdata/              # Test fixtures
         └── flow.yaml
 ```

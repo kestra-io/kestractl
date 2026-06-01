@@ -77,7 +77,10 @@ with support for multiple authentication contexts and output formats.`,
 				fmt.Printf("resolved params: \n")
 				cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 					v := flag.Value.String()
-					if v != "" && (flag.Name == FlagToken || flag.Name == FlagPassword) {
+					// Mask any credential-bearing flag, not just the global
+					// token/password ones (e.g. users --user-password).
+					name := strings.ToLower(flag.Name)
+					if v != "" && (strings.Contains(name, "token") || strings.Contains(name, "password")) {
 						v = "XXX"
 					}
 					fmt.Printf("\t%s: %s\n", flag.Name, v)
@@ -110,6 +113,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newExecutionsCommand())
 	root.AddCommand(newWorkersCommand())
 	root.AddCommand(newPluginsCommand())
+	root.AddCommand(newUsersCommand())
 
 	return root
 }
