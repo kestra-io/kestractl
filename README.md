@@ -1,6 +1,6 @@
 # Kestra CLI
 
-A Go-based command-line interface for managing Kestra flows, executions, namespaces, and IAM users.
+A Go-based command-line interface for managing Kestra flows, executions, namespaces, and IAM users and roles.
 
 ## Installation
 
@@ -378,6 +378,52 @@ kestractl groups members add <group_id> <user_id>
 kestractl groups members remove <group_id> <user_id>
 ```
 
+### Roles (Enterprise Edition)
+
+Role management requires Kestra Enterprise Edition. Roles are tenant-scoped (the
+active tenant is used).
+
+A role carries a `permissions` payload: a map of resource type (e.g. `FLOW`,
+`EXECUTION`, `NAMESPACE`, `SECRET`, `KVSTORE`, …) to a list of permission levels
+(`READ`, `CREATE`, `UPDATE`, `DELETE`). You can provide it inline with the
+repeatable `--permission TYPE:LEVEL[,LEVEL]` flag, or from a YAML/JSON file with
+`--permissions-file` — but not both at once.
+
+```bash
+# List / filter roles (alias: ls)
+kestractl roles list
+kestractl roles list --query editor --output json
+kestractl roles list --page 1 --size 50 --sort name:asc
+
+# Get role details, including its permissions (aliases: show, describe)
+kestractl roles get <role_id>
+
+# Create a role with inline permissions (--name is required, plus at least one permission)
+kestractl roles create --name editor \
+  --description "Can edit flows and view executions" \
+  --permission FLOW:READ,CREATE,UPDATE \
+  --permission EXECUTION:READ
+
+# Create a role from a permissions file (YAML or JSON)
+kestractl roles create --name viewer --permissions-file perms.yaml
+
+# perms.yaml
+#   FLOW:
+#     - READ
+#   EXECUTION:
+#     - READ
+
+# Update a role — only the flags you pass change; other attributes are preserved.
+# Passing --permission replaces the entire permissions block (it does not merge).
+kestractl roles update <role_id> --description "Updated description"
+kestractl roles update <role_id> --permission FLOW:READ,CREATE,UPDATE,DELETE
+kestractl roles update <role_id> --default
+
+# Delete a role (alias: rm) — prompts for confirmation unless --yes
+kestractl roles delete <role_id>
+kestractl roles delete <role_id> --yes
+```
+
 ### Output Formats
 
 ```bash
@@ -450,6 +496,8 @@ kestractl/
     ├── workers_test.go        # Unit tests
     ├── users.go               # IAM users commands (list, get, create, update, delete, set-groups, set-password, tokens)
     ├── users_test.go          # Unit tests
+    ├── roles.go               # IAM roles commands (list, get, create, update, delete)
+    ├── roles_test.go          # Unit tests
     └── testdata/              # Test fixtures
         └── flow.yaml
 ```
