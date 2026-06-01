@@ -348,6 +348,36 @@ kestractl users tokens list <user_id>
 kestractl users tokens delete <user_id> <token_id>
 ```
 
+### Groups (Enterprise Edition)
+
+Group management requires Kestra Enterprise Edition. Groups are tenant-scoped resources.
+
+```bash
+# List / filter groups (alias: ls)
+kestractl groups list
+kestractl groups list --query admins --output json
+
+# Get group details (alias: show, describe)
+kestractl groups get <group_id>
+
+# Create a group (--name is required; --member is repeatable for initial members)
+kestractl groups create --name admins --description 'Platform admins'
+kestractl groups create --name admins --member <user_id> --member <user_id>
+
+# Update a group — only the flags you pass change; other attributes are preserved
+kestractl groups update <group_id> --description 'Updated description'
+kestractl groups update <group_id> --name platform-admins
+
+# Delete a group (alias: rm) — prompts for confirmation unless --yes
+kestractl groups delete <group_id>
+kestractl groups delete <group_id> --yes
+
+# Manage group members
+kestractl groups members list <group_id>
+kestractl groups members add <group_id> <user_id>
+kestractl groups members remove <group_id> <user_id>
+```
+
 ### Output Formats
 
 ```bash
