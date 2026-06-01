@@ -1,6 +1,6 @@
 # Kestra CLI
 
-A Go-based command-line interface for managing Kestra flows, executions, namespaces, and IAM users and roles.
+A Go-based command-line interface for managing Kestra flows, executions, namespaces, and IAM users, groups, roles, and service accounts.
 
 ## Installation
 
@@ -424,6 +424,45 @@ kestractl roles delete <role_id>
 kestractl roles delete <role_id> --yes
 ```
 
+### Service Accounts (Enterprise Edition)
+
+Service account management requires Kestra Enterprise Edition. Service accounts
+are instance-level resources (command aliases: `service-account`, `sa`).
+
+> `update` is a partial update of the name/description only. Tenant access,
+> super-admin status and group membership are left untouched — set those at
+> creation time.
+
+```bash
+# List service accounts (alias: ls)
+kestractl service-accounts list
+kestractl service-accounts list --output json
+kestractl service-accounts list --page 1 --size 50 --sort name:asc
+
+# Get service account details (aliases: show, describe)
+kestractl service-accounts get <service_account_id>
+
+# Create a service account (--name is required; lowercase alphanumeric and dashes)
+kestractl service-accounts create --name ci-bot --description "CI pipeline"
+
+# Create a super-admin service account with tenant access (--tenant-grant is repeatable)
+kestractl service-accounts create --name ops-bot --superadmin --tenant-grant main
+
+# Update name/description — other attributes are preserved
+kestractl service-accounts update <service_account_id> --description "Updated description"
+kestractl service-accounts update <service_account_id> --name new-bot-name
+
+# Delete a service account (alias: rm) — prompts for confirmation unless --yes
+kestractl service-accounts delete <service_account_id>
+kestractl service-accounts delete <service_account_id> --yes
+
+# Manage a service account's API tokens (the full token is shown only once, at creation)
+kestractl service-accounts tokens create <service_account_id> --name deploy-token
+kestractl service-accounts tokens create <service_account_id> --name short-lived --max-age P30D --extended
+kestractl service-accounts tokens list <service_account_id>
+kestractl service-accounts tokens delete <service_account_id> <token_id>
+```
+
 ### Output Formats
 
 ```bash
@@ -496,8 +535,12 @@ kestractl/
     ├── workers_test.go        # Unit tests
     ├── users.go               # IAM users commands (list, get, create, update, delete, set-groups, set-password, tokens)
     ├── users_test.go          # Unit tests
+    ├── groups.go              # IAM groups commands (list, get, create, update, delete, members)
+    ├── groups_test.go         # Unit tests
     ├── roles.go               # IAM roles commands (list, get, create, update, delete)
     ├── roles_test.go          # Unit tests
+    ├── service_accounts.go    # IAM service accounts commands (list, get, create, update, delete, tokens)
+    ├── service_accounts_test.go # Unit tests
     └── testdata/              # Test fixtures
         └── flow.yaml
 ```
