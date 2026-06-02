@@ -16,7 +16,7 @@ import (
 
 // pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
 var (
-	pluginsAPIBase  = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
+	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
 	pluginsMavenBase = "https://repo1.maven.org/maven2"
 )
 
@@ -52,13 +52,18 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var pluginsDir string
 	var concurrency int
 	var forceRedownload bool
+	var edition string
 
 	cmd := &cobra.Command{
 		Use:   "download <version>",
 		Short: "Download all plugins for a given Kestra version from Maven Central",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload)
+			license, err := editionToLicense(edition)
+			if err != nil {
+				return err
+			}
+			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -66,7 +71,23 @@ func newPluginsDownloadCommand() *cobra.Command {
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Directory to write downloaded JARs into")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of parallel downloads")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist and pass checksum verification")
+	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	return cmd
+}
+
+// editionToLicense maps the user-facing --edition value to the API license query param.
+// Returns an empty string for ALL (no filtering).
+func editionToLicense(edition string) (string, error) {
+	switch strings.ToUpper(edition) {
+	case "ALL":
+		return "", nil
+	case "OSS":
+		return "OPEN_SOURCE", nil
+	case "EE":
+		return "ENTERPRISE", nil
+	default:
+		return "", fmt.Errorf("invalid --edition %q: must be ALL, OSS, or EE", edition)
+	}
 }
 
 // resolveVersion maps symbolic version aliases to their concrete equivalents.
@@ -79,11 +100,11 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool) error {
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string) error {
 	kestraVersion = resolveVersion(kestraVersion)
 	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
 
-	plugins, err := fetchPluginList(kestraVersion)
+	plugins, err := fetchPluginList(kestraVersion, license)
 	if err != nil {
 		return err
 	}
@@ -154,8 +175,11 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	return nil
 }
 
-func fetchPluginList(kestraVersion string) ([]pluginArtifact, error) {
+func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, error) {
 	url := fmt.Sprintf("%s/%s/latest", pluginsAPIBase, kestraVersion)
+	if license != "" {
+		url += "?license=" + license
+	}
 
 	resp, err := http.Get(url) //nolint:gosec // URL is constructed from validated version arg
 	if err != nil {

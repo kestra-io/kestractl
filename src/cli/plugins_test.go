@@ -95,7 +95,7 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRunPluginsInstall_ConcurrentDownloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "")
 	if err != nil {
 		t.Fatalf("unexpected error with concurrency=4: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRunPluginsInstall_APINotFound(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false)
+	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -169,7 +169,7 @@ func TestRunPluginsInstall_APIInvalidJSON(t *testing.T) {
 	newMockServers(t, http.StatusOK, `not-json`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "")
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -200,7 +200,7 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "")
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
@@ -281,7 +281,7 @@ func TestMavenJARURL(t *testing.T) {
 func TestPluginsDownloadCommand_Flags(t *testing.T) {
 	cmd := newPluginsDownloadCommand()
 
-	for _, flag := range []string{"plugins-dir", "concurrency", "force-redownload"} {
+	for _, flag := range []string{"plugins-dir", "concurrency", "force-redownload", "edition"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected flag --%s to exist", flag)
 		}
@@ -334,7 +334,7 @@ func TestRunPluginsInstall_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -362,7 +362,7 @@ func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -387,7 +387,7 @@ func TestRunPluginsInstall_RedownloadsCorruptedJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -447,5 +447,114 @@ func TestLocalFileSHA1(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("localFileSHA1 = %q, want %q", got, want)
+	}
+}
+
+func TestEditionToLicense(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"ALL", "", false},
+		{"all", "", false},
+		{"OSS", "OPEN_SOURCE", false},
+		{"oss", "OPEN_SOURCE", false},
+		{"EE", "ENTERPRISE", false},
+		{"ee", "ENTERPRISE", false},
+		{"INVALID", "", true},
+		{"CE", "", true},
+	}
+	for _, tt := range tests {
+		got, err := editionToLicense(tt.input)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("editionToLicense(%q): expected error, got nil", tt.input)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("editionToLicense(%q): unexpected error: %v", tt.input, err)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("editionToLicense(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestFetchPluginList_LicenseQueryParam(t *testing.T) {
+	var capturedQuery string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(apiServer.Close)
+
+	orig := pluginsAPIBase
+	pluginsAPIBase = apiServer.URL
+	t.Cleanup(func() { pluginsAPIBase = orig })
+
+	tests := []struct {
+		license   string
+		wantQuery string
+	}{
+		{"", ""},
+		{"OPEN_SOURCE", "license=OPEN_SOURCE"},
+		{"ENTERPRISE", "license=ENTERPRISE"},
+	}
+	for _, tt := range tests {
+		capturedQuery = ""
+		if _, err := fetchPluginList("1.3.9", tt.license); err != nil {
+			t.Fatalf("fetchPluginList(%q): unexpected error: %v", tt.license, err)
+		}
+		if capturedQuery != tt.wantQuery {
+			t.Errorf("fetchPluginList license=%q: query = %q, want %q", tt.license, capturedQuery, tt.wantQuery)
+		}
+	}
+}
+
+func TestRunPluginsInstall_EditionOSS(t *testing.T) {
+	// API returns only OSS plugins (simulating a ?license=OPEN_SOURCE filtered response).
+	ossPayload := `[
+	  {"groupId":"io.kestra.plugin","artifactId":"plugin-kafka","license":"OPEN_SOURCE","version":"1.6.0"},
+	  {"groupId":"io.kestra.plugin","artifactId":"plugin-docker","license":"OPEN_SOURCE","version":"1.3.0"}
+	]`
+	newMockServers(t, http.StatusOK, ossPayload)
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Found 2 plugins") {
+		t.Errorf("expected 'Found 2 plugins' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 2") {
+		t.Errorf("expected 'Downloaded 2' in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsInstall_EditionEE(t *testing.T) {
+	// API returns only EE plugins (simulating a ?license=ENTERPRISE filtered response).
+	eePayload := `[
+	  {"groupId":"io.kestra.plugin.ee","artifactId":"plugin-ee-core","license":"ENTERPRISE","version":"1.3.9"}
+	]`
+	newMockServers(t, http.StatusOK, eePayload)
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Found 1 plugins") {
+		t.Errorf("expected 'Found 1 plugins' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' in output, got:\n%s", output)
 	}
 }
