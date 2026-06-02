@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha1" //nolint:gosec
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -38,9 +39,19 @@ const pluginListPayload = `[
   {"groupId":"io.kestra.plugin.ee","artifactId":"plugin-ee-jdbc","license":"ENTERPRISE","version":"1.3.9"}
 ]`
 
+// mockJARBody is the dummy JAR content returned by the mock Maven server.
+const mockJARBody = "PK\x03\x04"
+
+// mockJARSHA1 is the hex SHA-1 of mockJARBody, used by the mock .sha1 endpoint.
+var mockJARSHA1 = func() string {
+	h := sha1.New() //nolint:gosec
+	h.Write([]byte(mockJARBody))
+	return fmt.Sprintf("%x", h.Sum(nil))
+}()
+
 // newMockServers sets up:
 //   - apiServer: returns pluginListPayload for any request
-//   - mavenServer: returns a dummy JAR body for any request
+//   - mavenServer: returns a dummy JAR body for .jar requests and its SHA-1 for .sha1 requests
 //
 // It overrides pluginsAPIBase and pluginsMavenBase and restores them via t.Cleanup.
 func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mavenServer *httptest.Server) {
@@ -53,9 +64,14 @@ func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mav
 	}))
 
 	mavenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, mockJARSHA1)
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "PK\x03\x04") // minimal ZIP/JAR magic bytes
+		fmt.Fprint(w, mockJARBody)
 	}))
 
 	origAPI := pluginsAPIBase
@@ -79,7 +95,7 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,8 +105,8 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	if !strings.Contains(output, "Found 22 plugins") {
 		t.Errorf("expected 'Found 22 plugins' in output, got:\n%s", output)
 	}
-	if !strings.Contains(output, "Installed 22 plugin(s)") {
-		t.Errorf("expected 'Installed 22 plugin(s)' in output, got:\n%s", output)
+	if !strings.Contains(output, "Downloaded 22") {
+		t.Errorf("expected 'Downloaded 22' in output, got:\n%s", output)
 	}
 
 	// Verify JAR files were written to disk.
@@ -122,7 +138,7 @@ func TestRunPluginsInstall_ConcurrentDownloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false)
 	if err != nil {
 		t.Fatalf("unexpected error with concurrency=4: %v", err)
 	}
@@ -140,7 +156,7 @@ func TestRunPluginsInstall_APINotFound(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1)
+	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false)
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -153,7 +169,7 @@ func TestRunPluginsInstall_APIInvalidJSON(t *testing.T) {
 	newMockServers(t, http.StatusOK, `not-json`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -184,7 +200,7 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false)
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
@@ -265,7 +281,7 @@ func TestMavenJARURL(t *testing.T) {
 func TestPluginsDownloadCommand_Flags(t *testing.T) {
 	cmd := newPluginsDownloadCommand()
 
-	for _, flag := range []string{"plugins-dir", "concurrency"} {
+	for _, flag := range []string{"plugins-dir", "concurrency", "force-redownload"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected flag --%s to exist", flag)
 		}
@@ -300,5 +316,136 @@ func TestPluginsDownloadCommand_RequiresVersion(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accepts 1 arg") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// singlePluginPayload is a minimal plugin list used for skip/force tests.
+const singlePluginPayload = `[{"groupId":"io.kestra.plugin","artifactId":"plugin-kafka","license":"OPEN_SOURCE","version":"1.6.0"}]`
+
+func TestRunPluginsInstall_SkipsExistingValidJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+
+	// Pre-create the JAR with the same content the mock Maven server serves.
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "already up to date") {
+		t.Errorf("expected 'already up to date' in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "skipped 1") {
+		t.Errorf("expected 'skipped 1' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "Downloaded 1") {
+		t.Errorf("did not expect 'Downloaded 1' when plugin is up to date, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+
+	// Pre-create the JAR with matching content.
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' with --force-redownload, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' with --force-redownload, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsInstall_RedownloadsCorruptedJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+
+	// Pre-create the JAR with corrupt content (SHA-1 will not match).
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+	if err := os.WriteFile(jarPath, []byte("corrupted-data"), 0o644); err != nil {
+		t.Fatalf("failed to create corrupted JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' for corrupted JAR, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' after re-downloading corrupted JAR, got:\n%s", output)
+	}
+
+	// Verify the file was replaced with valid content.
+	content, err := os.ReadFile(jarPath)
+	if err != nil {
+		t.Fatalf("failed to read JAR after re-download: %v", err)
+	}
+	if string(content) != mockJARBody {
+		t.Errorf("expected JAR to contain mock body after re-download, got: %q", string(content))
+	}
+}
+
+func TestIsValidZIP(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	validPath := filepath.Join(tmpDir, "valid.jar")
+	if err := os.WriteFile(validPath, []byte("PK\x03\x04extra"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if !isValidZIP(validPath) {
+		t.Error("expected isValidZIP to return true for valid ZIP magic bytes")
+	}
+
+	invalidPath := filepath.Join(tmpDir, "invalid.jar")
+	if err := os.WriteFile(invalidPath, []byte("not-a-zip"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if isValidZIP(invalidPath) {
+		t.Error("expected isValidZIP to return false for non-ZIP content")
+	}
+}
+
+func TestLocalFileSHA1(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.jar")
+	content := []byte("hello")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	h := sha1.New() //nolint:gosec
+	h.Write(content)
+	want := fmt.Sprintf("%x", h.Sum(nil))
+
+	got, err := localFileSHA1(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Errorf("localFileSHA1 = %q, want %q", got, want)
 	}
 }
