@@ -90,6 +90,36 @@ func TestFormatSDKError_ApiError(t *testing.T) {
 		}
 	})
 
+	t.Run("plain text body has no double prefix", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{
+			StatusCode: 403,
+			Body:       []byte("Forbidden"),
+		})
+		if err == nil || err.Error() != "API error: status 403" {
+			t.Fatalf("expected 'API error: status 403', got: %v", err)
+		}
+	})
+
+	t.Run("empty body and message uses status code", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{StatusCode: 502})
+		if err == nil || err.Error() != "API error: status 502" {
+			t.Fatalf("expected 'API error: status 502', got: %v", err)
+		}
+	})
+
+	t.Run("html body does not leak the page into the hint", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{
+			StatusCode: 401,
+			Body:       []byte("<html><body>big page</body></html>"),
+		})
+		if err == nil || strings.Contains(err.Error(), "big page") {
+			t.Fatalf("expected HTML body to be omitted, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), "HTML response") {
+			t.Fatalf("expected HTML hint, got: %v", err)
+		}
+	})
+
 	t.Run("unrelated error passes through", func(t *testing.T) {
 		orig := errors.New("plain")
 		if got := formatSDKError(orig); got != orig {

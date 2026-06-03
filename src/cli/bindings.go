@@ -35,8 +35,8 @@ func newBindingsListCommand() *cobra.Command {
 		bindingType string
 		externalID  string
 		namespace   string
-		page        int
-		size        int
+		page        int32
+		size        int32
 		sort        []string
 	)
 
@@ -72,14 +72,14 @@ func newBindingsListCommand() *cobra.Command {
 	cmd.Flags().StringVar(&bindingType, "type", "", "Filter bindings by subject type (USER or GROUP)")
 	cmd.Flags().StringVar(&externalID, "external-id", "", "Filter bindings by the bound user/group ID")
 	cmd.Flags().StringVar(&namespace, "namespace", "", "Filter bindings by namespace")
-	cmd.Flags().IntVar(&page, "page", 1, "Page number")
-	cmd.Flags().IntVar(&size, "size", 100, "Page size")
-	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (repeatable)")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (e.g. 'namespace:asc', repeatable)")
 
 	return cmd
 }
 
-func runBindingsList(client *Client, bindingType, externalID, namespace string, page, size int, sort []string, renderer *Renderer) error {
+func runBindingsList(client *Client, bindingType, externalID, namespace string, page, size int32, sort []string, renderer *Renderer) error {
 	typeFilter, err := parseBindingType(bindingType)
 	if err != nil {
 		return err
@@ -93,10 +93,15 @@ func runBindingsList(client *Client, bindingType, externalID, namespace string, 
 		namespaceFilter = &namespace
 	}
 
+	pageParam, sizeParam := int(page), int(size)
 	resp, err := client.Kestra.Bindings().SearchBindings(
-		client.Ctx, client.Tenant, &page, &size, sort, typeFilter, externalIDFilter, namespaceFilter, nil)
+		client.Ctx, client.Tenant, &pageParam, &sizeParam, sort, typeFilter, externalIDFilter, namespaceFilter, nil)
 	if err != nil {
 		return formatSDKError(err)
+	}
+	if resp == nil {
+		// The SDK returns (nil, nil) on a 2xx response with an empty body.
+		resp = &kestra.PagedResultsIAMBindingControllerApiBindingDetail{}
 	}
 
 	results := resp.Results
@@ -252,6 +257,11 @@ func runBindingsCreate(client *Client, bindingType, externalID, roleID, namespac
 	if err != nil {
 		return formatSDKError(err)
 	}
+	if binding == nil {
+		// The SDK returns (nil, nil) on a 2xx response with an empty body.
+		return renderStatus(renderer, "Binding created.",
+			map[string]any{"externalId": externalID, "roleId": roleID, "status": "created"})
+	}
 	return renderBindingDetail(binding, renderer)
 }
 
@@ -311,11 +321,8 @@ func parseBindingType(s string) (*kestra.BindingType, error) {
 	}
 	parsed, err := kestra.NewBindingTypeFromValue(strings.ToUpper(strings.TrimSpace(s)))
 	if err != nil {
-		values := make([]string, 0, len(kestra.AllowedBindingTypeEnumValues))
-		for _, v := range kestra.AllowedBindingTypeEnumValues {
-			values = append(values, string(v))
-		}
-		return nil, fmt.Errorf("invalid type %q: expected one of %s", s, strings.Join(values, ", "))
+		return nil, fmt.Errorf("invalid type %q: expected one of %s",
+			s, joinEnumValues(kestra.AllowedBindingTypeEnumValues))
 	}
 	return parsed, nil
 }
