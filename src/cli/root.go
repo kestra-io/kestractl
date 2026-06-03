@@ -118,6 +118,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newRolesCommand())
 	root.AddCommand(newServiceAccountsCommand())
 	root.AddCommand(newInvitationsCommand())
+	root.AddCommand(newBindingsCommand())
 
 	return root
 }
