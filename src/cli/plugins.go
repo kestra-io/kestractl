@@ -38,11 +38,12 @@ type pluginArtifact struct {
 }
 
 type downloadResult struct {
-	index   int
-	plugin  pluginArtifact
-	bytes   int64
-	err     error
-	skipped bool
+	index     int
+	plugin    pluginArtifact
+	bytes     int64
+	err       error
+	skipped   bool
+	cancelled bool
 }
 
 func newPluginsCommand() *cobra.Command {
@@ -143,24 +144,34 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		outMu.Unlock()
 	}
 
-	sem := make(chan struct{}, concurrency)
+	type job struct {
+		index  int
+		plugin pluginArtifact
+	}
+	jobs := make(chan job, len(plugins))
+	for i, p := range plugins {
+		jobs <- job{i, p}
+	}
+	close(jobs)
+
 	results := make(chan downloadResult, len(plugins))
 
 	var wg sync.WaitGroup
-	for i, p := range plugins {
+	for range concurrency {
 		wg.Add(1)
-		go func(i int, p pluginArtifact) {
+		go func() {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results <- downloadResult{index: i, plugin: p, err: ctx.Err()}
-				return
+			for j := range jobs {
+				select {
+				case <-ctx.Done():
+					results <- downloadResult{index: j.index, plugin: j.plugin, cancelled: true}
+					continue
+				default:
+				}
+				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload)
+				results <- downloadResult{index: j.index, plugin: j.plugin, bytes: n, err: err, skipped: skipped}
 			}
-			defer func() { <-sem }()
-			n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload)
-			results <- downloadResult{index: i, plugin: p, bytes: n, err: err, skipped: skipped}
-		}(i, p)
+		}()
 	}
 
 	go func() {
@@ -170,13 +181,16 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 
 	downloaded := 0
 	skippedCount := 0
+	cancelledCount := 0
 	failed := 0
 	stoppedEarly := false
 
 	for r := range results {
 		label := fmt.Sprintf("%s:%s:%s", r.plugin.GroupID, r.plugin.ArtifactID, r.plugin.Version)
 		outMu.Lock()
-		if errors.Is(r.err, errRateLimited) {
+		if r.cancelled || errors.Is(r.err, context.Canceled) {
+			cancelledCount++
+		} else if errors.Is(r.err, errRateLimited) {
 			fmt.Fprintf(out, lineFormat+" %s ... FAILED (rate limited — stopping early)\n", r.index+1, len(plugins), label)
 			failed++
 			if !stoppedEarly {
@@ -200,6 +214,9 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	if skippedCount > 0 {
 		fmt.Fprintf(out, ", skipped %d (already up to date)", skippedCount)
 	}
+	if cancelledCount > 0 {
+		fmt.Fprintf(out, ", %d not started (cancelled)", cancelledCount)
+	}
 	fmt.Fprintf(out, " plugin(s) to %s", pluginsDir)
 	if failed > 0 {
 		fmt.Fprintf(out, ", %d failed", failed)
@@ -217,7 +234,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	}
 
 	if stoppedEarly {
-		return fmt.Errorf("download stopped early: Maven Central is rate limiting — %d plugin(s) failed", failed)
+		return fmt.Errorf("download stopped early: Maven Central is rate limiting — %d failed, %d not started", failed, cancelledCount)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
