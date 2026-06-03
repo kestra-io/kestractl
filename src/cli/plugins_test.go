@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // Real-world payload sampled from
@@ -82,7 +84,7 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestRunPluginsInstall_ConcurrentDownloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "", false)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "", false, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error with concurrency=4: %v", err)
 	}
@@ -143,7 +145,7 @@ func TestRunPluginsInstall_APINotFound(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "", false)
+	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "", false, 5*time.Minute)
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -156,7 +158,7 @@ func TestRunPluginsInstall_APIInvalidJSON(t *testing.T) {
 	newMockServers(t, http.StatusOK, `not-json`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -187,7 +189,7 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute)
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
@@ -327,7 +329,7 @@ func TestRunPluginsInstall_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -355,7 +357,7 @@ func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -443,7 +445,7 @@ func TestRunPluginsInstall_EditionOSS(t *testing.T) {
 	newMockServers(t, http.StatusOK, ossPayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE", false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE", false, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -464,7 +466,7 @@ func TestRunPluginsInstall_EditionEE(t *testing.T) {
 	newMockServers(t, http.StatusOK, eePayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE", false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE", false, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -499,7 +501,7 @@ func TestRunPluginsInstall_KeepOnlyLastVersion_RemovesOldVersions(t *testing.T) 
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", true); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", true, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -540,7 +542,7 @@ func TestRunPluginsInstall_KeepOnlyLastVersionFalse_LeavesOldVersions(t *testing
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -607,5 +609,96 @@ func TestPruneOldVersions(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(tmpDir, unknown)); os.IsNotExist(err) {
 		t.Errorf("expected unknown plugin %s to remain", unknown)
+	}
+}
+
+func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
+	// Override waits to zero so the test doesn't actually sleep.
+	orig := rateLimitWaits
+	rateLimitWaits = []time.Duration{0, 0, 0}
+	t.Cleanup(func() { rateLimitWaits = orig })
+
+	var attempts atomic.Int32
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, singlePluginPayload)
+	}))
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// First two attempts return 429; third succeeds.
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	origAPI, origMaven := pluginsAPIBase, pluginsMavenBase
+	pluginsAPIBase, pluginsMavenBase = apiServer.URL, mavenServer.URL
+	t.Cleanup(func() {
+		pluginsAPIBase, pluginsMavenBase = origAPI, origMaven
+		apiServer.Close()
+		mavenServer.Close()
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "[429]") {
+		t.Errorf("expected '[429]' retry log in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' after retry succeeded, got:\n%s", output)
+	}
+	if attempts.Load() != 3 {
+		t.Errorf("expected 3 Maven attempts, got %d", attempts.Load())
+	}
+}
+
+func TestRunPluginsInstall_429ExhaustsRetriesStopsEarly(t *testing.T) {
+	orig := rateLimitWaits
+	rateLimitWaits = []time.Duration{0, 0, 0}
+	t.Cleanup(func() { rateLimitWaits = orig })
+
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	// Override Maven to always return 429.
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	origMaven := pluginsMavenBase
+	pluginsMavenBase = mavenServer.URL
+	t.Cleanup(func() {
+		pluginsMavenBase = origMaven
+		mavenServer.Close()
+	})
+
+	var out bytes.Buffer
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error when Maven always returns 429")
+	}
+	if !strings.Contains(err.Error(), "stopped early") {
+		t.Errorf("expected 'stopped early' in error, got: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "rate limited — stopping early") {
+		t.Errorf("expected early-stop message in output, got:\n%s", output)
+	}
+}
+
+func TestPluginsDownloadCommand_GlobalTimeoutFlag(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	f := cmd.Flags().Lookup("global-timeout")
+	if f == nil {
+		t.Fatal("expected --global-timeout flag to exist")
+	}
+	if f.DefValue != "5m0s" {
+		t.Errorf("expected --global-timeout default to be 5m0s, got %q", f.DefValue)
 	}
 }

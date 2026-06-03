@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,9 +11,18 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 )
+
+// errRateLimited is returned by downloadJAR when Maven Central responds with 429
+// after all retry attempts are exhausted.
+var errRateLimited = errors.New("rate limited by Maven Central (429)")
+
+// rateLimitWaits defines the back-off delays between successive 429 retries.
+// Exposed as a var so tests can override it to avoid sleeping.
+var rateLimitWaits = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second}
 
 // pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
 var (
@@ -53,6 +64,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var forceRedownload bool
 	var edition string
 	var keepOnlyLastVersion bool
+	var globalTimeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "download <version>",
@@ -63,7 +75,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion)
+			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -73,6 +85,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist and pass checksum verification")
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
+	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
 	return cmd
 }
 
@@ -101,7 +114,7 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool) error {
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration) error {
 	kestraVersion = resolveVersion(kestraVersion)
 	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
 
@@ -116,8 +129,19 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		return fmt.Errorf("cannot create plugins directory %q: %w", pluginsDir, err)
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
+	defer cancel()
+
 	width := len(fmt.Sprintf("%d", len(plugins)))
 	lineFormat := fmt.Sprintf("[%%%dd/%%%dd]", width, width)
+
+	// outMu serializes all writes to out, including retry log lines from goroutines.
+	var outMu sync.Mutex
+	logf := func(format string, args ...any) {
+		outMu.Lock()
+		fmt.Fprintf(out, format, args...)
+		outMu.Unlock()
+	}
 
 	sem := make(chan struct{}, concurrency)
 	results := make(chan downloadResult, len(plugins))
@@ -127,9 +151,14 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		wg.Add(1)
 		go func(i int, p pluginArtifact) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				results <- downloadResult{index: i, plugin: p, err: ctx.Err()}
+				return
+			}
 			defer func() { <-sem }()
-			n, skipped, err := downloadJAR(p, pluginsDir, forceRedownload)
+			n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload)
 			results <- downloadResult{index: i, plugin: p, bytes: n, err: err, skipped: skipped}
 		}(i, p)
 	}
@@ -139,15 +168,22 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		close(results)
 	}()
 
-	var mu sync.Mutex
 	downloaded := 0
 	skippedCount := 0
 	failed := 0
+	stoppedEarly := false
 
 	for r := range results {
 		label := fmt.Sprintf("%s:%s:%s", r.plugin.GroupID, r.plugin.ArtifactID, r.plugin.Version)
-		mu.Lock()
-		if r.err != nil {
+		outMu.Lock()
+		if errors.Is(r.err, errRateLimited) {
+			fmt.Fprintf(out, lineFormat+" %s ... FAILED (rate limited — stopping early)\n", r.index+1, len(plugins), label)
+			failed++
+			if !stoppedEarly {
+				stoppedEarly = true
+				cancel()
+			}
+		} else if r.err != nil {
 			fmt.Fprintf(out, lineFormat+" %s ... FAILED (%v)\n", r.index+1, len(plugins), label, r.err)
 			failed++
 		} else if r.skipped {
@@ -157,7 +193,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 			fmt.Fprintf(out, lineFormat+" %s ... done (%.1f MB)\n", r.index+1, len(plugins), label, float64(r.bytes)/(1024*1024))
 			downloaded++
 		}
-		mu.Unlock()
+		outMu.Unlock()
 	}
 
 	fmt.Fprintf(out, "\nDownloaded %d", downloaded)
@@ -180,6 +216,9 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		}
 	}
 
+	if stoppedEarly {
+		return fmt.Errorf("download stopped early: Maven Central is rate limiting — %d plugin(s) failed", failed)
+	}
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
 	}
@@ -262,7 +301,7 @@ func pluginFileName(p pluginArtifact) string {
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
 }
 
-func downloadJAR(p pluginArtifact, destDir string, forceRedownload bool) (int64, bool, error) {
+func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
 
 	if !forceRedownload {
@@ -272,27 +311,50 @@ func downloadJAR(p pluginArtifact, destDir string, forceRedownload bool) (int64,
 	}
 
 	url := mavenJARURL(p)
-	resp, err := http.Get(url) //nolint:gosec // URL is constructed from trusted API data
-	if err != nil {
-		return 0, false, fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
-	if resp.StatusCode != http.StatusOK {
-		return 0, false, fmt.Errorf("Maven Central returned HTTP %d", resp.StatusCode)
-	}
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return 0, false, fmt.Errorf("failed to build request: %w", err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, false, fmt.Errorf("HTTP request failed: %w", err)
+		}
 
-	f, err := os.Create(destPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("cannot create file: %w", err)
-	}
-	defer f.Close()
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt >= len(rateLimitWaits) {
+				return 0, false, errRateLimited
+			}
+			wait := rateLimitWaits[attempt]
+			logf("  [429] rate limited on %s — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return 0, false, ctx.Err()
+			}
+			continue
+		}
 
-	n, err := io.Copy(f, resp.Body)
-	if err != nil {
-		return 0, false, fmt.Errorf("write failed: %w", err)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return 0, false, fmt.Errorf("Maven Central returned HTTP %d", resp.StatusCode)
+		}
+
+		f, err := os.Create(destPath)
+		if err != nil {
+			return 0, false, fmt.Errorf("cannot create file: %w", err)
+		}
+		defer f.Close()
+
+		n, err := io.Copy(f, resp.Body)
+		if err != nil {
+			return 0, false, fmt.Errorf("write failed: %w", err)
+		}
+		return n, false, nil
 	}
-	return n, false, nil
 }
 
 // mavenJARURL builds the Maven Central download URL for a plugin artifact.
