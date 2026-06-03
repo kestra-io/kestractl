@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"crypto/sha1" //nolint:gosec // SHA-1 is used only for checksum comparison, not cryptographic security
 	"encoding/json"
 	"fmt"
 	"io"
@@ -268,20 +267,7 @@ func downloadJAR(p pluginArtifact, destDir string, forceRedownload bool) (int64,
 
 	if !forceRedownload {
 		if _, err := os.Stat(destPath); err == nil {
-			remoteSHA1, shaErr := fetchMavenSHA1(p)
-			if shaErr == nil {
-				localHash, hashErr := localFileSHA1(destPath)
-				if hashErr == nil && localHash == remoteSHA1 {
-					return 0, true, nil // already up-to-date
-				}
-				// SHA-1 mismatch: file is corrupted or truncated — remove and re-download.
-				_ = os.Remove(destPath)
-			} else {
-				// Can't reach Maven for SHA-1 — fall back to ZIP magic byte check.
-				if isValidZIP(destPath) {
-					return 0, true, nil
-				}
-			}
+			return 0, true, nil
 		}
 	}
 
@@ -307,53 +293,6 @@ func downloadJAR(p pluginArtifact, destDir string, forceRedownload bool) (int64,
 		return 0, false, fmt.Errorf("write failed: %w", err)
 	}
 	return n, false, nil
-}
-
-// fetchMavenSHA1 retrieves the SHA-1 checksum published by Maven Central for the artifact.
-func fetchMavenSHA1(p pluginArtifact) (string, error) {
-	url := mavenJARURL(p) + ".sha1"
-	resp, err := http.Get(url) //nolint:gosec // URL is constructed from trusted API data
-	if err != nil {
-		return "", fmt.Errorf("HTTP request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("Maven Central returned HTTP %d for SHA-1", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read failed: %w", err)
-	}
-	// Maven .sha1 files contain the hex digest, optionally followed by whitespace and filename.
-	return strings.Fields(string(body))[0], nil
-}
-
-// localFileSHA1 computes the hex-encoded SHA-1 digest of the file at path.
-func localFileSHA1(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha1.New() //nolint:gosec // SHA-1 used only for checksum comparison
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// isValidZIP checks whether path starts with the ZIP/JAR magic bytes (PK\x03\x04).
-func isValidZIP(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	var magic [4]byte
-	if _, err := io.ReadFull(f, magic[:]); err != nil {
-		return false
-	}
-	return magic[0] == 'P' && magic[1] == 'K' && magic[2] == 0x03 && magic[3] == 0x04
 }
 
 // mavenJARURL builds the Maven Central download URL for a plugin artifact.
