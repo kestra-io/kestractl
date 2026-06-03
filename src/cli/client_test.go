@@ -2,7 +2,9 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -57,6 +59,43 @@ func TestTryParseNamespaceListFromError(t *testing.T) {
 	if items[1].ID != "team.beta" || !items[1].Deleted {
 		t.Fatalf("unexpected second item: %+v", items[1])
 	}
+}
+
+func TestFormatSDKError_ApiError(t *testing.T) {
+	t.Run("json message body", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{
+			StatusCode: 404,
+			Body:       []byte(`{"message":"role not found"}`),
+		})
+		if err == nil || err.Error() != "API error: role not found" {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("html body", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{
+			StatusCode: 404,
+			Body:       []byte("<html><body>Not Found</body></html>"),
+			Message:    "Not Found",
+		})
+		if err == nil || !strings.Contains(err.Error(), "HTML response") {
+			t.Fatalf("expected HTML hint, got: %v", err)
+		}
+	})
+
+	t.Run("falls back to message", func(t *testing.T) {
+		err := formatSDKError(&kestra.ApiError{StatusCode: 500, Message: "boom"})
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("expected fallback message, got: %v", err)
+		}
+	})
+
+	t.Run("unrelated error passes through", func(t *testing.T) {
+		orig := errors.New("plain")
+		if got := formatSDKError(orig); got != orig {
+			t.Fatalf("expected passthrough, got: %v", got)
+		}
+	})
 }
 
 func TestParseHeaders(t *testing.T) {
