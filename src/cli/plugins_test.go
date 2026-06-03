@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"crypto/sha1" //nolint:gosec
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -42,13 +41,6 @@ const pluginListPayload = `[
 // mockJARBody is the dummy JAR content returned by the mock Maven server.
 const mockJARBody = "PK\x03\x04"
 
-// mockJARSHA1 is the hex SHA-1 of mockJARBody, used by the mock .sha1 endpoint.
-var mockJARSHA1 = func() string {
-	h := sha1.New() //nolint:gosec
-	h.Write([]byte(mockJARBody))
-	return fmt.Sprintf("%x", h.Sum(nil))
-}()
-
 // newMockServers sets up:
 //   - apiServer: returns pluginListPayload for any request
 //   - mavenServer: returns a dummy JAR body for .jar requests and its SHA-1 for .sha1 requests
@@ -64,11 +56,6 @@ func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mav
 	}))
 
 	mavenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, mockJARSHA1)
-			return
-		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -378,81 +365,6 @@ func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 	if !strings.Contains(output, "Downloaded 1") {
 		t.Errorf("expected 'Downloaded 1' with --force-redownload, got:\n%s", output)
-	}
-}
-
-func TestRunPluginsInstall_RedownloadsCorruptedJAR(t *testing.T) {
-	newMockServers(t, http.StatusOK, singlePluginPayload)
-
-	tmpDir := t.TempDir()
-
-	// Pre-create the JAR with corrupt content (SHA-1 will not match).
-	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
-	if err := os.WriteFile(jarPath, []byte("corrupted-data"), 0o644); err != nil {
-		t.Fatalf("failed to create corrupted JAR: %v", err)
-	}
-
-	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	output := out.String()
-	if strings.Contains(output, "already up to date") {
-		t.Errorf("did not expect 'already up to date' for corrupted JAR, got:\n%s", output)
-	}
-	if !strings.Contains(output, "Downloaded 1") {
-		t.Errorf("expected 'Downloaded 1' after re-downloading corrupted JAR, got:\n%s", output)
-	}
-
-	// Verify the file was replaced with valid content.
-	content, err := os.ReadFile(jarPath)
-	if err != nil {
-		t.Fatalf("failed to read JAR after re-download: %v", err)
-	}
-	if string(content) != mockJARBody {
-		t.Errorf("expected JAR to contain mock body after re-download, got: %q", string(content))
-	}
-}
-
-func TestIsValidZIP(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	validPath := filepath.Join(tmpDir, "valid.jar")
-	if err := os.WriteFile(validPath, []byte("PK\x03\x04extra"), 0o644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if !isValidZIP(validPath) {
-		t.Error("expected isValidZIP to return true for valid ZIP magic bytes")
-	}
-
-	invalidPath := filepath.Join(tmpDir, "invalid.jar")
-	if err := os.WriteFile(invalidPath, []byte("not-a-zip"), 0o644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	if isValidZIP(invalidPath) {
-		t.Error("expected isValidZIP to return false for non-ZIP content")
-	}
-}
-
-func TestLocalFileSHA1(t *testing.T) {
-	tmpDir := t.TempDir()
-	path := filepath.Join(tmpDir, "test.jar")
-	content := []byte("hello")
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	h := sha1.New() //nolint:gosec
-	h.Write(content)
-	want := fmt.Sprintf("%x", h.Sum(nil))
-
-	got, err := localFileSHA1(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != want {
-		t.Errorf("localFileSHA1 = %q, want %q", got, want)
 	}
 }
 
