@@ -53,6 +53,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var concurrency int
 	var forceRedownload bool
 	var edition string
+	var keepOnlyLastVersion bool
 
 	cmd := &cobra.Command{
 		Use:   "download <version>",
@@ -63,7 +64,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license)
+			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -72,6 +73,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of parallel downloads")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist and pass checksum verification")
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
+	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	return cmd
 }
 
@@ -100,7 +102,7 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string) error {
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool) error {
 	kestraVersion = resolveVersion(kestraVersion)
 	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
 
@@ -169,10 +171,64 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	}
 	fmt.Fprintln(out, ".")
 
+	if keepOnlyLastVersion {
+		removed, pruneErr := pruneOldVersions(pluginsDir, plugins)
+		if pruneErr != nil {
+			return pruneErr
+		}
+		if removed > 0 {
+			fmt.Fprintf(out, "Removed %d old version(s) from %s.\n", removed, pluginsDir)
+		}
+	}
+
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
 	}
 	return nil
+}
+
+// pruneOldVersions removes JARs in pluginsDir that belong to a plugin in the current list
+// but have a different (older) version than what was just downloaded.
+func pruneOldVersions(pluginsDir string, current []pluginArtifact) (int, error) {
+	currentFiles := make(map[string]struct{}, len(current))
+	for _, p := range current {
+		currentFiles[pluginFileName(p)] = struct{}{}
+	}
+
+	// Build prefixes of the form "<groupId>__<artifactId>__" to identify which dir entries
+	// belong to a known plugin regardless of version.
+	type prefix struct{ s string }
+	prefixes := make([]prefix, 0, len(current))
+	for _, p := range current {
+		groupID := strings.ReplaceAll(p.GroupID, ".", "_")
+		prefixes = append(prefixes, prefix{groupID + "__" + p.ArtifactID + "__"})
+	}
+
+	entries, err := os.ReadDir(pluginsDir)
+	if err != nil {
+		return 0, fmt.Errorf("cannot read plugins directory: %w", err)
+	}
+
+	removed := 0
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".jar") {
+			continue
+		}
+		if _, isCurrent := currentFiles[name]; isCurrent {
+			continue
+		}
+		for _, pfx := range prefixes {
+			if strings.HasPrefix(name, pfx.s) {
+				if err := os.Remove(filepath.Join(pluginsDir, name)); err != nil {
+					return removed, fmt.Errorf("failed to remove old version %q: %w", name, err)
+				}
+				removed++
+				break
+			}
+		}
+	}
+	return removed, nil
 }
 
 func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, error) {

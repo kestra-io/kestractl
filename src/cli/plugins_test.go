@@ -95,7 +95,7 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "")
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestRunPluginsInstall_ConcurrentDownloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "")
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "", false)
 	if err != nil {
 		t.Fatalf("unexpected error with concurrency=4: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRunPluginsInstall_APINotFound(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "")
+	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "", false)
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -169,7 +169,7 @@ func TestRunPluginsInstall_APIInvalidJSON(t *testing.T) {
 	newMockServers(t, http.StatusOK, `not-json`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "")
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -200,7 +200,7 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "")
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false)
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
@@ -281,10 +281,16 @@ func TestMavenJARURL(t *testing.T) {
 func TestPluginsDownloadCommand_Flags(t *testing.T) {
 	cmd := newPluginsDownloadCommand()
 
-	for _, flag := range []string{"plugins-dir", "concurrency", "force-redownload", "edition"} {
+	for _, flag := range []string{"plugins-dir", "concurrency", "force-redownload", "edition", "keep-only-last-version"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected flag --%s to exist", flag)
 		}
+	}
+
+	// --keep-only-last-version must default to true.
+	f := cmd.Flags().Lookup("keep-only-last-version")
+	if f.DefValue != "true" {
+		t.Errorf("expected --keep-only-last-version default to be true, got %q", f.DefValue)
 	}
 }
 
@@ -334,7 +340,7 @@ func TestRunPluginsInstall_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, ""); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -362,7 +368,7 @@ func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, ""); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -387,7 +393,7 @@ func TestRunPluginsInstall_RedownloadsCorruptedJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, ""); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -525,7 +531,7 @@ func TestRunPluginsInstall_EditionOSS(t *testing.T) {
 	newMockServers(t, http.StatusOK, ossPayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE"); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -546,7 +552,7 @@ func TestRunPluginsInstall_EditionEE(t *testing.T) {
 	newMockServers(t, http.StatusOK, eePayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE"); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE", false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -556,5 +562,138 @@ func TestRunPluginsInstall_EditionEE(t *testing.T) {
 	}
 	if !strings.Contains(output, "Downloaded 1") {
 		t.Errorf("expected 'Downloaded 1' in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsInstall_KeepOnlyLastVersion_RemovesOldVersions(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload) // serves plugin-kafka 1.6.0
+
+	tmpDir := t.TempDir()
+
+	// Pre-place two old versions of the same plugin in the directory.
+	for _, oldName := range []string{
+		"io_kestra_plugin__plugin-kafka__1_5_0.jar",
+		"io_kestra_plugin__plugin-kafka__1_4_0.jar",
+	} {
+		if err := os.WriteFile(filepath.Join(tmpDir, oldName), []byte(mockJARBody), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	// Also put an unrelated JAR that must NOT be removed.
+	unrelated := "io_kestra_plugin__plugin-docker__1_3_0.jar"
+	if err := os.WriteFile(filepath.Join(tmpDir, unrelated), []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", true); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "Removed 2 old version(s)") {
+		t.Errorf("expected 'Removed 2 old version(s)' in output, got:\n%s", output)
+	}
+
+	// Old versions must be gone.
+	for _, oldName := range []string{
+		"io_kestra_plugin__plugin-kafka__1_5_0.jar",
+		"io_kestra_plugin__plugin-kafka__1_4_0.jar",
+	} {
+		if _, err := os.Stat(filepath.Join(tmpDir, oldName)); !os.IsNotExist(err) {
+			t.Errorf("expected old version %s to be removed", oldName)
+		}
+	}
+
+	// Current version must still exist.
+	if _, err := os.Stat(filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")); os.IsNotExist(err) {
+		t.Error("expected current version io_kestra_plugin__plugin-kafka__1_6_0.jar to still exist")
+	}
+
+	// Unrelated plugin must still exist.
+	if _, err := os.Stat(filepath.Join(tmpDir, unrelated)); os.IsNotExist(err) {
+		t.Errorf("expected unrelated plugin %s to still exist", unrelated)
+	}
+}
+
+func TestRunPluginsInstall_KeepOnlyLastVersionFalse_LeavesOldVersions(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+
+	oldName := "io_kestra_plugin__plugin-kafka__1_5_0.jar"
+	if err := os.WriteFile(filepath.Join(tmpDir, oldName), []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Old version must still be present.
+	if _, err := os.Stat(filepath.Join(tmpDir, oldName)); os.IsNotExist(err) {
+		t.Errorf("expected old version %s to remain when --keep-only-last-version=false", oldName)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "Removed") {
+		t.Errorf("did not expect 'Removed' in output when flag is false, got:\n%s", output)
+	}
+}
+
+func TestPruneOldVersions(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	current := []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-docker", Version: "1.3.0"},
+	}
+
+	// Create current-version files (should be kept).
+	for _, p := range current {
+		if err := os.WriteFile(filepath.Join(tmpDir, pluginFileName(p)), []byte("jar"), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	// Create old-version files (should be removed).
+	oldFiles := []string{
+		"io_kestra_plugin__plugin-kafka__1_5_0.jar",
+		"io_kestra_plugin__plugin-docker__1_2_0.jar",
+	}
+	for _, name := range oldFiles {
+		if err := os.WriteFile(filepath.Join(tmpDir, name), []byte("jar"), 0o644); err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+
+	// Create a JAR for a plugin not in the current list (should be kept).
+	unknown := "io_kestra_plugin__plugin-unknown__9_9_9.jar"
+	if err := os.WriteFile(filepath.Join(tmpDir, unknown), []byte("jar"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	removed, err := pruneOldVersions(tmpDir, current)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if removed != 2 {
+		t.Errorf("expected 2 files removed, got %d", removed)
+	}
+
+	for _, name := range oldFiles {
+		if _, err := os.Stat(filepath.Join(tmpDir, name)); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be removed", name)
+		}
+	}
+	for _, p := range current {
+		if _, err := os.Stat(filepath.Join(tmpDir, pluginFileName(p))); os.IsNotExist(err) {
+			t.Errorf("expected current file %s to remain", pluginFileName(p))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(tmpDir, unknown)); os.IsNotExist(err) {
+		t.Errorf("expected unknown plugin %s to remain", unknown)
 	}
 }
