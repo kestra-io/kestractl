@@ -16,6 +16,7 @@ func newTestClient(t *testing.T, serverURL string) *Client {
 	cfg.Servers = kestra.ServerConfigurations{{URL: serverURL}}
 	return &Client{
 		API:    kestra.NewAPIClient(cfg),
+		Kestra: kestra.NewClient(serverURL),
 		Ctx:    context.Background(),
 		Tenant: "main",
 	}
