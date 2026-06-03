@@ -84,6 +84,22 @@ func TestRunInvitationsList(t *testing.T) {
 	}
 }
 
+func TestRunInvitationsList_EmptyBodyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runInvitationsList(newTestClient(t, server.URL), "", "", 1, 100, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("expected empty list on empty-body response, got error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Total invitations: 0") {
+		t.Errorf("expected empty list output, got:\n%s", buf.String())
+	}
+}
+
 func TestRunInvitationsList_InvalidStatus(t *testing.T) {
 	hit := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

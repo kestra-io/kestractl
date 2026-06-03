@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
-	"time"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
@@ -34,8 +33,8 @@ func newInvitationsListCommand() *cobra.Command {
 	var (
 		email  string
 		status string
-		page   int
-		size   int
+		page   int32
+		size   int32
 		sort   []string
 	)
 
@@ -70,21 +69,17 @@ func newInvitationsListCommand() *cobra.Command {
 
 	cmd.Flags().StringVar(&email, "email", "", "Filter invitations by invitee email")
 	cmd.Flags().StringVar(&status, "status", "", "Filter invitations by status (PENDING, ACCEPTED or EXPIRED)")
-	cmd.Flags().IntVar(&page, "page", 1, "Page number")
-	cmd.Flags().IntVar(&size, "size", 100, "Page size")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
 	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (e.g. 'sentAt:desc', repeatable)")
 
 	return cmd
 }
 
-func runInvitationsList(client *Client, email, status string, page, size int, sort []string, renderer *Renderer) error {
-	var statusFilter *kestra.InvitationInvitationStatus
-	if status != "" {
-		parsed, err := kestra.NewInvitationInvitationStatusFromValue(strings.ToUpper(strings.TrimSpace(status)))
-		if err != nil {
-			return fmt.Errorf("invalid status %q: expected one of %s", status, joinInvitationStatuses())
-		}
-		statusFilter = parsed
+func runInvitationsList(client *Client, email, status string, page, size int32, sort []string, renderer *Renderer) error {
+	statusFilter, err := parseInvitationStatus(status)
+	if err != nil {
+		return err
 	}
 
 	var emailFilter *string
@@ -92,10 +87,15 @@ func runInvitationsList(client *Client, email, status string, page, size int, so
 		emailFilter = &email
 	}
 
+	pageParam, sizeParam := int(page), int(size)
 	resp, err := client.Kestra.Invitations().SearchInvitations(
-		client.Ctx, client.Tenant, &page, &size, sort, emailFilter, statusFilter, nil)
+		client.Ctx, client.Tenant, &pageParam, &sizeParam, sort, emailFilter, statusFilter, nil)
 	if err != nil {
 		return formatSDKError(err)
+	}
+	if resp == nil {
+		// The SDK returns (nil, nil) on a 2xx response with an empty body.
+		resp = &kestra.PagedResultsIAMInvitationControllerApiInvitationDetail{}
 	}
 
 	results := resp.Results
@@ -109,7 +109,7 @@ func runInvitationsList(client *Client, email, status string, page, size int, so
 		for _, inv := range results {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\n",
 				inv.GetId(), inv.GetEmail(), inv.GetStatus(),
-				formatInvitationTime(inv.SentAt), formatInvitationTime(inv.ExpiredAt),
+				formatOptionalTime(inv.GetSentAt()), formatOptionalTime(inv.GetExpiredAt()),
 				inv.GetSuperAdmin())
 		}
 		fmt.Fprintf(w, "\nTotal invitations: %d\n", resp.Total)
@@ -155,9 +155,9 @@ func renderInvitationDetail(inv *kestra.IAMInvitationControllerApiInvitationDeta
 		fmt.Fprintf(w, "Email:\t%s\n", inv.GetEmail())
 		fmt.Fprintf(w, "Status:\t%s\n", inv.GetStatus())
 		fmt.Fprintf(w, "Tenant:\t%s\n", inv.GetTenantId())
-		fmt.Fprintf(w, "Sent at:\t%s\n", formatInvitationTime(inv.SentAt))
-		fmt.Fprintf(w, "Expired at:\t%s\n", formatInvitationTime(inv.ExpiredAt))
-		fmt.Fprintf(w, "Accepted at:\t%s\n", formatInvitationTime(inv.AcceptedAt))
+		fmt.Fprintf(w, "Sent at:\t%s\n", formatOptionalTime(inv.GetSentAt()))
+		fmt.Fprintf(w, "Expired at:\t%s\n", formatOptionalTime(inv.GetExpiredAt()))
+		fmt.Fprintf(w, "Accepted at:\t%s\n", formatOptionalTime(inv.GetAcceptedAt()))
 		fmt.Fprintf(w, "Superadmin:\t%t\n", inv.GetSuperAdmin())
 
 		if roles := inv.GetRoles(); len(roles) > 0 {
@@ -232,12 +232,9 @@ of sending an invitation.`,
 }
 
 func runInvitationsCreate(client *Client, email string, roles, groups []string, superAdmin, createUserIfNotExist bool, renderer *Renderer) error {
-	req := kestra.IAMInvitationControllerApiInvitationCreateRequest{Email: email}
+	req := kestra.IAMInvitationControllerApiInvitationCreateRequest{Email: email, Groups: groups}
 	for _, roleID := range roles {
 		req.Roles = append(req.Roles, kestra.IAMInvitationControllerApiInvitationRole{Id: roleID})
-	}
-	if len(groups) > 0 {
-		req.Groups = groups
 	}
 	if superAdmin {
 		req.SuperAdmin = &superAdmin
@@ -311,19 +308,17 @@ func runInvitationsDelete(client *Client, id string, skipConfirm bool, in io.Rea
 		map[string]any{"id": id, "status": "deleted"})
 }
 
-// formatInvitationTime renders an optional timestamp, blank when unset.
-func formatInvitationTime(t *time.Time) string {
-	if t == nil {
-		return ""
+// parseInvitationStatus validates an optional --status value against the SDK
+// enum. An empty input returns (nil, nil) so it can be passed straight to
+// search.
+func parseInvitationStatus(s string) (*kestra.InvitationInvitationStatus, error) {
+	if s == "" {
+		return nil, nil
 	}
-	return t.Format(time.RFC3339)
-}
-
-// joinInvitationStatuses lists the allowed --status values for error messages.
-func joinInvitationStatuses() string {
-	values := make([]string, 0, len(kestra.AllowedInvitationInvitationStatusEnumValues))
-	for _, v := range kestra.AllowedInvitationInvitationStatusEnumValues {
-		values = append(values, string(v))
+	parsed, err := kestra.NewInvitationInvitationStatusFromValue(strings.ToUpper(strings.TrimSpace(s)))
+	if err != nil {
+		return nil, fmt.Errorf("invalid status %q: expected one of %s",
+			s, joinEnumValues(kestra.AllowedInvitationInvitationStatusEnumValues))
 	}
-	return strings.Join(values, ", ")
+	return parsed, nil
 }

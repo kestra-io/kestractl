@@ -159,12 +159,21 @@ func normalizeHost(host string) string {
 // both SDK error types: GenericOpenAPIError from the generated client and
 // ApiError from the hand-written client.
 func formatSDKError(err error) error {
-	if sdkErr, ok := err.(*kestra.GenericOpenAPIError); ok {
+	var sdkErr *kestra.GenericOpenAPIError
+	if errors.As(err, &sdkErr) {
 		return formatErrorBody(sdkErr.Body(), sdkErr.Error())
 	}
 	var apiErr *kestra.ApiError
 	if errors.As(err, &apiErr) {
-		return formatErrorBody(apiErr.Body, apiErr.Error())
+		// Don't use apiErr.Error() as the fallback message: it already embeds
+		// an "API error <code>:" prefix and the raw body, which would leak
+		// back into every formatErrorBody branch (double prefix, full HTML
+		// pages in the hint). Build a short status-based message instead.
+		errMsg := apiErr.Message
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("status %d", apiErr.StatusCode)
+		}
+		return formatErrorBody(apiErr.Body, errMsg)
 	}
 	return err
 }

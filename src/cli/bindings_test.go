@@ -100,6 +100,38 @@ func TestRunBindingsList(t *testing.T) {
 	}
 }
 
+func TestRunBindingsList_EmptyBodyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runBindingsList(newTestClient(t, server.URL), "", "", "", 1, 100, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("expected empty list on empty-body response, got error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Total bindings: 0") {
+		t.Errorf("expected empty list output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunBindingsCreate_EmptyBodyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runBindingsCreate(newTestClient(t, server.URL), "USER", "u1", "r1", "", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("expected status message on empty-body response, got error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Binding created") {
+		t.Errorf("expected creation message, got:\n%s", buf.String())
+	}
+}
+
 func TestRunBindingsList_InvalidType(t *testing.T) {
 	hit := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

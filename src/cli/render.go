@@ -123,3 +123,13 @@ func validateOutputFormat() error {
 	globalFlags.Output = normalized
 	return nil
 }
+
+// joinEnumValues renders a string-backed enum's allowed values for error
+// messages, e.g. "PENDING, ACCEPTED, EXPIRED".
+func joinEnumValues[T ~string](values []T) string {
+	parts := make([]string, 0, len(values))
+	for _, v := range values {
+		parts = append(parts, string(v))
+	}
+	return strings.Join(parts, ", ")
+}
