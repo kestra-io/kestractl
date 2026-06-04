@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -783,5 +784,83 @@ func TestRunPluginsInstall_MavenBasicAuth(t *testing.T) {
 	}
 	if !strings.HasPrefix(capturedAuth, "Basic ") {
 		t.Errorf("expected Basic auth header, got: %s", capturedAuth)
+	}
+}
+
+func TestRunPluginsList_DefaultOutput(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	if err := runPluginsList(&out, "1.3.9", "", "table"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := strings.TrimSpace(out.String())
+
+	// Output must be a single line.
+	if strings.Contains(output, "\n") {
+		t.Errorf("expected single-line output, got multiple lines:\n%s", output)
+	}
+
+	// Each entry must be groupId:artifactId:version.
+	entries := strings.Split(output, " ")
+	if len(entries) != 22 {
+		t.Errorf("expected 22 space-separated entries, got %d", len(entries))
+	}
+	for _, e := range entries {
+		parts := strings.Split(e, ":")
+		if len(parts) != 3 {
+			t.Errorf("expected groupId:artifactId:version format, got %q", e)
+		}
+	}
+
+	// Spot-check a known entry.
+	if !strings.Contains(output, "io.kestra.plugin:plugin-kafka:1.6.0") {
+		t.Errorf("expected io.kestra.plugin:plugin-kafka:1.6.0 in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsList_JSONOutput(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	if err := runPluginsList(&out, "1.3.9", "", "json"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var plugins []pluginArtifact
+	if err := json.NewDecoder(&out).Decode(&plugins); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if len(plugins) != 22 {
+		t.Errorf("expected 22 plugins in JSON, got %d", len(plugins))
+	}
+	// Spot-check fields are populated.
+	p := plugins[0]
+	if p.GroupID == "" || p.ArtifactID == "" || p.Version == "" {
+		t.Errorf("expected all fields populated, got %+v", p)
+	}
+}
+
+func TestRunPluginsList_APIError(t *testing.T) {
+	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
+
+	var out bytes.Buffer
+	err := runPluginsList(&out, "99.99.99", "", "table")
+	if err == nil {
+		t.Fatal("expected error for HTTP 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "HTTP 404") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestPluginsListCommand_Flags(t *testing.T) {
+	cmd := newPluginsListCommand()
+	if cmd.Flags().Lookup("edition") == nil {
+		t.Error("expected --edition flag to exist")
+	}
+	if _, err := executeCommand(cmd); err == nil {
+		t.Error("expected error when version argument is missing")
 	}
 }

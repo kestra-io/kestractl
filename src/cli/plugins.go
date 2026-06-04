@@ -56,6 +56,7 @@ func newPluginsCommand() *cobra.Command {
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
 	cmd.AddCommand(newPluginsDownloadCommand())
+	cmd.AddCommand(newPluginsListCommand())
 	return cmd
 }
 
@@ -124,6 +125,62 @@ Authentication:
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
 	return cmd
+}
+
+func newPluginsListCommand() *cobra.Command {
+	var edition string
+
+	cmd := &cobra.Command{
+		Use:   "list <version>",
+		Short: "List all compatible plugins for a given Kestra version",
+		Long: `List all compatible plugins for a given Kestra version.
+
+Output format matches the legacy npx @kestra-io/kestra-devtools getCompatiblePlugins
+command: a single space-separated line of groupId:artifactId:version coordinates.
+
+With --output json the full plugin metadata (groupId, artifactId, license, version)
+is printed as a JSON array.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			license, err := editionToLicense(edition)
+			if err != nil {
+				return err
+			}
+			return runPluginsList(cmd.OutOrStdout(), args[0], license, globalFlags.Output)
+		},
+		Annotations: map[string]string{AnnotationOffline: "true"},
+	}
+
+	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to list: ALL, OSS (open-source only), or EE (enterprise only)")
+	return cmd
+}
+
+func runPluginsList(out io.Writer, kestraVersion string, license string, outputFormat string) error {
+	kestraVersion = resolveVersion(kestraVersion)
+
+	plugins, err := fetchPluginList(kestraVersion, license)
+	if err != nil {
+		return err
+	}
+
+	if outputFormat == "json" {
+		data, err := json.Marshal(plugins)
+		if err != nil {
+			return fmt.Errorf("failed to encode plugin list: %w", err)
+		}
+		fmt.Fprintln(out, string(data))
+		return nil
+	}
+
+	coords := make([]string, len(plugins))
+	for i, p := range plugins {
+		coords[i] = p.GroupID + ":" + p.ArtifactID + ":" + p.Version
+	}
+	fmt.Fprintln(out, strings.Join(coords, " "))
+	return nil
 }
 
 // editionToLicense maps the user-facing --edition value to the API license query param.
