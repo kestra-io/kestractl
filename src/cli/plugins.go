@@ -18,7 +18,7 @@ import (
 
 // errRateLimited is returned by downloadJAR when Maven Central responds with 429
 // after all retry attempts are exhausted.
-var errRateLimited = errors.New("rate limited by Maven Central (429)")
+var errRateLimited = errors.New("rate limited by repository (429)")
 
 // rateLimitWaits defines the back-off delays between successive 429 retries.
 // Exposed as a var so tests can override it to avoid sleeping.
@@ -66,17 +66,50 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var edition string
 	var keepOnlyLastVersion bool
 	var globalTimeout time.Duration
+	var mavenRepository string
+	var mavenUsername string
+	var mavenPassword string
 
 	cmd := &cobra.Command{
 		Use:   "download <version>",
-		Short: "Download all plugins for a given Kestra version from Maven Central",
-		Args:  cobra.ExactArgs(1),
+		Short: "Download all plugins for a given Kestra version from a Maven repository",
+		Long: `Download all plugins for a given Kestra version from a Maven repository.
+
+By default plugins are fetched from Maven Central. Use --maven-repository to
+point at a custom registry (mirror, internal Nexus/Artifactory, etc.).
+
+Authentication:
+
+  Basic auth (--maven-username / --maven-password):
+    kestractl plugins download 1.3.9 \
+      --maven-repository https://nexus.example.com/repository/maven-central \
+      --maven-username myuser \
+      --maven-password mypassword
+
+  Bearer token (--header):
+    kestractl plugins download 1.3.9 \
+      --maven-repository https://nexus.example.com/repository/maven-central \
+      --header "Authorization:Bearer <token>"
+
+  GCP Artifact Registry — service account key (GOOGLE_APPLICATION_CREDENTIALS set):
+    kestractl plugins download 1.3.9 \
+      --maven-repository https://europe-west1-maven.pkg.dev/my-project/my-repo \
+      --maven-username _json_key \
+      --maven-password "$(cat $GOOGLE_APPLICATION_CREDENTIALS)"
+
+  GCP Artifact Registry — gcloud access token:
+    kestractl plugins download 1.3.9 \
+      --maven-repository https://europe-west1-maven.pkg.dev/my-project/my-repo \
+      --maven-username oauth2accesstoken \
+      --maven-password "$(gcloud auth print-access-token)"`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			license, err := editionToLicense(edition)
 			if err != nil {
 				return err
 			}
-			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout)
+			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
+			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -87,6 +120,9 @@ func newPluginsDownloadCommand() *cobra.Command {
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
+	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
 	return cmd
 }
 
@@ -115,9 +151,19 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration) error {
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepository string, mavenUsername string, mavenPassword string, headers []string) error {
 	kestraVersion = resolveVersion(kestraVersion)
 	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
+
+	effectiveMavenBase := pluginsMavenBase
+	if mavenRepository != "" {
+		effectiveMavenBase = mavenRepository
+	}
+
+	parsedHeaders, err := parseHeaders(headers)
+	if err != nil {
+		return fmt.Errorf("invalid --header value: %w", err)
+	}
 
 	plugins, err := fetchPluginList(kestraVersion, license)
 	if err != nil {
@@ -168,7 +214,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 					continue
 				default:
 				}
-				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload)
+				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
 				results <- downloadResult{index: j.index, plugin: j.plugin, bytes: n, err: err, skipped: skipped}
 			}
 		}()
@@ -191,7 +237,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		if r.cancelled || errors.Is(r.err, context.Canceled) {
 			cancelledCount++
 		} else if errors.Is(r.err, errRateLimited) {
-			fmt.Fprintf(out, lineFormat+" %s ... FAILED (rate limited — stopping early)\n", r.index+1, len(plugins), label)
+			fmt.Fprintf(out, lineFormat+" %s ... FAILED (rate limited by repository — stopping early)\n", r.index+1, len(plugins), label)
 			failed++
 			if !stoppedEarly {
 				stoppedEarly = true
@@ -234,7 +280,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	}
 
 	if stoppedEarly {
-		return fmt.Errorf("download stopped early: Maven Central is rate limiting — %d failed, %d not started", failed, cancelledCount)
+		return fmt.Errorf("download stopped early: repository is rate limiting — %d failed, %d not started", failed, cancelledCount)
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
@@ -318,7 +364,7 @@ func pluginFileName(p pluginArtifact) string {
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
 }
 
-func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool) (int64, bool, error) {
+func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
 
 	if !forceRedownload {
@@ -327,13 +373,19 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 		}
 	}
 
-	url := mavenJARURL(p)
+	url := mavenJARURL(p, mavenBase)
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return 0, false, fmt.Errorf("failed to build request: %w", err)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if mavenUsername != "" || mavenPassword != "" {
+			req.SetBasicAuth(mavenUsername, mavenPassword)
 		}
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -357,7 +409,7 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return 0, false, fmt.Errorf("Maven Central returned HTTP %d", resp.StatusCode)
+			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
 		}
 
 		f, err := os.Create(destPath)
@@ -374,9 +426,9 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 	}
 }
 
-// mavenJARURL builds the Maven Central download URL for a plugin artifact.
-func mavenJARURL(p pluginArtifact) string {
+// mavenJARURL builds the Maven repository download URL for a plugin artifact.
+func mavenJARURL(p pluginArtifact, base string) string {
 	groupPath := strings.ReplaceAll(p.GroupID, ".", "/")
 	return fmt.Sprintf("%s/%s/%s/%s/%s-%s.jar",
-		pluginsMavenBase, groupPath, p.ArtifactID, p.Version, p.ArtifactID, p.Version)
+		base, groupPath, p.ArtifactID, p.Version, p.ArtifactID, p.Version)
 }
