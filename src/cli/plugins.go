@@ -70,11 +70,19 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var mavenRepository string
 	var mavenUsername string
 	var mavenPassword string
+	var pluginsList []string
 
 	cmd := &cobra.Command{
-		Use:   "download <version>",
+		Use:   "download [version]",
 		Short: "Download all plugins for a given Kestra version from a Maven repository",
 		Long: `Download all plugins for a given Kestra version from a Maven repository.
+
+By default the plugin list is fetched from the Kestra API for the given version.
+Alternatively, pass an explicit list of plugins with --plugins, in which case the
+version argument is optional and the API is not called. The --plugins format matches
+the output of "kestractl plugins list", making it easy to pipe the two commands:
+
+  kestractl plugins download --plugins "$(kestractl plugins list 1.3.9 --edition OSS)"
 
 By default plugins are fetched from Maven Central. Use --maven-repository to
 point at a custom registry (mirror, internal Nexus/Artifactory, etc.).
@@ -103,14 +111,34 @@ Authentication:
       --maven-repository https://europe-west1-maven.pkg.dev/my-project/my-repo \
       --maven-username oauth2accesstoken \
       --maven-password "$(gcloud auth print-access-token)"`,
-		Args: cobra.ExactArgs(1),
+		Args: func(cmd *cobra.Command, args []string) error {
+			hasPlugins, _ := cmd.Flags().GetStringArray("plugins")
+			if len(hasPlugins) == 0 && len(args) == 0 {
+				return fmt.Errorf("requires a version argument when --plugins is not set")
+			}
+			if len(args) > 1 {
+				return fmt.Errorf("accepts at most 1 arg, received %d", len(args))
+			}
+			return nil
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			license, err := editionToLicense(edition)
 			if err != nil {
 				return err
 			}
+			var explicit []pluginArtifact
+			if len(pluginsList) > 0 {
+				explicit, err = parsePluginCoordinates(pluginsList)
+				if err != nil {
+					return err
+				}
+			}
+			version := ""
+			if len(args) > 0 {
+				version = args[0]
+			}
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsInstall(cmd.OutOrStdout(), args[0], pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers)
+			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers, explicit)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -124,6 +152,7 @@ Authentication:
 	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup)")
 	return cmd
 }
 
@@ -208,10 +237,7 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepository string, mavenUsername string, mavenPassword string, headers []string) error {
-	kestraVersion = resolveVersion(kestraVersion)
-	fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
-
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepository string, mavenUsername string, mavenPassword string, headers []string, explicitPlugins []pluginArtifact) error {
 	effectiveMavenBase := pluginsMavenBase
 	if mavenRepository != "" {
 		effectiveMavenBase = mavenRepository
@@ -222,12 +248,19 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		return fmt.Errorf("invalid --header value: %w", err)
 	}
 
-	plugins, err := fetchPluginList(kestraVersion, license)
-	if err != nil {
-		return err
+	var plugins []pluginArtifact
+	if len(explicitPlugins) > 0 {
+		plugins = explicitPlugins
+		fmt.Fprintf(out, "Downloading %d plugin(s)...\n\n", len(plugins))
+	} else {
+		kestraVersion = resolveVersion(kestraVersion)
+		fmt.Fprintf(out, "Fetching plugin list for Kestra %s...\n", kestraVersion)
+		plugins, err = fetchPluginList(kestraVersion, license)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Found %d plugins.\n\n", len(plugins))
 	}
-
-	fmt.Fprintf(out, "Found %d plugins.\n\n", len(plugins))
 
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		return fmt.Errorf("cannot create plugins directory %q: %w", pluginsDir, err)
@@ -410,6 +443,26 @@ func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, er
 		return nil, fmt.Errorf("failed to parse plugin list: %w", err)
 	}
 	return plugins, nil
+}
+
+// parsePluginCoordinates parses a list of strings — each may be a single
+// "groupId:artifactId:version" coordinate or a space-separated list of them
+// (matching the output of "kestractl plugins list") — into pluginArtifact values.
+func parsePluginCoordinates(values []string) ([]pluginArtifact, error) {
+	var result []pluginArtifact
+	for _, v := range values {
+		for _, coord := range strings.Fields(v) {
+			parts := strings.SplitN(coord, ":", 3)
+			if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+				return nil, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+			}
+			result = append(result, pluginArtifact{GroupID: parts[0], ArtifactID: parts[1], Version: parts[2]})
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("--plugins was set but no valid coordinates were found")
+	}
+	return result, nil
 }
 
 // pluginFileName returns the Kestra-compatible filename for a plugin artifact.

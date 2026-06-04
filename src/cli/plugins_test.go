@@ -85,7 +85,7 @@ func TestRunPluginsInstall_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestRunPluginsInstall_ConcurrentDownloads(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "1.3.9", tmpDir, 4, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error with concurrency=4: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRunPluginsInstall_APINotFound(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "99.99.99", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -159,7 +159,7 @@ func TestRunPluginsInstall_APIInvalidJSON(t *testing.T) {
 	newMockServers(t, http.StatusOK, `not-json`)
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON, got nil")
 	}
@@ -190,7 +190,7 @@ func TestRunPluginsInstall_MavenDownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
@@ -308,7 +308,7 @@ func TestPluginsDownloadCommand_RequiresVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when version argument is missing")
 	}
-	if !strings.Contains(err.Error(), "accepts 1 arg") {
+	if !strings.Contains(err.Error(), "version argument") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -328,7 +328,7 @@ func TestRunPluginsInstall_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -356,7 +356,7 @@ func TestRunPluginsInstall_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func TestRunPluginsInstall_EditionOSS(t *testing.T) {
 	newMockServers(t, http.StatusOK, ossPayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "OPEN_SOURCE", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestRunPluginsInstall_EditionEE(t *testing.T) {
 	newMockServers(t, http.StatusOK, eePayload)
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "ENTERPRISE", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -500,7 +500,7 @@ func TestRunPluginsInstall_KeepOnlyLastVersion_RemovesOldVersions(t *testing.T) 
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", true, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", true, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -541,7 +541,7 @@ func TestRunPluginsInstall_KeepOnlyLastVersionFalse_LeavesOldVersions(t *testing
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -642,7 +642,7 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -677,7 +677,7 @@ func TestRunPluginsInstall_429ExhaustsRetriesStopsEarly(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil)
+	err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, nil)
 	if err == nil {
 		t.Fatal("expected error when Maven always returns 429")
 	}
@@ -741,7 +741,7 @@ func TestRunPluginsInstall_CustomMavenRepository(t *testing.T) {
 	t.Cleanup(func() { pluginsAPIBase = origAPI })
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, customMaven.URL, "", "", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, customMaven.URL, "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -775,7 +775,7 @@ func TestRunPluginsInstall_MavenBasicAuth(t *testing.T) {
 	t.Cleanup(func() { pluginsAPIBase = origAPI })
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, customMaven.URL, "alice", "s3cr3t", nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", t.TempDir(), 1, false, "", false, 5*time.Minute, customMaven.URL, "alice", "s3cr3t", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -852,6 +852,118 @@ func TestRunPluginsList_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP 404") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParsePluginCoordinates(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   []string
+		want    []pluginArtifact
+		wantErr bool
+	}{
+		{
+			name:  "single coordinate",
+			input: []string{"io.kestra.plugin:plugin-kafka:1.6.0"},
+			want:  []pluginArtifact{{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"}},
+		},
+		{
+			name:  "space-separated (plugins list output)",
+			input: []string{"io.kestra.plugin:plugin-kafka:1.6.0 io.kestra.plugin:plugin-docker:1.3.0"},
+			want: []pluginArtifact{
+				{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+				{GroupID: "io.kestra.plugin", ArtifactID: "plugin-docker", Version: "1.3.0"},
+			},
+		},
+		{
+			name:  "repeated flag values",
+			input: []string{"io.kestra.plugin:plugin-kafka:1.6.0", "io.kestra.plugin:plugin-docker:1.3.0"},
+			want: []pluginArtifact{
+				{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+				{GroupID: "io.kestra.plugin", ArtifactID: "plugin-docker", Version: "1.3.0"},
+			},
+		},
+		{
+			name:    "missing version",
+			input:   []string{"io.kestra.plugin:plugin-kafka"},
+			wantErr: true,
+		},
+		{
+			name:    "empty string",
+			input:   []string{""},
+			wantErr: true,
+		},
+		{
+			name:    "malformed coordinate",
+			input:   []string{"notacoordinate"},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parsePluginCoordinates(tt.input)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d artifacts, want %d", len(got), len(tt.want))
+			}
+			for i, p := range got {
+				if p.GroupID != tt.want[i].GroupID || p.ArtifactID != tt.want[i].ArtifactID || p.Version != tt.want[i].Version {
+					t.Errorf("artifact[%d] = %+v, want %+v", i, p, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestRunPluginsInstall_ExplicitPlugins(t *testing.T) {
+	_, mavenServer := newMockServers(t, http.StatusOK, pluginListPayload)
+
+	// Capture which paths the maven server was asked for.
+	var requestedPaths []string
+	mavenServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	})
+
+	explicit := []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-docker", Version: "1.3.0"},
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "", t.TempDir(), 1, false, "", false, 5*time.Minute, "", "", "", nil, explicit); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+
+	// Should not hit the API — no "Fetching plugin list" message.
+	if strings.Contains(output, "Fetching plugin list") {
+		t.Errorf("did not expect API fetch when explicit plugins provided, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 2") {
+		t.Errorf("expected 'Downloaded 2' in output, got:\n%s", output)
+	}
+	// Only 2 Maven requests, not 22.
+	if len(requestedPaths) != 2 {
+		t.Errorf("expected 2 Maven requests, got %d", len(requestedPaths))
+	}
+}
+
+func TestPluginsDownloadCommand_PluginsFlag(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	if cmd.Flags().Lookup("plugins") == nil {
+		t.Error("expected --plugins flag to exist")
 	}
 }
 
