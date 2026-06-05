@@ -149,8 +149,13 @@ func requiredArtifactIDs(cfg kestraConfig) ([]string, error) {
 // resolveCorePlugins fetches the compatibility list for the given version and
 // returns the pluginArtifact entries matching the required artifactIds, pinning
 // each to the version the API reports for that Kestra release.
-func resolveCorePlugins(kestraVersion string, license string, artifactIDs []string) ([]pluginArtifact, error) {
-	plugins, err := fetchPluginList(kestraVersion, license)
+//
+// It always queries the full catalog (no edition/license filter): the config
+// has already pinned the exact set of plugins, and a typical Enterprise worker
+// mixes an open-source storage plugin with an enterprise secret manager, so any
+// license filter would drop one side of that pair.
+func resolveCorePlugins(kestraVersion string, artifactIDs []string) ([]pluginArtifact, error) {
+	plugins, err := fetchPluginList(kestraVersion, "")
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +177,7 @@ func resolveCorePlugins(kestraVersion string, license string, artifactIDs []stri
 		}
 	}
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("core plugin(s) not available for Kestra %s: %s — enterprise plugins require --edition ALL or EE",
+		return nil, fmt.Errorf("core plugin(s) not available for Kestra %s: %s — check the version exists and the configured backend is correct",
 			kestraVersion, strings.Join(missing, ", "))
 	}
 	return result, nil
@@ -181,7 +186,8 @@ func resolveCorePlugins(kestraVersion string, license string, artifactIDs []stri
 // corePluginsFromConfig is the end-to-end helper shared by "plugins list" and
 // "plugins download": it parses the config file(s), maps the configured
 // backends to plugin coordinates, and pins them to the given Kestra version.
-func corePluginsFromConfig(configPaths []string, kestraVersion string, license string) ([]pluginArtifact, error) {
+// Resolution ignores edition: the config already determines the exact set.
+func corePluginsFromConfig(configPaths []string, kestraVersion string) ([]pluginArtifact, error) {
 	cfg, err := loadKestraConfig(configPaths)
 	if err != nil {
 		return nil, err
@@ -193,7 +199,7 @@ func corePluginsFromConfig(configPaths []string, kestraVersion string, license s
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	return resolveCorePlugins(kestraVersion, license, ids)
+	return resolveCorePlugins(kestraVersion, ids)
 }
 
 func sortedKeys(m map[string]string) []string {

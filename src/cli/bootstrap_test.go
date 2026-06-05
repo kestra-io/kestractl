@@ -167,7 +167,7 @@ kestra:
     type: postgres
 `)
 
-	plugins, err := corePluginsFromConfig([]string{path}, "1.3.9", "")
+	plugins, err := corePluginsFromConfig([]string{path}, "1.3.9")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,7 +200,7 @@ kestra:
     type: h2
 `)
 
-	plugins, err := corePluginsFromConfig([]string{path}, "1.3.9", "")
+	plugins, err := corePluginsFromConfig([]string{path}, "1.3.9")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,12 +221,12 @@ kestra:
     type: s3
 `)
 
-	_, err := corePluginsFromConfig([]string{path}, "1.3.9", "")
+	_, err := corePluginsFromConfig([]string{path}, "1.3.9")
 	if err == nil {
 		t.Fatal("expected error when a required plugin is absent from the API list, got nil")
 	}
-	if !strings.Contains(err.Error(), "storage-s3") || !strings.Contains(err.Error(), "edition") {
-		t.Errorf("error should name the missing plugin and hint at --edition, got: %v", err)
+	if !strings.Contains(err.Error(), "storage-s3") {
+		t.Errorf("error should name the missing plugin, got: %v", err)
 	}
 }
 
@@ -251,6 +251,51 @@ kestra:
 	want := []string{"io.kestra.ee.secret:secret-vault:1.3.9", "io.kestra.storage:storage-gcs:1.1.4"}
 	if !equalUnordered(coords, want) {
 		t.Errorf("list --from-config output = %v, want %v", coords, want)
+	}
+}
+
+func TestPluginsDownloadCommand_FromConfigAllBundled(t *testing.T) {
+	// An all-bundled config resolves to zero plugins. The command must report
+	// "nothing to download" and must NOT fall through to downloading the entire
+	// catalog. This path never touches the network, so no mock server is needed.
+	path := writeConfig(t, "application.yaml", `
+kestra:
+  storage:
+    type: local
+  queue:
+    type: postgres
+  repository:
+    type: postgres
+`)
+
+	cmd := newPluginsDownloadCommand()
+	out, err := executeCommand(cmd, "1.3.9", "--from-config", path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "No core plugins required") {
+		t.Errorf("expected 'No core plugins required' message, got:\n%s", out)
+	}
+	if strings.Contains(out, "Fetching plugin list") || strings.Contains(out, "Found ") {
+		t.Errorf("must not fall through to full-catalog download, got:\n%s", out)
+	}
+}
+
+func TestPluginsDownloadCommand_FromConfigPluginsMutuallyExclusive(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	_, err := executeCommand(cmd, "1.3.9", "--from-config", "/tmp/x.yaml", "--plugins", "g:a:v")
+	if err == nil {
+		t.Fatal("expected error when --from-config and --plugins are both set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestPluginsDownloadCommand_FromConfigFlag(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	if cmd.Flags().Lookup("from-config") == nil {
+		t.Error("expected --from-config flag to exist on download")
 	}
 }
 

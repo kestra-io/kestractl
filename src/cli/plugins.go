@@ -139,10 +139,17 @@ Authentication:
 			case len(pluginsList) > 0:
 				explicit, err = parsePluginCoordinates(pluginsList)
 			case len(configPaths) > 0:
-				explicit, err = corePluginsFromConfig(configPaths, resolveVersion(version), license)
+				explicit, err = corePluginsFromConfig(configPaths, resolveVersion(version))
 			}
 			if err != nil {
 				return err
+			}
+			// When --from-config resolves to no plugins (every configured backend is
+			// bundled in Kestra), stop here: an empty explicit list would otherwise
+			// fall through to downloading the entire catalog.
+			if len(configPaths) > 0 && len(explicit) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No core plugins required by the provided configuration (all configured backends are bundled in Kestra).")
+				return nil
 			}
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
 			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers, explicit)
@@ -183,10 +190,15 @@ With --from-config, the list is restricted to the "core" plugins required to sta
 Kestra with the given configuration — the internal storage backend, the secret
 manager, and the queue/repository backend. This is the set a standalone worker
 needs before its task plugins. Bundled backends (local storage, JDBC, Kafka) emit
-no plugin. The output pipes directly into "plugins download --plugins":
+no plugin, and --edition is ignored (the exact set is taken from the config). The
+output pipes directly into "plugins download --plugins":
 
   kestractl plugins download 1.3.9 \
-    --plugins "$(kestractl plugins list 1.3.9 --from-config /etc/kestra/application.yaml)"`,
+    --plugins "$(kestractl plugins list 1.3.9 --from-config /etc/kestra/application.yaml)"
+
+Note: enterprise backends (external secret managers, Elasticsearch/OpenSearch)
+are not published to Maven Central — pass --maven-repository (and credentials)
+pointing at Kestra's plugin registry to download them.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
@@ -212,7 +224,7 @@ func runPluginsList(out io.Writer, kestraVersion string, license string, outputF
 	var plugins []pluginArtifact
 	var err error
 	if len(configPaths) > 0 {
-		plugins, err = corePluginsFromConfig(configPaths, kestraVersion, license)
+		plugins, err = corePluginsFromConfig(configPaths, kestraVersion)
 	} else {
 		plugins, err = fetchPluginList(kestraVersion, license)
 	}
