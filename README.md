@@ -298,6 +298,15 @@ kestractl plugins download 1.3.9 --concurrency 4
 
 # `develop` and `latest` are aliases for the in-development version
 kestractl plugins download develop
+
+# Bootstrap a standalone/remote worker: download only the "core" plugins required
+# by a Kestra configuration — internal storage, secret manager, and the
+# queue/repository backend. Bundled backends (local storage, JDBC, Kafka) are
+# skipped; enterprise backends need --edition ALL (the default) or EE.
+kestractl plugins download 1.3.9 --from-config /etc/kestra/application.yaml
+
+# Preview the core plugins a config needs without downloading (pipes into download)
+kestractl plugins list 1.3.9 --from-config /etc/kestra/application.yaml
 ```
 
 ### Workers
