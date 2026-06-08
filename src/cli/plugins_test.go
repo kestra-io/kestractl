@@ -791,7 +791,7 @@ func TestRunPluginsList_DefaultOutput(t *testing.T) {
 	newMockServers(t, http.StatusOK, pluginListPayload)
 
 	var out bytes.Buffer
-	if err := runPluginsList(&out, "1.3.9", "", "table"); err != nil {
+	if err := runPluginsList(&out, "1.3.9", "", "table", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -824,7 +824,7 @@ func TestRunPluginsList_JSONOutput(t *testing.T) {
 	newMockServers(t, http.StatusOK, pluginListPayload)
 
 	var out bytes.Buffer
-	if err := runPluginsList(&out, "1.3.9", "", "json"); err != nil {
+	if err := runPluginsList(&out, "1.3.9", "", "json", nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -846,7 +846,7 @@ func TestRunPluginsList_APIError(t *testing.T) {
 	newMockServers(t, http.StatusNotFound, `{"message":"version not found"}`)
 
 	var out bytes.Buffer
-	err := runPluginsList(&out, "99.99.99", "", "table")
+	err := runPluginsList(&out, "99.99.99", "", "table", nil)
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}

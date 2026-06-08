@@ -71,6 +71,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var mavenUsername string
 	var mavenPassword string
 	var pluginsList []string
+	var configPaths []string
 
 	cmd := &cobra.Command{
 		Use:   "download [version]",
@@ -114,7 +115,7 @@ Authentication:
 		Args: func(cmd *cobra.Command, args []string) error {
 			hasPlugins, _ := cmd.Flags().GetStringArray("plugins")
 			if len(hasPlugins) == 0 && len(args) == 0 {
-				return fmt.Errorf("requires a version argument when --plugins is not set")
+				return fmt.Errorf("requires a version argument (the version is only optional when --plugins is set)")
 			}
 			if len(args) > 1 {
 				return fmt.Errorf("accepts at most 1 arg, received %d", len(args))
@@ -126,16 +127,29 @@ Authentication:
 			if err != nil {
 				return err
 			}
-			var explicit []pluginArtifact
-			if len(pluginsList) > 0 {
-				explicit, err = parsePluginCoordinates(pluginsList)
-				if err != nil {
-					return err
-				}
+			if len(pluginsList) > 0 && len(configPaths) > 0 {
+				return fmt.Errorf("--plugins and --from-config are mutually exclusive")
 			}
 			version := ""
 			if len(args) > 0 {
 				version = args[0]
+			}
+			var explicit []pluginArtifact
+			switch {
+			case len(pluginsList) > 0:
+				explicit, err = parsePluginCoordinates(pluginsList)
+			case len(configPaths) > 0:
+				explicit, err = corePluginsFromConfig(configPaths, resolveVersion(version))
+			}
+			if err != nil {
+				return err
+			}
+			// When --from-config resolves to no plugins (every configured backend is
+			// bundled in Kestra), stop here: an empty explicit list would otherwise
+			// fall through to downloading the entire catalog.
+			if len(configPaths) > 0 && len(explicit) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No core plugins required by the provided configuration (all configured backends are bundled in Kestra).")
+				return nil
 			}
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
 			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers, explicit)
@@ -153,11 +167,13 @@ Authentication:
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
 	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup)")
+	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Download only the core plugins (storage, secret manager, queue/repository backend) required by one or more Kestra configuration files; requires a version argument")
 	return cmd
 }
 
 func newPluginsListCommand() *cobra.Command {
 	var edition string
+	var configPaths []string
 
 	cmd := &cobra.Command{
 		Use:   "list <version>",
@@ -168,7 +184,21 @@ Output format matches the legacy npx @kestra-io/kestra-devtools getCompatiblePlu
 command: a single space-separated line of groupId:artifactId:version coordinates.
 
 With --output json the full plugin metadata (groupId, artifactId, license, version)
-is printed as a JSON array.`,
+is printed as a JSON array.
+
+With --from-config, the list is restricted to the "core" plugins required to start
+Kestra with the given configuration — the internal storage backend, the secret
+manager, and the queue/repository backend. This is the set a standalone worker
+needs before its task plugins. Bundled backends (local storage, JDBC, Kafka) emit
+no plugin, and --edition is ignored (the exact set is taken from the config). The
+output pipes directly into "plugins download --plugins":
+
+  kestractl plugins download 1.3.9 \
+    --plugins "$(kestractl plugins list 1.3.9 --from-config /etc/kestra/application.yaml)"
+
+Note: enterprise backends (external secret managers, Elasticsearch/OpenSearch)
+are not published to Maven Central — pass --maven-repository (and credentials)
+pointing at Kestra's plugin registry to download them.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
@@ -178,19 +208,26 @@ is printed as a JSON array.`,
 			if err != nil {
 				return err
 			}
-			return runPluginsList(cmd.OutOrStdout(), args[0], license, globalFlags.Output)
+			return runPluginsList(cmd.OutOrStdout(), args[0], license, globalFlags.Output, configPaths)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
 
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to list: ALL, OSS (open-source only), or EE (enterprise only)")
+	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Derive the required core plugins (storage, secret manager, queue/repository backend) from one or more Kestra configuration files")
 	return cmd
 }
 
-func runPluginsList(out io.Writer, kestraVersion string, license string, outputFormat string) error {
+func runPluginsList(out io.Writer, kestraVersion string, license string, outputFormat string, configPaths []string) error {
 	kestraVersion = resolveVersion(kestraVersion)
 
-	plugins, err := fetchPluginList(kestraVersion, license)
+	var plugins []pluginArtifact
+	var err error
+	if len(configPaths) > 0 {
+		plugins, err = corePluginsFromConfig(configPaths, kestraVersion)
+	} else {
+		plugins, err = fetchPluginList(kestraVersion, license)
+	}
 	if err != nil {
 		return err
 	}
