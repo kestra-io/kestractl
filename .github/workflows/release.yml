@@ -3,6 +3,9 @@ name: Release
 on:
   push:
     tags:
+      # NOTE: tag format here is bare (e.g. 1.3.0), whereas
+      # terraform-provider-kestra uses a "v" prefix (v1.3.0). To unify the
+      # release workflow across repos later, settle on one convention.
       - "*"
 
 permissions:
