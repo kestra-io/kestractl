@@ -19,8 +19,65 @@ func newLogsCommand() *cobra.Command {
 
 	cmd.AddCommand(newLogsListCommand())
 	cmd.AddCommand(newLogsSearchCommand())
+	cmd.AddCommand(newLogsDeleteCommand())
 
 	return cmd
+}
+
+func newLogsDeleteCommand() *cobra.Command {
+	var (
+		minLevel  string
+		taskRunID string
+		taskID    string
+		attempt   int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "delete <execution_id>",
+		Short: "Delete logs for an execution.",
+		Long: `Delete the log entries produced by an execution.
+
+Use --min-level / --task-id / --task-run-id / --attempt to delete only a
+subset of the execution's logs.`,
+		Example: `  # Delete all logs for an execution
+	  kestractl logs delete 2TLGqHrXC9k8BczKJe5djX
+
+	  # Delete only logs for a single task
+	  kestractl logs delete 2TLGqHrXC9k8BczKJe5djX --task-id my-task`,
+		Aliases: []string{"rm"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			opts := logFilterOptions(minLevel, taskRunID, taskID, cmd.Flags().Changed("attempt"), attempt)
+			return runLogsDelete(client, args[0], opts, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&minLevel, "min-level", "", "Only delete logs at or above this level")
+	cmd.Flags().StringVar(&taskRunID, "task-run-id", "", "Only delete logs for this task run ID")
+	cmd.Flags().StringVar(&taskID, "task-id", "", "Only delete logs for this task ID")
+	cmd.Flags().IntVar(&attempt, "attempt", 0, "Only delete logs for this attempt number")
+
+	return cmd
+}
+
+func runLogsDelete(client *Client, executionID string, opts logFilter, renderer *Renderer) error {
+	err := client.Kestra.Logs().DeleteLogsFromExecution(
+		client.Ctx, executionID, client.Tenant, opts.minLevel, opts.taskRunID, opts.taskID, opts.attempt)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderStatus(renderer, fmt.Sprintf("Logs for execution '%s' deleted.", executionID),
+		map[string]any{"executionId": executionID, "status": "deleted"})
 }
 
 func newLogsSearchCommand() *cobra.Command {
