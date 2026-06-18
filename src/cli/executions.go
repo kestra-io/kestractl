@@ -23,8 +23,50 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsListCommand())
 	cmd.AddCommand(newExecutionsKillCommand())
 	cmd.AddCommand(newExecutionsRestartCommand())
+	cmd.AddCommand(newExecutionsResumeCommand())
 
 	return cmd
+}
+
+func newExecutionsResumeCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "resume <execution_id>",
+		Short: "Resume a paused execution.",
+		Long:  `Resume an execution that is currently paused, continuing its tasks.`,
+		Example: `  # Resume a paused execution
+	  kestractl executions resume 2TLGqHrXC9k8BczKJe5djX`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsResume(client, args[0], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runExecutionsResume(client *Client, executionID string, renderer *Renderer) error {
+	_, _, err := client.API.ExecutionsAPI.ResumeExecution(client.Ctx, executionID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":     executionID,
+		"status": "resumed",
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Execution '%s' resumed\n", executionID)
+		return nil
+	})
 }
 
 // executionToMap converts an SDK Execution into the map shape used for both
