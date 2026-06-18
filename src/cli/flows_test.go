@@ -1268,3 +1268,138 @@ func captureStdout(fn func() error) (string, error) {
 	}
 	return buf.String(), copyErr
 }
+
+func TestFlowsValidateTaskCommand_NoFile(t *testing.T) {
+	cmd := newFlowsValidateTaskCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file is missing")
+	}
+	if !strings.Contains(err.Error(), "--file is required") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestRunFlowsValidateTask_Valid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"","warnings":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f, err := os.CreateTemp("", "task-*.yml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer os.Remove(f.Name())
+	_, _ = f.WriteString("type: io.kestra.plugin.core.log.Log\nmessage: hello")
+	f.Close()
+
+	var buf bytes.Buffer
+	err = runFlowsValidateTask(newTestClient(t, server.URL), f.Name(), "tasks", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsValidateTask error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "passed") {
+		t.Errorf("expected 'passed' in output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunFlowsValidateTask_Invalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"type is required","warnings":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f, err := os.CreateTemp("", "task-*.yml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer os.Remove(f.Name())
+	_, _ = f.WriteString("message: hello")
+	f.Close()
+
+	var buf bytes.Buffer
+	err = runFlowsValidateTask(newTestClient(t, server.URL), f.Name(), "tasks", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsValidateTask error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "type is required") {
+		t.Errorf("expected constraint message in output, got:\n%s", buf.String())
+	}
+}
+
+func TestFlowsValidateTriggerCommand_NoFile(t *testing.T) {
+	cmd := newFlowsValidateTriggerCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file is missing")
+	}
+	if !strings.Contains(err.Error(), "--file is required") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestRunFlowsValidateTrigger_Valid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"","warnings":["deprecated field"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f, err := os.CreateTemp("", "trigger-*.yml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer os.Remove(f.Name())
+	_, _ = f.WriteString("type: io.kestra.plugin.core.trigger.Schedule\ncron: \"0 * * * *\"")
+	f.Close()
+
+	var buf bytes.Buffer
+	err = runFlowsValidateTrigger(newTestClient(t, server.URL), f.Name(), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsValidateTrigger error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "passed") {
+		t.Errorf("expected 'passed' in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "deprecated field") {
+		t.Errorf("expected warning in output, got:\n%s", out)
+	}
+}
+
+func TestFlowsUpdateConcurrencyCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsUpdateConcurrencyCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunFlowsUpdateConcurrency(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Errorf("expected PUT, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tenantId":"default","namespace":"prod","flowId":"my-flow","running":5}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", 5, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsUpdateConcurrency error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"prod", "my-flow", "5", "updated"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
