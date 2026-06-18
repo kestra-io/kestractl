@@ -23,6 +23,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesInheritedVariablesCommand())
 	cmd.AddCommand(newNamespacesSearchCommand())
 	cmd.AddCommand(newNamespacesInheritedPluginDefaultsCommand())
+	cmd.AddCommand(newNamespacesAutocompleteCommand())
 
 	return cmd
 }
@@ -549,6 +550,65 @@ func runNamespacesSearch(client *Client, page, size int32, query string, existin
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d namespace(s) (page %d, total %d)\n", len(namespaces), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newNamespacesAutocompleteCommand() *cobra.Command {
+	var query string
+	var existingOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "autocomplete",
+		Short: "List namespaces for autocomplete.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesAutocomplete(client, query, existingOnly, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Autocomplete search string")
+	cmd.Flags().BoolVar(&existingOnly, "existing-only", false, "Only return namespaces that exist")
+
+	return cmd
+}
+
+func runNamespacesAutocomplete(client *Client, query string, existingOnly bool, renderer *Renderer) error {
+	ac := kestra.NewApiAutocomplete()
+	if query != "" {
+		ac.SetQ(query)
+	}
+	ac.SetExistingOnly(existingOnly)
+
+	namespaces, _, err := client.API.NamespacesAPI.
+		AutocompleteNamespaces(client.Ctx, client.Tenant).
+		ApiAutocomplete(*ac).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(namespaces))
+	for i, ns := range namespaces {
+		result[i] = map[string]any{"namespace": ns}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE")
+		for _, ns := range namespaces {
+			fmt.Fprintln(w, ns)
+		}
+		fmt.Fprintf(w, "\nShowing %d namespace(s)\n", len(namespaces))
 		return nil
 	})
 }
