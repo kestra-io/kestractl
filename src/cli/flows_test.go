@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1175,6 +1177,54 @@ func TestFlowsExpressionsCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsNamespaceDependenciesCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsNamespaceDependenciesCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsNamespaceDependenciesCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsNamespaceDependenciesCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunFlowsNamespaceDependencies(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodes":[{"uid":"n1","id":"flow-a","namespace":"my.namespace"}],"edges":[{"source":"n1","target":"n2","relation":"FLOW_TASK"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runFlowsNamespaceDependencies(newTestClient(t, server.URL), "my.namespace", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsNamespaceDependencies error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"n1", "n2", "FLOW_TASK", "1 node(s), 1 dependency edge(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
 
