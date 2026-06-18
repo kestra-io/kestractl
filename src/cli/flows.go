@@ -47,6 +47,7 @@ func newFlowsCommand() *cobra.Command {
 
 	cmd.AddCommand(newFlowsListCommand())
 	cmd.AddCommand(newFlowsGetCommand())
+	cmd.AddCommand(newFlowsNamespacesCommand())
 	cmd.AddCommand(newFlowsRevisionsCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
 	cmd.AddCommand(newFlowsValidateCommand())
@@ -274,6 +275,59 @@ func runFlowsGet(client *Client, namespace, flowID string, renderer *Renderer) e
 	}
 	_, err = io.WriteString(renderer.Writer(), source)
 	return err
+}
+
+func newFlowsNamespacesCommand() *cobra.Command {
+	var query string
+
+	cmd := &cobra.Command{
+		Use:   "namespaces",
+		Short: "List the distinct namespaces that contain flows.",
+		Long: `List every namespace that currently holds at least one flow.
+
+Use --query to filter the namespaces by a free-text prefix.`,
+		Example: `  # List all namespaces with flows
+	  kestractl flows namespaces
+
+	  # Filter namespaces
+	  kestractl flows namespaces --query company.team`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsNamespaces(client, query, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter namespaces by a free-text query")
+
+	return cmd
+}
+
+func runFlowsNamespaces(client *Client, query string, renderer *Renderer) error {
+	req := client.API.FlowsAPI.ListDistinctNamespaces(client.Ctx, client.Tenant)
+	if query != "" {
+		req = req.Q(query)
+	}
+	namespaces, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(namespaces, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE")
+		for _, ns := range namespaces {
+			fmt.Fprintln(w, ns)
+		}
+		fmt.Fprintf(w, "\nTotal namespaces: %d\n", len(namespaces))
+		return nil
+	})
 }
 
 func newFlowsRevisionsCommand() *cobra.Command {

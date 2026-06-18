@@ -180,6 +180,23 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestFlowsNamespacesCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsNamespacesCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestFlowsRevisionsCommand_NoArgs(t *testing.T) {
 	cmd := newFlowsRevisionsCommand()
 	_, err := executeCommand(cmd)
