@@ -346,3 +346,52 @@ func TestRunRolesAutocomplete(t *testing.T) {
 		}
 	}
 }
+
+func TestRolesListFromIdsCommand_NoArgs(t *testing.T) {
+	cmd := newRolesListFromIdsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestRolesListFromIdsCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newRolesListFromIdsCommand()
+	_, err := executeCommand(cmd, "r1")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunRolesListFromIds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"r1","name":"admin","isDefault":true,"isManaged":true,"deleted":false},{"id":"r2","name":"editor","isDefault":false,"isManaged":false,"deleted":false}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runRolesListFromIds(newTestClient(t, server.URL), []string{"r1", "r2"}, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runRolesListFromIds error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"r1", "admin", "editor", "Showing 2 role(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}

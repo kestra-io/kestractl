@@ -29,6 +29,7 @@ Roles are tenant-scoped resources. Managing roles requires Kestra Enterprise Edi
 	cmd.AddCommand(newRolesUpdateCommand())
 	cmd.AddCommand(newRolesDeleteCommand())
 	cmd.AddCommand(newRolesAutocompleteCommand())
+	cmd.AddCommand(newRolesListFromIdsCommand())
 
 	return cmd
 }
@@ -546,6 +547,57 @@ func runRolesAutocomplete(client *Client, query string, renderer *Renderer) erro
 		fmt.Fprintln(w, "ID\tNAME")
 		for _, r := range roles {
 			fmt.Fprintf(w, "%s\t%s\n", r.GetId(), r.GetName())
+		}
+		fmt.Fprintf(w, "\nShowing %d role(s)\n", len(roles))
+		return nil
+	})
+}
+
+func newRolesListFromIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list-from-ids <id>...",
+		Short: "List roles by ID.",
+		Long:  "Fetch multiple roles by their IDs in a single request.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runRolesListFromIds(client, args, renderer)
+		},
+	}
+	return cmd
+}
+
+func runRolesListFromIds(client *Client, ids []string, renderer *Renderer) error {
+	body := kestra.NewApiIds()
+	body.SetIds(ids)
+
+	roles, _, err := client.API.RolesAPI.
+		ListRolesFromGivenIds(client.Ctx, client.Tenant).
+		ApiIds(*body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(roles))
+	for i, r := range roles {
+		result[i] = map[string]any{"id": r.GetId(), "name": r.GetName()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAME\tDEFAULT")
+		for _, r := range roles {
+			fmt.Fprintf(w, "%s\t%s\t%v\n", r.GetId(), r.GetName(), r.GetIsDefault())
 		}
 		fmt.Fprintf(w, "\nShowing %d role(s)\n", len(roles))
 		return nil
