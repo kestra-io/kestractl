@@ -15,6 +15,7 @@ func newTriggersCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newTriggersListCommand())
+	cmd.AddCommand(newTriggersDeleteCommand())
 
 	return cmd
 }
@@ -102,6 +103,48 @@ func runTriggersList(client *Client, page, size int32, renderer *Renderer) error
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newTriggersDeleteCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <namespace> <flow_id> <trigger_id>",
+		Short: "Delete a trigger.",
+		Example: `  kestractl triggers delete my.namespace my-flow my-trigger
+  kestractl triggers delete my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersDelete(client, args[0], args[1], args[2], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersDelete(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
+	_, _, err := client.API.TriggersAPI.
+		DeleteTrigger(client.Ctx, namespace, flowID, triggerID, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"namespace": namespace,
+		"flowId":    flowID,
+		"triggerId": triggerID,
+		"deleted":   true,
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Trigger '%s' deleted from flow '%s/%s'.\n", triggerID, namespace, flowID)
 		return nil
 	})
 }
