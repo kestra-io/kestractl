@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -314,5 +315,22 @@ func TestRunGroupsMembersRemove(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "removed from group") {
 		t.Errorf("expected remove confirmation, got:\n%s", buf.String())
+	}
+}
+
+func TestGroupsAutocompleteCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newGroupsAutocompleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
 	}
 }

@@ -25,6 +25,7 @@ Groups are tenant-scoped resources. Managing groups requires Kestra Enterprise E
 	cmd.AddCommand(newGroupsUpdateCommand())
 	cmd.AddCommand(newGroupsDeleteCommand())
 	cmd.AddCommand(newGroupsMembersCommand())
+	cmd.AddCommand(newGroupsAutocompleteCommand())
 
 	return cmd
 }
@@ -438,6 +439,62 @@ func newGroupsMembersRemoveCommand() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func newGroupsAutocompleteCommand() *cobra.Command {
+	var query string
+
+	cmd := &cobra.Command{
+		Use:   "autocomplete",
+		Short: "List groups for autocomplete.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runGroupsAutocomplete(client, query, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Autocomplete search string")
+
+	return cmd
+}
+
+func runGroupsAutocomplete(client *Client, query string, renderer *Renderer) error {
+	ac := kestra.NewApiAutocomplete()
+	if query != "" {
+		ac.SetQ(query)
+	}
+
+	groups, _, err := client.API.GroupsAPI.
+		AutocompleteGroups(client.Ctx, client.Tenant).
+		ApiAutocomplete(*ac).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(groups))
+	for i, g := range groups {
+		result[i] = map[string]any{"id": g.GetId(), "name": g.GetName()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAME")
+		for _, g := range groups {
+			fmt.Fprintf(w, "%s\t%s\n", g.GetId(), g.GetName())
+		}
+		fmt.Fprintf(w, "\nShowing %d group(s)\n", len(groups))
+		return nil
+	})
 }
 
 func runGroupsMembersRemove(client *Client, groupID, userID string, renderer *Renderer) error {
