@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -271,5 +273,73 @@ func TestRunBindingsDelete_CancelMakesNoRequest(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Cancelled") {
 		t.Errorf("expected cancellation message, got:\n%s", buf.String())
+	}
+}
+
+func TestBindingsBulkCreateCommand_MissingFile(t *testing.T) {
+	cmd := newBindingsBulkCreateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestBindingsBulkCreateCommand_ClientError(t *testing.T) {
+	f, err := os.CreateTemp("", "bindings-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString(`[{"type":"USER","externalId":"u1","roleId":"r1"}]`)
+	f.Close()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newBindingsBulkCreateCommand()
+	_, err = executeCommand(cmd, "--file", f.Name())
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunBindingsBulkCreate(t *testing.T) {
+	payload := []map[string]any{
+		{"id": "b1", "type": "USER", "namespace": "my.ns"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(payload)
+	}))
+	t.Cleanup(server.Close)
+
+	f, err := os.CreateTemp("", "bindings-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString(`[{"type":"USER","externalId":"u1","roleId":"r1"}]`)
+	f.Close()
+
+	var buf bytes.Buffer
+	err = runBindingsBulkCreate(newTestClient(t, server.URL), f.Name(), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runBindingsBulkCreate error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "b1") {
+		t.Errorf("expected binding ID in output, got:\n%s", buf.String())
 	}
 }

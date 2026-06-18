@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,7 @@ Enterprise Edition.`,
 	cmd.AddCommand(newBindingsGetCommand())
 	cmd.AddCommand(newBindingsCreateCommand())
 	cmd.AddCommand(newBindingsDeleteCommand())
+	cmd.AddCommand(newBindingsBulkCreateCommand())
 
 	return cmd
 }
@@ -325,4 +327,71 @@ func parseBindingType(s string) (*kestra.BindingType, error) {
 			s, joinEnumValues(kestra.AllowedBindingTypeEnumValues))
 	}
 	return parsed, nil
+}
+
+func newBindingsBulkCreateCommand() *cobra.Command {
+	var filePath string
+
+	cmd := &cobra.Command{
+		Use:   "bulk-create",
+		Short: "Create multiple bindings from a JSON file.",
+		Example: `  kestractl bindings bulk-create --file bindings.json
+  kestractl bindings bulk-create --file bindings.json --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runBindingsBulkCreate(client, filePath, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to JSON file containing an array of binding requests (required)")
+	return cmd
+}
+
+func runBindingsBulkCreate(client *Client, path string, renderer *Renderer) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var requests interface{}
+	if err := json.Unmarshal(data, &requests); err != nil {
+		return fmt.Errorf("failed to parse JSON file: %w", err)
+	}
+
+	bindings, err := client.Kestra.Bindings().BulkCreateBinding(client.Ctx, client.Tenant, requests)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(bindings))
+	for i, b := range bindings {
+		result[i] = map[string]any{
+			"id":        b.GetId(),
+			"type":      b.GetType(),
+			"namespace": b.GetNamespace(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tTYPE\tNAMESPACE")
+		for _, b := range bindings {
+			fmt.Fprintf(w, "%s\t%s\t%s\n",
+				b.GetId(),
+				b.GetType(),
+				b.GetNamespace(),
+			)
+		}
+		fmt.Fprintf(w, "\n%d binding(s) created.\n", len(bindings))
+		return nil
+	})
 }
