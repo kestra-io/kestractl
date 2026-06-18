@@ -18,6 +18,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesGetCommand())
 	cmd.AddCommand(newNamespacesCreateCommand())
 	cmd.AddCommand(newNamespacesDeleteCommand())
+	cmd.AddCommand(newNamespacesUpdateCommand())
 
 	return cmd
 }
@@ -248,6 +249,64 @@ func runNamespacesDelete(client *Client, id string, renderer *Renderer) error {
 	result := map[string]any{"id": id, "deleted": true}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Namespace '%s' deleted.\n", id)
+		return nil
+	})
+}
+
+func newNamespacesUpdateCommand() *cobra.Command {
+	var description string
+
+	cmd := &cobra.Command{
+		Use:   "update <namespace_id>",
+		Short: "Update a namespace.",
+		Example: `  kestractl namespaces update my.namespace --description "Updated description"
+  kestractl namespaces update my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesUpdate(client, args[0], description, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&description, "description", "", "New namespace description")
+	return cmd
+}
+
+func runNamespacesUpdate(client *Client, id, description string, renderer *Renderer) error {
+	ns := kestra.NewNamespace(id, false)
+	if description != "" {
+		ns.SetDescription(description)
+	}
+
+	updated, _, err := client.API.NamespacesAPI.
+		UpdateNamespace(client.Ctx, id, client.Tenant).
+		Namespace(*ns).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if updated == nil {
+		updated = ns
+	}
+
+	result := map[string]any{
+		"id":          updated.GetId(),
+		"description": updated.GetDescription(),
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", updated.GetId())
+		if desc := updated.GetDescription(); desc != "" {
+			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
+		}
+		fmt.Fprintln(w, "\nNamespace updated.")
 		return nil
 	})
 }
