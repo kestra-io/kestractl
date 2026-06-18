@@ -20,6 +20,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesDeleteCommand())
 	cmd.AddCommand(newNamespacesUpdateCommand())
 	cmd.AddCommand(newNamespacesInheritedSecretsCommand())
+	cmd.AddCommand(newNamespacesInheritedVariablesCommand())
 
 	return cmd
 }
@@ -365,6 +366,62 @@ func runNamespacesInheritedSecrets(client *Client, namespace string, renderer *R
 			fmt.Fprintf(w, "%s\t%s\n", r.Namespace, r.Key)
 		}
 		fmt.Fprintf(w, "\nTotal secret keys: %d\n", len(rows))
+		return nil
+	})
+}
+
+func newNamespacesInheritedVariablesCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "inherited-variables <namespace_id>",
+		Short: "List inherited variables for a namespace.",
+		Example: `  kestractl namespaces inherited-variables my.namespace
+  kestractl namespaces inherited-variables my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesInheritedVariables(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runNamespacesInheritedVariables(client *Client, id string, renderer *Renderer) error {
+	resp, _, err := client.API.NamespacesAPI.InheritedVariables(client.Ctx, id, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	type row struct {
+		Namespace string `json:"namespace"`
+		Key       string `json:"key"`
+		Value     string `json:"value"`
+	}
+
+	var rows []row
+	for ns, vars := range resp {
+		for k, v := range vars {
+			rows = append(rows, row{Namespace: ns, Key: k, Value: fmt.Sprintf("%v", v)})
+		}
+	}
+
+	jsonRows := make([]map[string]any, len(rows))
+	for i, r := range rows {
+		jsonRows[i] = map[string]any{"namespace": r.Namespace, "key": r.Key, "value": r.Value}
+	}
+
+	return renderer.Render(jsonRows, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tKEY\tVALUE")
+		for _, r := range rows {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Namespace, r.Key, r.Value)
+		}
+		fmt.Fprintf(w, "\nTotal variables: %d\n", len(rows))
 		return nil
 	})
 }
