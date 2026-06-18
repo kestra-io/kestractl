@@ -1403,3 +1403,44 @@ func TestRunFlowsUpdateConcurrency(t *testing.T) {
 		}
 	}
 }
+
+func TestFlowsNamespaceSyncCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsNamespaceSyncCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunFlowsNamespaceSync(t *testing.T) {
+	var gotMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"f1","namespace":"prod","flowId":"flow-one"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp("", "flows-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = tmpFile.WriteString("id: flow-one\nnamespace: prod\n")
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	var buf bytes.Buffer
+	err = runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", tmpFile.Name(), false, false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsNamespaceSync error: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if !strings.Contains(buf.String(), "prod") {
+		t.Errorf("expected namespace in output, got:\n%s", buf.String())
+	}
+}
