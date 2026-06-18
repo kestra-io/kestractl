@@ -127,6 +127,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newAppsCommand())
 	root.AddCommand(newDashboardsCommand())
 	root.AddCommand(newAssetsCommand())
+	root.AddCommand(newBlueprintsCommand())
 
 	return root
 }
