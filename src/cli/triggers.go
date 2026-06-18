@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -24,6 +25,14 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersBackfillPauseCommand())
 	cmd.AddCommand(newTriggersBackfillUnpauseCommand())
 	cmd.AddCommand(newTriggersBackfillDeleteCommand())
+	cmd.AddCommand(newTriggersDeleteByIdsCommand())
+	cmd.AddCommand(newTriggersUnlockByIdsCommand())
+	cmd.AddCommand(newTriggersDisableByIdsCommand())
+	cmd.AddCommand(newTriggersEnableByIdsCommand())
+	cmd.AddCommand(newTriggersDisableByQueryCommand())
+	cmd.AddCommand(newTriggersEnableByQueryCommand())
+	cmd.AddCommand(newTriggersDeleteByQueryCommand())
+	cmd.AddCommand(newTriggersUnlockByQueryCommand())
 
 	return cmd
 }
@@ -492,6 +501,358 @@ func runTriggersUpdate(client *Client, namespace, flowID, triggerID string, disa
 		fmt.Fprintf(w, "TRIGGER\t%s\n", updated.GetTriggerId())
 		fmt.Fprintf(w, "DISABLED\t%v\n", updated.GetDisabled())
 		fmt.Fprintln(w, "\nTrigger updated.")
+		return nil
+	})
+}
+
+// parseTriggerIds parses <namespace>/<flowId>/<triggerId> arguments.
+func parseTriggerIds(args []string) ([]kestra.Trigger, error) {
+	triggers := make([]kestra.Trigger, 0, len(args))
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "/", 3)
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return nil, fmt.Errorf("invalid trigger id %q: expected <namespace>/<flowId>/<triggerId>", arg)
+		}
+		t := kestra.NewTrigger(parts[0], parts[1], parts[2], time.Time{})
+		triggers = append(triggers, *t)
+	}
+	return triggers, nil
+}
+
+func parseTriggerApiIds(args []string) ([]kestra.TriggerControllerApiTriggerId, error) {
+	result := make([]kestra.TriggerControllerApiTriggerId, 0, len(args))
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "/", 3)
+		if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+			return nil, fmt.Errorf("invalid trigger id %q: expected <namespace>/<flowId>/<triggerId>", arg)
+		}
+		t := kestra.NewTriggerControllerApiTriggerId()
+		t.SetNamespace(parts[0])
+		t.SetFlowId(parts[1])
+		t.SetTriggerId(parts[2])
+		result = append(result, *t)
+	}
+	return result, nil
+}
+
+func newTriggersDeleteByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-by-ids <namespace/flowId/triggerId>...",
+		Short: "Delete multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			triggers, err := parseTriggerIds(args)
+			if err != nil {
+				return err
+			}
+			return runTriggersBulkByIds(client, triggers, "delete", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersUnlockByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "unlock-by-ids <namespace/flowId/triggerId>...",
+		Short: "Unlock multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			triggers, err := parseTriggerIds(args)
+			if err != nil {
+				return err
+			}
+			return runTriggersBulkByIds(client, triggers, "unlock", renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersBulkByIds(client *Client, triggers []kestra.Trigger, op string, renderer *Renderer) error {
+	m, _, err := func() (map[string]interface{}, interface{}, error) {
+		switch op {
+		case "delete":
+			m, resp, err := client.API.TriggersAPI.
+				DeleteTriggersByIds(client.Ctx, client.Tenant).
+				Trigger(triggers).
+				Execute()
+			return m, resp, err
+		default: // unlock
+			m, resp, err := client.API.TriggersAPI.
+				UnlockTriggersByIds(client.Ctx, client.Tenant).
+				Trigger(triggers).
+				Execute()
+			return m, resp, err
+		}
+	}()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(m)
+	return renderer.Render(map[string]any{"count": count, "operation": op}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d trigger(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newTriggersDisableByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "disable-by-ids <namespace/flowId/triggerId>...",
+		Short: "Disable multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabledByIds(client, args, true, renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersEnableByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enable-by-ids <namespace/flowId/triggerId>...",
+		Short: "Enable multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabledByIds(client, args, false, renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersSetDisabledByIds(client *Client, args []string, disabled bool, renderer *Renderer) error {
+	triggerIDs, err := parseTriggerApiIds(args)
+	if err != nil {
+		return err
+	}
+
+	body := kestra.NewTriggerControllerSetDisabledRequest(triggerIDs, disabled)
+
+	m, _, err := client.API.TriggersAPI.
+		DisabledTriggersByIds(client.Ctx, client.Tenant).
+		TriggerControllerSetDisabledRequest(*body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(m)
+	op := "disabled"
+	if !disabled {
+		op = "enabled"
+	}
+	return renderer.Render(map[string]any{"count": count, "operation": op}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d trigger(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newTriggersDisableByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "disable-by-query",
+		Short: "Disable triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabledByQuery(client, true, filters, renderer)
+		},
+	}
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func newTriggersEnableByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "enable-by-query",
+		Short: "Enable triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabledByQuery(client, false, filters, renderer)
+		},
+	}
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func runTriggersSetDisabledByQuery(client *Client, disabled bool, filters []kestra.QueryFilter, renderer *Renderer) error {
+	m, _, err := client.API.TriggersAPI.
+		DisabledTriggersByQuery(client.Ctx, client.Tenant).
+		Disabled(disabled).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(m)
+	op := "disabled"
+	if !disabled {
+		op = "enabled"
+	}
+	return renderer.Render(map[string]any{"count": count, "operation": op}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d trigger(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newTriggersDeleteByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "delete-by-query",
+		Short: "Delete triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBulkByQuery(client, "delete", filters, renderer)
+		},
+	}
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func newTriggersUnlockByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "unlock-by-query",
+		Short: "Unlock triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBulkByQuery(client, "unlock", filters, renderer)
+		},
+	}
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func runTriggersBulkByQuery(client *Client, op string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	m, _, err := func() (map[string]interface{}, interface{}, error) {
+		switch op {
+		case "delete":
+			m, resp, err := client.API.TriggersAPI.
+				DeleteTriggersByQuery(client.Ctx, client.Tenant).
+				DeleteTriggersByQueryRequest(kestra.DeleteTriggersByQueryRequest{
+					Filters: queryFiltersToSearchFilters(filters),
+				}).
+				Execute()
+			return m, resp, err
+		default: // unlock
+			m, resp, err := client.API.TriggersAPI.
+				UnlockTriggersByQuery(client.Ctx, client.Tenant).
+				Filters(filters).
+				Execute()
+			return m, resp, err
+		}
+	}()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(m)
+	return renderer.Render(map[string]any{"count": count, "operation": op}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d trigger(s) affected.\n", op, count)
 		return nil
 	})
 }
