@@ -53,6 +53,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsUpdateStatusByQueryCommand())
 	cmd.AddCommand(newExecutionsDownloadFileCommand())
 	cmd.AddCommand(newExecutionsFileMetadataCommand())
+	cmd.AddCommand(newExecutionsReplayWithInputsCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1498,6 +1499,67 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	result := map[string]any{"count": count, "ids": ids}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
+		return nil
+	})
+}
+
+func newExecutionsReplayWithInputsCommand() *cobra.Command {
+	var taskRunID, breakpoints string
+	var revision int32
+
+	cmd := &cobra.Command{
+		Use:   "replay-with-inputs <execution_id>",
+		Short: "Replay an execution from a specific task run, optionally with new inputs.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsReplayWithInputs(client, args[0], taskRunID, breakpoints, revision, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&taskRunID, "task-run-id", "", "Task run ID to restart from")
+	cmd.Flags().StringVar(&breakpoints, "breakpoints", "", "Comma-separated task IDs to use as breakpoints")
+	cmd.Flags().Int32Var(&revision, "revision", 0, "Flow revision to use (default: original)")
+
+	return cmd
+}
+
+func runExecutionsReplayWithInputs(client *Client, executionID, taskRunID, breakpoints string, revision int32, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.ReplayExecutionWithinputs(client.Ctx, executionID, client.Tenant)
+	if taskRunID != "" {
+		req = req.TaskRunId(taskRunID)
+	}
+	if breakpoints != "" {
+		req = req.Breakpoints(breakpoints)
+	}
+	if revision > 0 {
+		req = req.Revision(revision)
+	}
+
+	exec, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	state := exec.GetState()
+	result := map[string]any{
+		"id":        exec.GetId(),
+		"namespace": exec.GetNamespace(),
+		"flowId":    exec.GetFlowId(),
+		"state":     string(state.GetCurrent()),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", exec.GetId())
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", exec.GetNamespace())
+		fmt.Fprintf(w, "FLOW\t%s\n", exec.GetFlowId())
+		fmt.Fprintf(w, "STATE\t%s\n", state.GetCurrent())
 		return nil
 	})
 }
