@@ -63,6 +63,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsEnableBulkCommand())
 	cmd.AddCommand(newFlowsConcurrencyLimitsCommand())
 	cmd.AddCommand(newFlowsDeleteRevisionsCommand())
+	cmd.AddCommand(newFlowsSearchBySourceCommand())
 
 	return cmd
 }
@@ -1406,6 +1407,89 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newFlowsSearchBySourceCommand() *cobra.Command {
+	var page, size int32
+	var query, namespace string
+
+	cmd := &cobra.Command{
+		Use:   "search-by-source",
+		Short: "Search flows by source code content.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsSearchBySource(client, page, size, query, namespace, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 50, "Page size")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Source code search query")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace prefix")
+
+	return cmd
+}
+
+func runFlowsSearchBySource(client *Client, page, size int32, query, namespace string, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	req := client.API.FlowsAPI.
+		SearchFlowsBySourceCode(client.Ctx, client.Tenant).
+		Page(page).
+		Size(size)
+	if query != "" {
+		req = req.Q(query)
+	}
+	if namespace != "" {
+		req = req.Namespace(namespace)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+	jsonResults := make([]map[string]any, len(results))
+	for i, r := range results {
+		m := r.GetModel()
+		jsonResults[i] = map[string]any{
+			"id":        m.GetId(),
+			"namespace": m.GetNamespace(),
+			"revision":  m.GetRevision(),
+			"fragments": r.GetFragments(),
+		}
+	}
+
+	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tREVISION\tFRAGMENTS")
+		for _, r := range results {
+			m := r.GetModel()
+			fmt.Fprintf(w, "%s\t%s\t%d\t%d match(es)\n",
+				m.GetId(),
+				m.GetNamespace(),
+				m.GetRevision(),
+				len(r.GetFragments()),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d result(s) (page %d, total %d)\n", len(results), page, resp.GetTotal())
 		return nil
 	})
 }
