@@ -28,8 +28,69 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsForceRunCommand())
 	cmd.AddCommand(newExecutionsUnqueueCommand())
 	cmd.AddCommand(newExecutionsDeleteCommand())
+	cmd.AddCommand(newExecutionsReplayCommand())
 
 	return cmd
+}
+
+func newExecutionsReplayCommand() *cobra.Command {
+	var (
+		taskRunID string
+		revision  int32
+	)
+
+	cmd := &cobra.Command{
+		Use:   "replay <execution_id>",
+		Short: "Replay an execution as a new execution.",
+		Long: `Replay an execution, creating a new execution that reuses the original's
+inputs and labels.
+
+Use --task-run-id to replay from a specific task run, and --revision to
+replay against a specific flow revision.`,
+		Example: `  # Replay an execution
+	  kestractl executions replay 2TLGqHrXC9k8BczKJe5djX
+
+	  # Replay from a specific task run
+	  kestractl executions replay 2TLGqHrXC9k8BczKJe5djX --task-run-id 5Abc...`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsReplay(client, args[0], taskRunID, cmd.Flags().Changed("revision"), revision, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&taskRunID, "task-run-id", "", "Replay from this task run ID")
+	cmd.Flags().Int32Var(&revision, "revision", 0, "Flow revision to replay against")
+
+	return cmd
+}
+
+func runExecutionsReplay(client *Client, executionID, taskRunID string, hasRevision bool, revision int32, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.ReplayExecution(client.Ctx, executionID, client.Tenant)
+	if taskRunID != "" {
+		req = req.TaskRunId(taskRunID)
+	}
+	if hasRevision {
+		req = req.Revision(revision)
+	}
+
+	exec, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		return fmt.Errorf("replay returned no execution")
+	}
+
+	return renderExecutionResult(renderer, exec, fmt.Sprintf("Execution '%s' replayed as '%s'", executionID, exec.GetId()))
 }
 
 func newExecutionsDeleteCommand() *cobra.Command {
