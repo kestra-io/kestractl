@@ -21,8 +21,64 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsRunCommand())
 	cmd.AddCommand(newExecutionsGetCommand())
 	cmd.AddCommand(newExecutionsListCommand())
+	cmd.AddCommand(newExecutionsKillCommand())
 
 	return cmd
+}
+
+func newExecutionsKillCommand() *cobra.Command {
+	var cascade bool
+
+	cmd := &cobra.Command{
+		Use:   "kill <execution_id>",
+		Short: "Kill a running execution.",
+		Long: `Kill a running execution, stopping all of its tasks.
+
+By default, killing an execution also kills its subflow executions. Pass
+--cascade=false to kill only the parent execution.`,
+		Example: `  # Kill an execution
+	  kestractl executions kill 2TLGqHrXC9k8BczKJe5djX
+
+	  # Kill only the parent execution, leaving subflows running
+	  kestractl executions kill 2TLGqHrXC9k8BczKJe5djX --cascade=false`,
+		Aliases: []string{"cancel"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsKill(client, args[0], cascade, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&cascade, "cascade", true, "Also kill subflow executions")
+
+	return cmd
+}
+
+func runExecutionsKill(client *Client, executionID string, cascade bool, renderer *Renderer) error {
+	_, _, err := client.API.ExecutionsAPI.KillExecution(client.Ctx, executionID, client.Tenant).
+		IsOnKillCascade(cascade).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":      executionID,
+		"status":  "kill requested",
+		"cascade": cascade,
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Kill requested for execution '%s'\n", executionID)
+		return nil
+	})
 }
 
 func newExecutionsListCommand() *cobra.Command {
