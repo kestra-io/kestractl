@@ -31,6 +31,7 @@ func newNamespaceFilesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespaceFilesSearchCommand())
 	cmd.AddCommand(newNamespaceFilesMoveCommand())
 	cmd.AddCommand(newNamespaceFilesRevisionsCommand())
+	cmd.AddCommand(newNamespaceFilesExportCommand())
 
 	return cmd
 }
@@ -1009,6 +1010,48 @@ func runNamespaceFilesMove(client *Client, namespace, from, to string, renderer 
 		fmt.Fprintf(w, "Moved '%s' → '%s' in namespace '%s'.\n", from, to, namespace)
 		return nil
 	})
+}
+
+func newNamespaceFilesExportCommand() *cobra.Command {
+	var outputFile string
+
+	cmd := &cobra.Command{
+		Use:   "export <namespace>",
+		Short: "Export all namespace files as a ZIP archive.",
+		Example: `  kestractl nsfiles export my.namespace --output-file my-namespace.zip
+  kestractl nsfiles export my.namespace`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespaceFilesExport(client, args[0], outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVarP(&outputFile, "output-file", "f", "", "Path to write the ZIP archive (default: <namespace>.zip)")
+	return cmd
+}
+
+func runNamespaceFilesExport(client *Client, namespace, outputFile string, out io.Writer) error {
+	zipContent, _, err := client.API.FilesAPI.
+		ExportNamespaceFiles(client.Ctx, namespace, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if outputFile == "" {
+		outputFile = namespace + ".zip"
+	}
+
+	if err := os.WriteFile(outputFile, []byte(zipContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write ZIP archive: %w", err)
+	}
+
+	fmt.Fprintf(out, "Exported namespace '%s' to '%s' (%d bytes).\n", namespace, outputFile, len(zipContent))
+	return nil
 }
 
 func runNamespaceFilesSearch(client *Client, namespace, query string, renderer *Renderer) error {

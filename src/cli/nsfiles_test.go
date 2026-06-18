@@ -298,3 +298,31 @@ func TestNamespaceFilesSearchCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestNamespaceFilesExportCommand_NoArgs(t *testing.T) {
+	cmd := newNamespaceFilesExportCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestNamespaceFilesExportCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newNamespaceFilesExportCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
