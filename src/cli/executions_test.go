@@ -878,6 +878,64 @@ func TestExecutionsBulkUnqueueCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsFlowInfoByIdCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsFlowInfoByIdCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsFlowInfoByIdCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsFlowInfoByIdCommand()
+	_, err := executeCommand(cmd, "exec-id-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestExecutionsFlowInfoCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsFlowInfoCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsFlowInfoCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsFlowInfoCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestExecutionsReplayWithInputsCommand_NoArgs(t *testing.T) {
 	cmd := newExecutionsReplayWithInputsCommand()
 	_, err := executeCommand(cmd)

@@ -54,6 +54,8 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsDownloadFileCommand())
 	cmd.AddCommand(newExecutionsFileMetadataCommand())
 	cmd.AddCommand(newExecutionsReplayWithInputsCommand())
+	cmd.AddCommand(newExecutionsFlowInfoByIdCommand())
+	cmd.AddCommand(newExecutionsFlowInfoCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1499,6 +1501,86 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	result := map[string]any{"count": count, "ids": ids}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
+		return nil
+	})
+}
+
+func newExecutionsFlowInfoByIdCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "flow-info-by-id <execution_id>",
+		Short: "Get flow information for a given execution ID.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsFlowInfo(client, "", "", args[0], 0, renderer)
+		},
+	}
+}
+
+func newExecutionsFlowInfoCommand() *cobra.Command {
+	var revision int32
+
+	cmd := &cobra.Command{
+		Use:   "flow-info <namespace> <flow_id>",
+		Short: "Get flow information for executions of a given flow.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsFlowInfo(client, args[0], args[1], "", revision, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&revision, "revision", 0, "Flow revision (default: latest)")
+
+	return cmd
+}
+
+func runExecutionsFlowInfo(client *Client, namespace, flowID, executionID string, revision int32, renderer *Renderer) error {
+	var flow *kestra.FlowForExecution
+	var err error
+
+	if executionID != "" {
+		flow, _, err = client.API.ExecutionsAPI.
+			FlowFromExecutionById(client.Ctx, executionID, client.Tenant).
+			Execute()
+	} else {
+		req := client.API.ExecutionsAPI.FlowFromExecution(client.Ctx, namespace, flowID, client.Tenant)
+		if revision > 0 {
+			req = req.Revision(revision)
+		}
+		flow, _, err = req.Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":          flow.GetId(),
+		"namespace":   flow.GetNamespace(),
+		"revision":    flow.GetRevision(),
+		"description": flow.GetDescription(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", flow.GetId())
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", flow.GetNamespace())
+		fmt.Fprintf(w, "REVISION\t%d\n", flow.GetRevision())
+		fmt.Fprintf(w, "DESCRIPTION\t%s\n", flow.GetDescription())
+		fmt.Fprintf(w, "INPUTS\t%d defined\n", len(flow.GetInputs()))
 		return nil
 	})
 }
