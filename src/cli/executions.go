@@ -45,6 +45,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsBulkSetLabelsCommand())
 	cmd.AddCommand(newExecutionsBulkUnqueueCommand())
 	cmd.AddCommand(newExecutionsReplayByQueryCommand())
+	cmd.AddCommand(newExecutionsDeleteByQueryCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1494,8 +1495,65 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	})
 }
 
+func newExecutionsDeleteByQueryCommand() *cobra.Command {
+	var includeNonTerminated, deleteLogs, deleteMetrics, deleteStorage bool
+
+	cmd := &cobra.Command{
+		Use:   "delete-by-query",
+		Short: "Delete all executions matching the server-side query.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsDeleteByQuery(client, includeNonTerminated, deleteLogs, deleteMetrics, deleteStorage, filters, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&includeNonTerminated, "include-non-terminated", false, "Also delete non-terminated executions")
+	cmd.Flags().BoolVar(&deleteLogs, "delete-logs", false, "Also delete associated logs")
+	cmd.Flags().BoolVar(&deleteMetrics, "delete-metrics", false, "Also delete associated metrics")
+	cmd.Flags().BoolVar(&deleteStorage, "delete-storage", false, "Also delete associated storage")
+	addByQueryFilterFlags(cmd, &filterFlags)
+
+	return cmd
+}
+
+func runExecutionsDeleteByQuery(client *Client, includeNonTerminated, deleteLogs, deleteMetrics, deleteStorage bool, filters []kestra.QueryFilter, renderer *Renderer) error {
+	result, _, err := client.API.ExecutionsAPI.
+		DeleteExecutionsByQuery(client.Ctx, client.Tenant).
+		IncludeNonTerminated(includeNonTerminated).
+		DeleteLogs(deleteLogs).
+		DeleteMetrics(deleteMetrics).
+		DeleteStorage(deleteStorage).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(result)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if count >= 0 {
+			fmt.Fprintf(w, "Deleted %d execution(s).\n", count)
+		} else {
+			fmt.Fprintf(w, "Delete by-query completed.\n")
+		}
+		return nil
+	})
+}
+
 func newExecutionsReplayByQueryCommand() *cobra.Command {
 	var latestRevision bool
+	var filterFlags byQueryFilterFlags
 
 	cmd := &cobra.Command{
 		Use:   "replay-by-query",
