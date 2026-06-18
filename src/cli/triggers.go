@@ -33,6 +33,9 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersEnableByQueryCommand())
 	cmd.AddCommand(newTriggersDeleteByQueryCommand())
 	cmd.AddCommand(newTriggersUnlockByQueryCommand())
+	cmd.AddCommand(newTriggersDisableCommand())
+	cmd.AddCommand(newTriggersEnableCommand())
+	cmd.AddCommand(newTriggersCreateBackfillCommand())
 
 	return cmd
 }
@@ -853,6 +856,177 @@ func runTriggersBulkByQuery(client *Client, op string, filters []kestra.QueryFil
 	count := extractCount(m)
 	return renderer.Render(map[string]any{"count": count, "operation": op}, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Bulk %s: %d trigger(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newTriggersDisableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "disable <namespace> <flow_id> <trigger_id>",
+		Short: "Disable a single trigger.",
+		Example: `  kestractl triggers disable my.namespace my-flow my-trigger
+  kestractl triggers disable my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabled(client, args[0], args[1], args[2], true, renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersEnableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enable <namespace> <flow_id> <trigger_id>",
+		Short: "Enable a single trigger.",
+		Example: `  kestractl triggers enable my.namespace my-flow my-trigger
+  kestractl triggers enable my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSetDisabled(client, args[0], args[1], args[2], false, renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersSetDisabled(client *Client, namespace, flowID, triggerID string, disabled bool, renderer *Renderer) error {
+	req := kestra.NewTriggerControllerApiDisableTriggerRequest()
+	req.SetNamespace(namespace)
+	req.SetFlowId(flowID)
+	req.SetTriggerId(triggerID)
+	req.SetDisabled(disabled)
+
+	result, err := client.Kestra.Triggers().DisableTriggerById(client.Ctx, client.Tenant, *req)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	ns, fid, tid := namespace, flowID, triggerID
+	if result != nil {
+		ns = result.GetNamespace()
+		fid = result.GetFlowId()
+		tid = result.GetTriggerId()
+	}
+
+	op := "disabled"
+	if !disabled {
+		op = "enabled"
+	}
+
+	row := map[string]any{
+		"namespace": ns,
+		"flowId":    fid,
+		"triggerId": tid,
+		"disabled":  disabled,
+	}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", ns)
+		fmt.Fprintf(w, "FLOW\t%s\n", fid)
+		fmt.Fprintf(w, "TRIGGER\t%s\n", tid)
+		fmt.Fprintf(w, "\nTrigger %s.\n", op)
+		return nil
+	})
+}
+
+func newTriggersCreateBackfillCommand() *cobra.Command {
+	var namespace, flowID, triggerID, startStr, endStr string
+
+	cmd := &cobra.Command{
+		Use:   "create-backfill",
+		Short: "Create a backfill for a trigger.",
+		Example: `  kestractl triggers create-backfill --namespace my.ns --flow-id my-flow --trigger-id my-trigger --start 2024-01-01T00:00:00Z --end 2024-02-01T00:00:00Z
+  kestractl triggers create-backfill --namespace my.ns --flow-id my-flow --trigger-id my-trigger --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if namespace == "" || flowID == "" || triggerID == "" {
+				return fmt.Errorf("--namespace, --flow-id, and --trigger-id are required")
+			}
+			var startTime, endTime time.Time
+			if startStr != "" {
+				t, parseErr := time.Parse(time.RFC3339, startStr)
+				if parseErr != nil {
+					return fmt.Errorf("invalid --start time (expected RFC3339): %w", parseErr)
+				}
+				startTime = t
+			}
+			if endStr != "" {
+				t, parseErr := time.Parse(time.RFC3339, endStr)
+				if parseErr != nil {
+					return fmt.Errorf("invalid --end time (expected RFC3339): %w", parseErr)
+				}
+				endTime = t
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersCreateBackfill(client, namespace, flowID, triggerID, startTime, endTime, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace of the trigger (required)")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Flow ID of the trigger (required)")
+	cmd.Flags().StringVar(&triggerID, "trigger-id", "", "Trigger ID (required)")
+	cmd.Flags().StringVar(&startStr, "start", "", "Backfill start time in RFC3339 format")
+	cmd.Flags().StringVar(&endStr, "end", "", "Backfill end time in RFC3339 format")
+	return cmd
+}
+
+func runTriggersCreateBackfill(client *Client, namespace, flowID, triggerID string, startTime, endTime time.Time, renderer *Renderer) error {
+	req := kestra.NewTriggerControllerApiCreateBackfillRequest()
+	req.SetNamespace(namespace)
+	req.SetFlowId(flowID)
+	req.SetTriggerId(triggerID)
+
+	backfill := kestra.NewTriggerControllerApiCreateBackfillRequestBackfill()
+	if !startTime.IsZero() {
+		backfill.SetStart(startTime)
+	}
+	if !endTime.IsZero() {
+		backfill.SetEnd(endTime)
+	}
+	req.SetBackfill(*backfill)
+
+	result, err := client.Kestra.Triggers().CreateBackfill(client.Ctx, client.Tenant, *req)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	ns, fid, tid := namespace, flowID, triggerID
+	if result != nil {
+		ns = result.GetNamespace()
+		fid = result.GetFlowId()
+		tid = result.GetTriggerId()
+	}
+
+	row := map[string]any{
+		"namespace": ns,
+		"flowId":    fid,
+		"triggerId": tid,
+	}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", ns)
+		fmt.Fprintf(w, "FLOW\t%s\n", fid)
+		fmt.Fprintf(w, "TRIGGER\t%s\n", tid)
+		fmt.Fprintln(w, "\nBackfill created.")
 		return nil
 	})
 }

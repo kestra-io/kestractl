@@ -422,3 +422,92 @@ func TestTriggersDeleteByQueryCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestTriggersDisableCommand_NoArgs(t *testing.T) {
+	cmd := newTriggersDisableCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 3 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTriggersDisableCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersDisableCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "my-trigger")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTriggersEnableCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersEnableCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "my-trigger")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTriggersCreateBackfillCommand_MissingFlags(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newTriggersCreateBackfillCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when required flags missing")
+	}
+	if !strings.Contains(err.Error(), "required") {
+		t.Fatalf("expected required-flags error, got: %v", err)
+	}
+}
+
+func TestTriggersCreateBackfillCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersCreateBackfillCommand()
+	_, err := executeCommand(cmd, "--namespace", "my.ns", "--flow-id", "my-flow", "--trigger-id", "my-trigger")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
