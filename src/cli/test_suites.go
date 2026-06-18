@@ -3,7 +3,9 @@ package cli
 import (
 	"fmt"
 	"text/tabwriter"
+	"time"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +18,7 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesListCommand())
 	cmd.AddCommand(newTestSuitesGetCommand())
 	cmd.AddCommand(newTestSuitesDeleteCommand())
+	cmd.AddCommand(newTestSuitesRunCommand())
 
 	return cmd
 }
@@ -190,6 +193,80 @@ func runTestSuitesDelete(client *Client, namespace, id string, renderer *Rendere
 	result := map[string]any{"namespace": namespace, "id": id, "deleted": true}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Test suite '%s/%s' deleted.\n", namespace, id)
+		return nil
+	})
+}
+
+func newTestSuitesRunCommand() *cobra.Command {
+	var testCases []string
+
+	cmd := &cobra.Command{
+		Use:   "run <namespace> <id>",
+		Short: "Run a test suite.",
+		Example: `  kestractl test-suites run my.namespace my-test-suite
+  kestractl test-suites run my.namespace my-test-suite --test-case case1 --test-case case2
+  kestractl test-suites run my.namespace my-test-suite --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesRun(client, args[0], args[1], testCases, renderer)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&testCases, "test-case", nil, "Run only specific test cases (repeatable)")
+	return cmd
+}
+
+func runTestSuitesRun(client *Client, namespace, id string, testCases []string, renderer *Renderer) error {
+	runReq := kestra.NewTestSuiteControllerRunRequest()
+	if len(testCases) > 0 {
+		runReq.SetTestCases(testCases)
+	}
+
+	result, _, err := client.API.TestSuitesAPI.
+		RunTestSuite(client.Ctx, namespace, id, client.Tenant).
+		TestSuiteControllerRunRequest(*runReq).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	passed, failed := 0, 0
+	for _, r := range result.GetResults() {
+		if r.GetState() == kestra.TESTSTATE_SUCCESS {
+			passed++
+		} else {
+			failed++
+		}
+	}
+
+	jsonResult := map[string]any{
+		"id":          result.GetId(),
+		"testSuiteId": result.GetTestSuiteId(),
+		"namespace":   result.GetNamespace(),
+		"flowId":      result.GetFlowId(),
+		"state":       string(result.GetState()),
+		"passed":      passed,
+		"failed":      failed,
+	}
+	if !result.GetStartDate().IsZero() {
+		jsonResult["startDate"] = result.GetStartDate().Format(time.RFC3339)
+	}
+
+	return renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "SUITE\t%s\n", result.GetTestSuiteId())
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", result.GetNamespace())
+		fmt.Fprintf(w, "FLOW\t%s\n", result.GetFlowId())
+		fmt.Fprintf(w, "STATE\t%s\n", string(result.GetState()))
+		fmt.Fprintf(w, "PASSED\t%d\n", passed)
+		fmt.Fprintf(w, "FAILED\t%d\n", failed)
 		return nil
 	})
 }
