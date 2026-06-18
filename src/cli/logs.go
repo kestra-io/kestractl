@@ -20,8 +20,58 @@ func newLogsCommand() *cobra.Command {
 	cmd.AddCommand(newLogsListCommand())
 	cmd.AddCommand(newLogsSearchCommand())
 	cmd.AddCommand(newLogsDeleteCommand())
+	cmd.AddCommand(newLogsDeleteFlowCommand())
 
 	return cmd
+}
+
+func newLogsDeleteFlowCommand() *cobra.Command {
+	var triggerID string
+
+	cmd := &cobra.Command{
+		Use:   "delete-flow <namespace> <flow_id>",
+		Short: "Delete all logs for a flow.",
+		Long: `Delete every log entry produced by a flow across all of its executions.
+
+Use --trigger-id to restrict deletion to logs produced by a specific
+trigger of the flow.`,
+		Example: `  # Delete all logs for a flow
+	  kestractl logs delete-flow my.namespace my-flow
+
+	  # Delete only logs produced by a specific trigger
+	  kestractl logs delete-flow my.namespace my-flow --trigger-id my-trigger`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			var triggerFilter *string
+			if triggerID != "" {
+				triggerFilter = &triggerID
+			}
+			return runLogsDeleteFlow(client, args[0], args[1], triggerFilter, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&triggerID, "trigger-id", "", "Only delete logs produced by this trigger ID")
+
+	return cmd
+}
+
+func runLogsDeleteFlow(client *Client, namespace, flowID string, triggerID *string, renderer *Renderer) error {
+	err := client.Kestra.Logs().DeleteLogsFromFlow(client.Ctx, namespace, flowID, client.Tenant, triggerID)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderStatus(renderer, fmt.Sprintf("Logs for flow '%s' in namespace '%s' deleted.", flowID, namespace),
+		map[string]any{"namespace": namespace, "flowId": flowID, "status": "deleted"})
 }
 
 func newLogsDeleteCommand() *cobra.Command {
