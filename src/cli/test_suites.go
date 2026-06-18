@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"text/tabwriter"
 	"time"
 
@@ -19,6 +20,8 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesGetCommand())
 	cmd.AddCommand(newTestSuitesDeleteCommand())
 	cmd.AddCommand(newTestSuitesRunCommand())
+	cmd.AddCommand(newTestSuitesCreateCommand())
+	cmd.AddCommand(newTestSuitesUpdateCommand())
 
 	return cmd
 }
@@ -222,6 +225,109 @@ func newTestSuitesRunCommand() *cobra.Command {
 
 	cmd.Flags().StringArrayVar(&testCases, "test-case", nil, "Run only specific test cases (repeatable)")
 	return cmd
+}
+
+func newTestSuitesCreateCommand() *cobra.Command {
+	var file string
+
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Create a test suite from a YAML file.",
+		Example: `  kestractl test-suites create --file my-test-suite.yaml
+  kestractl test-suites create --file my-test-suite.yaml --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesCreate(client, file, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&file, "file", "f", "", "Path to YAML file containing the test suite definition (required)")
+	_ = cmd.MarkFlagRequired("file")
+	return cmd
+}
+
+func runTestSuitesCreate(client *Client, file string, renderer *Renderer) error {
+	content, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("failed to read file '%s': %w", file, err)
+	}
+
+	suite, _, err := client.API.TestSuitesAPI.
+		CreateTestSuite(client.Ctx, client.Tenant).
+		Body(string(content)).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":        suite.GetId(),
+		"namespace": suite.GetNamespace(),
+		"flowId":    suite.GetFlowId(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Test suite '%s' created in namespace '%s'.\n", suite.GetId(), suite.GetNamespace())
+		return nil
+	})
+}
+
+func newTestSuitesUpdateCommand() *cobra.Command {
+	var file string
+
+	cmd := &cobra.Command{
+		Use:   "update <namespace> <id>",
+		Short: "Update a test suite from a YAML file.",
+		Example: `  kestractl test-suites update my.namespace my-test-suite --file updated.yaml
+  kestractl test-suites update my.namespace my-test-suite --file updated.yaml --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesUpdate(client, args[0], args[1], file, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&file, "file", "f", "", "Path to YAML file containing the updated test suite definition (required)")
+	_ = cmd.MarkFlagRequired("file")
+	return cmd
+}
+
+func runTestSuitesUpdate(client *Client, namespace, id, file string, renderer *Renderer) error {
+	content, err := os.ReadFile(file)
+	if err != nil {
+		return fmt.Errorf("failed to read file '%s': %w", file, err)
+	}
+
+	suite, _, err := client.API.TestSuitesAPI.
+		UpdateTestSuite(client.Ctx, namespace, id, client.Tenant).
+		Body(string(content)).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":        suite.GetId(),
+		"namespace": suite.GetNamespace(),
+		"flowId":    suite.GetFlowId(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Test suite '%s' in namespace '%s' updated.\n", suite.GetId(), suite.GetNamespace())
+		return nil
+	})
 }
 
 func runTestSuitesRun(client *Client, namespace, id string, testCases []string, renderer *Renderer) error {
