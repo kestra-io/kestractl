@@ -44,6 +44,11 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsBulkForceRunCommand())
 	cmd.AddCommand(newExecutionsBulkSetLabelsCommand())
 	cmd.AddCommand(newExecutionsBulkUnqueueCommand())
+	cmd.AddCommand(newExecutionsKillByQueryCommand())
+	cmd.AddCommand(newExecutionsPauseByQueryCommand())
+	cmd.AddCommand(newExecutionsResumeByQueryCommand())
+	cmd.AddCommand(newExecutionsRestartByQueryCommand())
+	cmd.AddCommand(newExecutionsForceRunByQueryCommand())
 
 	return cmd
 }
@@ -1486,6 +1491,105 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 		fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
 		return nil
 	})
+}
+
+func newExecutionsByQueryCommand(use, short, op string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsByQueryOp(client, op, filters, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func newExecutionsKillByQueryCommand() *cobra.Command {
+	return newExecutionsByQueryCommand("kill-by-query", "Kill all executions matching the server-side query.", "kill")
+}
+
+func newExecutionsPauseByQueryCommand() *cobra.Command {
+	return newExecutionsByQueryCommand("pause-by-query", "Pause all executions matching the server-side query.", "pause")
+}
+
+func newExecutionsResumeByQueryCommand() *cobra.Command {
+	return newExecutionsByQueryCommand("resume-by-query", "Resume all executions matching the server-side query.", "resume")
+}
+
+func newExecutionsRestartByQueryCommand() *cobra.Command {
+	return newExecutionsByQueryCommand("restart-by-query", "Restart all executions matching the server-side query.", "restart")
+}
+
+func newExecutionsForceRunByQueryCommand() *cobra.Command {
+	return newExecutionsByQueryCommand("force-run-by-query", "Force-run all executions matching the server-side query.", "force-run")
+}
+
+func runExecutionsByQueryOp(client *Client, op string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	var result map[string]interface{}
+	var err error
+
+	switch op {
+	case "kill":
+		result, _, err = client.API.ExecutionsAPI.
+			KillExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	case "pause":
+		result, _, err = client.API.ExecutionsAPI.
+			PauseExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	case "resume":
+		result, _, err = client.API.ExecutionsAPI.
+			ResumeExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	case "restart":
+		result, _, err = client.API.ExecutionsAPI.
+			RestartExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	default: // force-run
+		result, _, err = client.API.ExecutionsAPI.
+			ForceRunExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(result)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if count >= 0 {
+			fmt.Fprintf(w, "By-query %s: %d execution(s) affected.\n", op, count)
+		} else {
+			fmt.Fprintf(w, "By-query %s completed.\n", op)
+		}
+		return nil
+	})
+}
+
+func extractCount(m map[string]interface{}) int64 {
+	if m == nil {
+		return -1
+	}
+	if v, ok := m["count"]; ok {
+		switch n := v.(type) {
+		case float64:
+			return int64(n)
+		case int64:
+			return n
+		case int:
+			return int64(n)
+		}
+	}
+	return -1
 }
 
 func parseISO8601Duration(value string) (string, error) {
