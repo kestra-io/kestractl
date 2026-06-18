@@ -166,6 +166,38 @@ func TestTriggersUpdateCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestTriggersSearchForFlowCommand_NoArgs(t *testing.T) {
+	cmd := newTriggersSearchForFlowCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTriggersSearchForFlowCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersSearchForFlowCommand()
+	_, err := executeCommand(cmd, "my.namespace", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestTriggersCommand_Structure(t *testing.T) {
 	cmd := newTriggersCommand()
 	if cmd.Use != "triggers" {
