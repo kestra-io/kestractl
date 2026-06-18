@@ -283,3 +283,59 @@ func TestRunServiceAccountsTokensDelete(t *testing.T) {
 		t.Errorf("expected deletion message, got %q", buf.String())
 	}
 }
+
+func TestServiceAccountsSetSuperAdminCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newServiceAccountsSetSuperAdminCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunServiceAccountsSetSuperAdmin_Grant(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.Method != http.MethodPatch {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runServiceAccountsSetSuperAdmin(newTestClient(t, server.URL), "sa1", true, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runServiceAccountsSetSuperAdmin error: %v", err)
+	}
+	if !hit {
+		t.Error("expected PATCH request to be made")
+	}
+	if !strings.Contains(buf.String(), "granted") {
+		t.Errorf("expected 'granted' message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunServiceAccountsSetSuperAdmin_Revoke(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runServiceAccountsSetSuperAdmin(newTestClient(t, server.URL), "sa1", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runServiceAccountsSetSuperAdmin error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "revoked") {
+		t.Errorf("expected 'revoked' message, got:\n%s", buf.String())
+	}
+}

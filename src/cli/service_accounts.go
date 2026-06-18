@@ -30,6 +30,7 @@ Enterprise Edition.`,
 	cmd.AddCommand(newServiceAccountsUpdateCommand())
 	cmd.AddCommand(newServiceAccountsDeleteCommand())
 	cmd.AddCommand(newServiceAccountsTokensCommand())
+	cmd.AddCommand(newServiceAccountsSetSuperAdminCommand())
 
 	return cmd
 }
@@ -527,4 +528,45 @@ func runServiceAccountsTokensDelete(client *Client, id, tokenID string, renderer
 
 	return renderStatus(renderer, fmt.Sprintf("Token '%s' deleted for service account '%s'.", tokenID, id),
 		map[string]any{"id": tokenID, "serviceAccountId": id, "status": "deleted"})
+}
+
+func newServiceAccountsSetSuperAdminCommand() *cobra.Command {
+	var superAdmin bool
+
+	cmd := &cobra.Command{
+		Use:   "set-super-admin <id>",
+		Short: "Grant or revoke superadmin status for a service account. Superadmin only.",
+		Args:  cobra.ExactArgs(1),
+		Example: `  kestractl service-accounts set-super-admin <id> --super-admin=true
+  kestractl service-accounts set-super-admin <id> --super-admin=false`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runServiceAccountsSetSuperAdmin(client, args[0], superAdmin, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&superAdmin, "super-admin", false, "Set superadmin status (true or false)")
+	return cmd
+}
+
+func runServiceAccountsSetSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
+	body := map[string]any{"superAdmin": superAdmin}
+	if err := client.Kestra.ServiceAccount().PatchServiceAccountSuperAdmin(client.Ctx, id, body); err != nil {
+		return formatSDKError(err)
+	}
+
+	status := "revoked"
+	if superAdmin {
+		status = "granted"
+	}
+	return renderStatus(renderer,
+		fmt.Sprintf("Superadmin status %s for service account '%s'.", status, id),
+		map[string]any{"id": id, "superAdmin": superAdmin, "status": status})
 }
