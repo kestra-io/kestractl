@@ -36,6 +36,12 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersDisableCommand())
 	cmd.AddCommand(newTriggersEnableCommand())
 	cmd.AddCommand(newTriggersCreateBackfillCommand())
+	cmd.AddCommand(newTriggersPauseBackfillByIdsCommand())
+	cmd.AddCommand(newTriggersUnpauseBackfillByIdsCommand())
+	cmd.AddCommand(newTriggersDeleteBackfillByIdsCommand())
+	cmd.AddCommand(newTriggersPauseBackfillByQueryCommand())
+	cmd.AddCommand(newTriggersUnpauseBackfillByQueryCommand())
+	cmd.AddCommand(newTriggersDeleteBackfillByQueryCommand())
 
 	return cmd
 }
@@ -1027,6 +1033,193 @@ func runTriggersCreateBackfill(client *Client, namespace, flowID, triggerID stri
 		fmt.Fprintf(w, "FLOW\t%s\n", fid)
 		fmt.Fprintf(w, "TRIGGER\t%s\n", tid)
 		fmt.Fprintln(w, "\nBackfill created.")
+		return nil
+	})
+}
+
+func newTriggersPauseBackfillByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pause-backfill-by-ids <namespace/flowId/triggerId>...",
+		Short: "Pause backfills for multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			ids, err := parseTriggerApiIds(args)
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByIds(client, ids, "pause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersUnpauseBackfillByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "unpause-backfill-by-ids <namespace/flowId/triggerId>...",
+		Short: "Unpause backfills for multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			ids, err := parseTriggerApiIds(args)
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByIds(client, ids, "unpause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersDeleteBackfillByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-backfill-by-ids <namespace/flowId/triggerId>...",
+		Short: "Delete backfills for multiple triggers by IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			ids, err := parseTriggerApiIds(args)
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByIds(client, ids, "delete", renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersBackfillBulkByIds(client *Client, ids []kestra.TriggerControllerApiTriggerId, op string, renderer *Renderer) error {
+	var result *kestra.ApiAsyncOperationResponse
+	var err error
+
+	switch op {
+	case "pause":
+		result, err = client.Kestra.Triggers().PauseBackfillByIds(client.Ctx, client.Tenant, ids)
+	case "unpause":
+		result, err = client.Kestra.Triggers().UnpauseBackfillByIds(client.Ctx, client.Tenant, ids)
+	default: // delete
+		result, err = client.Kestra.Triggers().DeleteBackfillByIds(client.Ctx, client.Tenant, ids)
+	}
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	var count int32
+	var opID string
+	if result != nil {
+		count = result.GetTotalItems()
+		opID = result.GetOperationId()
+	}
+	row := map[string]any{"count": count, "operationId": opID, "operation": op}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk backfill %s: %d trigger(s) scheduled (operationId: %s).\n", op, count, opID)
+		return nil
+	})
+}
+
+func newTriggersPauseBackfillByQueryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pause-backfill-by-query",
+		Short: "Pause backfills for triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByQuery(client, "pause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersUnpauseBackfillByQueryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "unpause-backfill-by-query",
+		Short: "Unpause backfills for triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByQuery(client, "unpause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersDeleteBackfillByQueryCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-backfill-by-query",
+		Short: "Delete backfills for triggers matching query filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillBulkByQuery(client, "delete", renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersBackfillBulkByQuery(client *Client, op string, renderer *Renderer) error {
+	var result *kestra.ApiAsyncOperationResponse
+	var err error
+
+	switch op {
+	case "pause":
+		result, err = client.Kestra.Triggers().PauseBackfillByQuery(client.Ctx, client.Tenant, nil)
+	case "unpause":
+		result, err = client.Kestra.Triggers().UnpauseBackfillByQuery(client.Ctx, client.Tenant, nil)
+	default: // delete
+		result, err = client.Kestra.Triggers().DeleteBackfillByQuery(client.Ctx, client.Tenant, nil)
+	}
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	var count int32
+	var opID string
+	if result != nil {
+		count = result.GetTotalItems()
+		opID = result.GetOperationId()
+	}
+	row := map[string]any{"count": count, "operationId": opID, "operation": op}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk backfill %s: %d trigger(s) scheduled (operationId: %s).\n", op, count, opID)
 		return nil
 	})
 }
