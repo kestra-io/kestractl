@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -395,5 +396,46 @@ func TestRunUsersList_APIError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Errorf("expected formatted SDK error, got: %v", err)
+	}
+}
+
+func TestUsersAutocompleteCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newUsersAutocompleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunUsersAutocomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"u1","username":"alice","displayName":"Alice"},{"id":"u2","username":"bob","displayName":"Bob"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersAutocomplete(newTestClient(t, server.URL), "", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersAutocomplete error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"u1", "alice", "Alice", "bob", "Showing 2 user(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
