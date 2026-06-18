@@ -215,6 +215,34 @@ func TestNamespaceFilesDeleteCommand_Help(t *testing.T) {
 	}
 }
 
+func TestNamespaceFilesMoveCommand_NoArgs(t *testing.T) {
+	cmd := newNamespaceFilesMoveCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 3 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestNamespaceFilesMoveCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newNamespaceFilesMoveCommand()
+	_, err := executeCommand(cmd, "my.namespace", "old.yml", "new.yml")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestNamespaceFilesSearchCommand_NoArgs(t *testing.T) {
 	cmd := newNamespaceFilesSearchCommand()
 	_, err := executeCommand(cmd)
