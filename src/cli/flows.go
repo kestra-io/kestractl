@@ -77,6 +77,9 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsListDeprecatedCommand())
 	cmd.AddCommand(newFlowsExpressionsCommand())
 	cmd.AddCommand(newFlowsNamespaceDependenciesCommand())
+	cmd.AddCommand(newFlowsValidateTaskCommand())
+	cmd.AddCommand(newFlowsValidateTriggerCommand())
+	cmd.AddCommand(newFlowsUpdateConcurrencyCommand())
 
 	return cmd
 }
@@ -2232,6 +2235,180 @@ func runFlowsNamespaceDependencies(client *Client, namespace string, destination
 			fmt.Fprintf(w, "%s\t%s\t%s\n", e.GetSource(), e.GetTarget(), stringify(e.GetRelation()))
 		}
 		fmt.Fprintf(w, "\n%d node(s), %d dependency edge(s)\n", len(nodes), len(edges))
+		return nil
+	})
+}
+
+func newFlowsValidateTaskCommand() *cobra.Command {
+	var (
+		filePath string
+		section  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "validate-task",
+		Short: "Validate a task definition from a YAML file.",
+		Example: `  kestractl flows validate-task --file task.yaml
+  kestractl flows validate-task --file task.yaml --section tasks
+  kestractl flows validate-task --file task.yaml --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsValidateTask(client, filePath, section, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to YAML task definition file (required)")
+	cmd.Flags().StringVar(&section, "section", "tasks", "Flow section containing this task (tasks, errors, finally)")
+	return cmd
+}
+
+func runFlowsValidateTask(client *Client, filePath, section string, renderer *Renderer) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var body map[string]any
+	if unmarshalErr := yaml.Unmarshal(data, &body); unmarshalErr != nil {
+		return fmt.Errorf("invalid YAML: %w", unmarshalErr)
+	}
+
+	result, err := client.Kestra.Flows().ValidateTask(client.Ctx, section, client.Tenant, body)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderValidateConstraintViolation(result, renderer)
+}
+
+func newFlowsValidateTriggerCommand() *cobra.Command {
+	var filePath string
+
+	cmd := &cobra.Command{
+		Use:   "validate-trigger",
+		Short: "Validate a trigger definition from a YAML file.",
+		Example: `  kestractl flows validate-trigger --file trigger.yaml
+  kestractl flows validate-trigger --file trigger.yaml --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsValidateTrigger(client, filePath, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to YAML trigger definition file (required)")
+	return cmd
+}
+
+func runFlowsValidateTrigger(client *Client, filePath string, renderer *Renderer) error {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var body map[string]any
+	if unmarshalErr := yaml.Unmarshal(data, &body); unmarshalErr != nil {
+		return fmt.Errorf("invalid YAML: %w", unmarshalErr)
+	}
+
+	result, err := client.Kestra.Flows().ValidateTrigger(client.Ctx, client.Tenant, body)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderValidateConstraintViolation(result, renderer)
+}
+
+func renderValidateConstraintViolation(v *kestra.ValidateConstraintViolation, renderer *Renderer) error {
+	if v == nil {
+		return renderStatus(renderer, "Validation passed.", map[string]any{"valid": true})
+	}
+
+	constraints := v.GetConstraints()
+	warnings := v.GetWarnings()
+
+	result := map[string]any{
+		"valid":       constraints == "",
+		"constraints": constraints,
+		"warnings":    warnings,
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if constraints != "" {
+			fmt.Fprintf(w, "Validation failed:\t%s\n", constraints)
+		} else {
+			fmt.Fprintln(w, "Validation passed.")
+		}
+		for _, warn := range warnings {
+			fmt.Fprintf(w, "Warning:\t%s\n", warn)
+		}
+		return nil
+	})
+}
+
+func newFlowsUpdateConcurrencyCommand() *cobra.Command {
+	var running int32
+
+	cmd := &cobra.Command{
+		Use:   "update-concurrency <namespace> <flow-id>",
+		Short: "Set the concurrency limit for a flow.",
+		Example: `  kestractl flows update-concurrency prod my-flow --running 5
+  kestractl flows update-concurrency prod my-flow --running 5 --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsUpdateConcurrency(client, args[0], args[1], running, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&running, "running", 0, "Maximum number of concurrent running executions (0 = unlimited)")
+	return cmd
+}
+
+func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running int32, renderer *Renderer) error {
+	limit := kestra.ConcurrencyLimit{
+		TenantId:  client.Tenant,
+		Namespace: namespace,
+		FlowId:    flowID,
+	}
+	if running > 0 {
+		limit.Running = &running
+	}
+
+	result, err := client.Kestra.Flows().UpdateConcurrencyLimit(client.Ctx, namespace, flowID, client.Tenant, limit)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Concurrency limit updated.\n\nNamespace:\t%s\nFlow ID:\t%s\nRunning:\t%d\n",
+			result.GetNamespace(), result.GetFlowId(), result.GetRunning())
 		return nil
 	})
 }
