@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -268,6 +271,61 @@ func TestKVDeleteAllCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestKVSetCommand_HasTTLFlag(t *testing.T) {
+	cmd := newKVSetCommand()
+	if cmd.Flags().Lookup("ttl") == nil {
+		t.Fatal("expected --ttl flag on kv set")
+	}
+}
+
+func TestKVUpdateCommand_HasTTLFlag(t *testing.T) {
+	cmd := newKVUpdateCommand()
+	if cmd.Flags().Lookup("ttl") == nil {
+		t.Fatal("expected --ttl flag on kv update")
+	}
+}
+
+func TestKVWriteCommand_TTLPassedToAPI(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runKVWrite(newTestClient(t, server.URL), "ns", "mykey", "hello", "STRING", "PT1H", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runKVWrite error: %v", err)
+	}
+	if !strings.Contains(gotQuery, "ttl=PT1H") {
+		t.Errorf("expected ttl query param, got %q", gotQuery)
+	}
+	if !strings.Contains(buf.String(), "TTL: PT1H") {
+		t.Errorf("expected TTL in output, got:\n%s", buf.String())
+	}
+}
+
+func TestKVWriteCommand_NoTTL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.RawQuery, "ttl") {
+			http.Error(w, "unexpected ttl param", http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runKVWrite(newTestClient(t, server.URL), "ns", "mykey", "42", "NUMBER", "", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runKVWrite error: %v", err)
+	}
+	if strings.Contains(buf.String(), "TTL:") {
+		t.Errorf("expected no TTL in output when not set, got:\n%s", buf.String())
 	}
 }
 

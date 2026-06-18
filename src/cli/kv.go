@@ -150,6 +150,8 @@ func newKVWriteCommand(name string, requireExisting bool) *cobra.Command {
 		short = "Update an existing key-value pair in a namespace."
 	}
 
+	var ttl string
+
 	cmd := &cobra.Command{
 		Use:   fmt.Sprintf("%s <namespace> <type> <key> <value>", name),
 		Short: short,
@@ -161,6 +163,9 @@ The value is validated against <type> before sending it to Kestra.`,
 
 	  # Set a JSON object
 	  kestractl kv set my.namespace JSON settings '{"feature":true}'
+
+	  # Set a value with a TTL (ISO 8601 duration)
+	  kestractl kv set my.namespace STRING cache_token "abc" --ttl PT1H
 
 	  # Update an existing key
 	  kestractl kv update my.namespace NUMBER retries 3`,
@@ -178,14 +183,16 @@ The value is validated against <type> before sending it to Kestra.`,
 
 			namespace := args[0]
 			valueType := args[1]
-			return runKVWrite(client, namespace, args[2], args[3], valueType, requireExisting, renderer)
+			return runKVWrite(client, namespace, args[2], args[3], valueType, ttl, requireExisting, renderer)
 		},
 	}
+
+	cmd.Flags().StringVar(&ttl, "ttl", "", "Time-to-live as ISO 8601 duration (e.g. PT1H, P7D). Omit for no expiry.")
 
 	return cmd
 }
 
-func runKVWrite(client *Client, namespace, key, rawValue, valueType string, requireExisting bool, renderer *Renderer) error {
+func runKVWrite(client *Client, namespace, key, rawValue, valueType, ttl string, requireExisting bool, renderer *Renderer) error {
 	kvType, err := parseKVType(valueType)
 	if err != nil {
 		return err
@@ -208,8 +215,11 @@ func runKVWrite(client *Client, namespace, key, rawValue, valueType string, requ
 		}
 	}
 
-	_, err = client.API.KVAPI.SetKeyValue(client.Ctx, namespace, key, client.Tenant).Body(body).Execute()
-	if err != nil {
+	var ttlPtr *string
+	if ttl != "" {
+		ttlPtr = &ttl
+	}
+	if err = client.Kestra.Kv().SetKeyValueWithTTL(client.Ctx, namespace, key, client.Tenant, body, ttlPtr); err != nil {
 		return formatSDKError(err)
 	}
 
@@ -228,6 +238,9 @@ func runKVWrite(client *Client, namespace, key, rawValue, valueType string, requ
 		"type":      string(kvType),
 		"value":     displayValue,
 	}
+	if ttl != "" {
+		result["ttl"] = ttl
+	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, successMessage)
@@ -237,6 +250,9 @@ func runKVWrite(client *Client, namespace, key, rawValue, valueType string, requ
 		fmt.Fprintf(w, "Key: %s\n", key)
 		fmt.Fprintf(w, "Type: %s\n", kvType)
 		fmt.Fprintf(w, "Value: %s\n", toPrettyString(displayValue))
+		if ttl != "" {
+			fmt.Fprintf(w, "TTL: %s\n", ttl)
+		}
 		return nil
 	})
 }
