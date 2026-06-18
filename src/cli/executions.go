@@ -34,6 +34,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsLatestCommand())
 	cmd.AddCommand(newExecutionsChangeStatusCommand())
 	cmd.AddCommand(newExecutionsSearchByFlowCommand())
+	cmd.AddCommand(newExecutionsUpdateTaskRunCommand())
 
 	return cmd
 }
@@ -1124,6 +1125,57 @@ func formatDuration(raw any) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func newExecutionsUpdateTaskRunCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update-taskrun <execution_id> <taskrun_id> <state>",
+		Short: "Change the state of a task run within an execution.",
+		Example: `  kestractl executions update-taskrun exec-123 taskrun-456 SUCCESS
+  kestractl executions update-taskrun exec-123 taskrun-456 FAILED --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsUpdateTaskRun(client, args[0], args[1], args[2], renderer)
+		},
+	}
+	return cmd
+}
+
+func runExecutionsUpdateTaskRun(client *Client, executionID, taskRunID, state string, renderer *Renderer) error {
+	req := kestra.NewExecutionControllerStateRequest(taskRunID, kestra.StateType(strings.ToUpper(state)))
+	exec, _, err := client.API.ExecutionsAPI.
+		UpdateTaskRunState(client.Ctx, executionID, client.Tenant).
+		ExecutionControllerStateRequest(*req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		exec = kestra.NewExecutionWithDefaults()
+	}
+
+	result := map[string]any{
+		"id":        exec.GetId(),
+		"namespace": exec.GetNamespace(),
+		"flowId":    exec.GetFlowId(),
+		"state":     func() string { s := exec.GetState(); return string(s.GetCurrent()) }(),
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", stringify(result["id"]))
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", stringify(result["namespace"]))
+		fmt.Fprintf(w, "FLOW\t%s\n", stringify(result["flowId"]))
+		fmt.Fprintf(w, "STATE\t%s\n", stringify(result["state"]))
+		return nil
+	})
 }
 
 func newExecutionsSearchByFlowCommand() *cobra.Command {
