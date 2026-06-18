@@ -145,6 +145,66 @@ func TestTestSuitesUpdateCommand_NoArgs(t *testing.T) {
 	}
 }
 
+func TestTestSuitesDeleteBulkCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesDeleteBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestTestSuitesDeleteBulkCommand_InvalidFormat(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newTestSuitesDeleteBulkCommand()
+	_, err := executeCommand(cmd, "bad-format")
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+	if !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected namespace error, got: %v", err)
+	}
+}
+
+func TestTestSuitesDeleteBulkCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTestSuitesDeleteBulkCommand()
+	_, err := executeCommand(cmd, "my.namespace/my-suite")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTestSuitesDisableBulkCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesDisableBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestTestSuitesEnableBulkCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesEnableBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
 func TestTestSuitesCommand_Structure(t *testing.T) {
 	cmd := newTestSuitesCommand()
 	if cmd.Use != "test-suites" {

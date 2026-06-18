@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -22,6 +23,9 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesRunCommand())
 	cmd.AddCommand(newTestSuitesCreateCommand())
 	cmd.AddCommand(newTestSuitesUpdateCommand())
+	cmd.AddCommand(newTestSuitesDeleteBulkCommand())
+	cmd.AddCommand(newTestSuitesDisableBulkCommand())
+	cmd.AddCommand(newTestSuitesEnableBulkCommand())
 
 	return cmd
 }
@@ -373,6 +377,92 @@ func runTestSuitesRun(client *Client, namespace, id string, testCases []string, 
 		fmt.Fprintf(w, "STATE\t%s\n", string(result.GetState()))
 		fmt.Fprintf(w, "PASSED\t%d\n", passed)
 		fmt.Fprintf(w, "FAILED\t%d\n", failed)
+		return nil
+	})
+}
+
+func parseTestSuiteIds(args []string) ([]kestra.TestSuiteControllerTestSuiteApiId, error) {
+	ids := make([]kestra.TestSuiteControllerTestSuiteApiId, 0, len(args))
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid format %q: expected <namespace>/<id>", arg)
+		}
+		id := kestra.NewTestSuiteControllerTestSuiteApiId(parts[0], parts[1])
+		ids = append(ids, *id)
+	}
+	return ids, nil
+}
+
+func newTestSuitesBulkOp(use, short, op string) *cobra.Command {
+	return &cobra.Command{
+		Use:     fmt.Sprintf("%s <namespace/id>...", use),
+		Short:   short,
+		Example: fmt.Sprintf("  kestractl test-suites %s my.namespace/my-suite", use),
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			ids, err := parseTestSuiteIds(args)
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesBulkOp(client, ids, op, renderer)
+		},
+	}
+}
+
+func newTestSuitesDeleteBulkCommand() *cobra.Command {
+	return newTestSuitesBulkOp("delete-bulk", "Delete multiple test suites.", "delete")
+}
+
+func newTestSuitesDisableBulkCommand() *cobra.Command {
+	return newTestSuitesBulkOp("disable-bulk", "Disable multiple test suites.", "disable")
+}
+
+func newTestSuitesEnableBulkCommand() *cobra.Command {
+	return newTestSuitesBulkOp("enable-bulk", "Enable multiple test suites.", "enable")
+}
+
+func runTestSuitesBulkOp(client *Client, ids []kestra.TestSuiteControllerTestSuiteApiId, op string, renderer *Renderer) error {
+	req := kestra.NewTestSuiteControllerTestSuiteBulkRequest(ids)
+
+	var resp *kestra.BulkResponse
+	var err error
+
+	switch op {
+	case "delete":
+		resp, _, err = client.API.TestSuitesAPI.
+			DeleteTestSuitesByIds(client.Ctx, client.Tenant).
+			TestSuiteControllerTestSuiteBulkRequest(*req).Execute()
+	case "disable":
+		resp, _, err = client.API.TestSuitesAPI.
+			DisableTestSuitesByIds(client.Ctx, client.Tenant).
+			TestSuiteControllerTestSuiteBulkRequest(*req).Execute()
+	default: // enable
+		resp, _, err = client.API.TestSuitesAPI.
+			EnableTestSuitesByIds(client.Ctx, client.Tenant).
+			TestSuiteControllerTestSuiteBulkRequest(*req).Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"operation": op, "count": count}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d test suite(s) affected.\n", op, count)
 		return nil
 	})
 }
