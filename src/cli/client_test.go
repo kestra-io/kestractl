@@ -197,3 +197,28 @@ func TestNormalizeHost(t *testing.T) {
 		})
 	}
 }
+
+func TestTryParseActionsFromError(t *testing.T) {
+	t.Run("parses raw string array", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`["READ","CREATE","UPDATE","DELETE"]`))
+		actions := tryParseActionsFromError(sdkErr)
+		if len(actions) != 4 || actions[0] != "READ" || actions[3] != "DELETE" {
+			t.Fatalf("unexpected actions: %v", actions)
+		}
+	})
+
+	t.Run("nil for non-array body", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`{"message":"boom"}`))
+		if actions := tryParseActionsFromError(sdkErr); actions != nil {
+			t.Fatalf("expected nil, got: %v", actions)
+		}
+	})
+
+	t.Run("nil for unrelated error", func(t *testing.T) {
+		if actions := tryParseActionsFromError(errors.New("plain")); actions != nil {
+			t.Fatalf("expected nil, got: %v", actions)
+		}
+	})
+}
