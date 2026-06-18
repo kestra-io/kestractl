@@ -2,8 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 )
 
 func TestExecutionsRunCommand_NoArgs(t *testing.T) {
@@ -36,6 +39,87 @@ func TestExecutionsGetCommand_NoArgs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accepts 1 arg") {
 		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsListCommand_RejectsArgs(t *testing.T) {
+	cmd := newExecutionsListCommand()
+	_, err := executeCommand(cmd, "unexpected")
+	if err == nil {
+		t.Fatal("expected error when a positional arg is provided")
+	}
+	if !strings.Contains(err.Error(), "unknown command") && !strings.Contains(err.Error(), "accepts 0 arg") {
+		t.Fatalf("expected no-args error, got: %v", err)
+	}
+}
+
+func TestExecutionsListCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsListCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestBuildExecutionFilters(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		flowID    string
+		state     string
+		wantLen   int
+		wantField map[kestra.QueryFilterField]string
+	}{
+		{name: "empty", wantLen: 0, wantField: map[kestra.QueryFilterField]string{}},
+		{
+			name:      "namespace only",
+			namespace: "my.ns",
+			wantLen:   1,
+			wantField: map[kestra.QueryFilterField]string{kestra.QUERYFILTERFIELD_NAMESPACE: "my.ns"},
+		},
+		{
+			name:      "all filters",
+			namespace: "my.ns",
+			flowID:    "my-flow",
+			state:     "failed",
+			wantLen:   3,
+			wantField: map[kestra.QueryFilterField]string{
+				kestra.QUERYFILTERFIELD_NAMESPACE: "my.ns",
+				kestra.QUERYFILTERFIELD_FLOW_ID:   "my-flow",
+				kestra.QUERYFILTERFIELD_STATE:     "FAILED", // upper-cased
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			filters := buildExecutionFilters(tt.namespace, tt.flowID, tt.state)
+			if len(filters) != tt.wantLen {
+				t.Fatalf("expected %d filters, got %d", tt.wantLen, len(filters))
+			}
+			for _, f := range filters {
+				if f.GetOperation() != kestra.QUERYFILTEROP_EQUALS {
+					t.Errorf("expected EQUALS operation, got %v", f.GetOperation())
+				}
+				want, ok := tt.wantField[f.GetField()]
+				if !ok {
+					t.Errorf("unexpected filter field %v", f.GetField())
+					continue
+				}
+				if got, _ := f.Value.(string); got != want {
+					t.Errorf("field %v: expected value %q, got %q", f.GetField(), want, got)
+				}
+			}
+		})
 	}
 }
 
