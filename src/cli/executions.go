@@ -32,8 +32,56 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsSetLabelsCommand())
 	cmd.AddCommand(newExecutionsFlowGraphCommand())
 	cmd.AddCommand(newExecutionsLatestCommand())
+	cmd.AddCommand(newExecutionsChangeStatusCommand())
 
 	return cmd
+}
+
+func newExecutionsChangeStatusCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "change-status <execution_id> <status>",
+		Short: "Change the status of an execution.",
+		Long:  `Force the status of an execution to a new state (e.g. SUCCESS, FAILED, KILLED).`,
+		Example: `  # Mark an execution as a success
+  kestractl executions change-status 2TLGqHrXC9k8BczKJe5djX SUCCESS`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsChangeStatus(client, args[0], args[1], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runExecutionsChangeStatus(client *Client, executionID, status string, renderer *Renderer) error {
+	exec, _, err := client.API.ExecutionsAPI.UpdateExecutionStatus(client.Ctx, executionID, client.Tenant).
+		Status(kestra.StateType(strings.ToUpper(status))).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		exec = kestra.NewExecutionWithDefaults()
+	}
+
+	state := exec.GetState()
+	result := map[string]any{
+		"id":     exec.GetId(),
+		"status": state.GetCurrent(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Execution '%s' status changed to %s\n", exec.GetId(), state.GetCurrent())
+		return nil
+	})
 }
 
 // parseFlowRefs converts "namespace:flowId" strings into flow filters for the
