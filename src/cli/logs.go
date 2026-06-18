@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -17,8 +18,138 @@ func newLogsCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newLogsListCommand())
+	cmd.AddCommand(newLogsSearchCommand())
 
 	return cmd
+}
+
+func newLogsSearchCommand() *cobra.Command {
+	var (
+		query     string
+		namespace string
+		flowID    string
+		triggerID string
+		minLevel  string
+		page      int32
+		size      int32
+		sort      []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search logs across executions.",
+		Long: `Search log entries across the tenant, optionally filtered by free-text
+query, namespace, flow, trigger, or minimum level.
+
+Results are paginated. Use --page and --size to navigate larger result sets.`,
+		Example: `  # Search for an error message
+	  kestractl logs search --query "connection refused" --min-level ERROR
+
+	  # Search logs for a flow
+	  kestractl logs search --namespace my.namespace --flow-id my-flow
+
+	  # JSON output
+	  kestractl logs search --namespace my.namespace --output json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			filters := buildLogSearchFilters(query, namespace, flowID, triggerID, minLevel)
+			return runLogsSearch(client, filters, page, size, sort, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Free-text search query")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Filter by flow ID")
+	cmd.Flags().StringVar(&triggerID, "trigger-id", "", "Filter by trigger ID")
+	cmd.Flags().StringVar(&minLevel, "min-level", "", "Minimum log level (e.g. TRACE, DEBUG, INFO, WARN, ERROR)")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number (1-based)")
+	cmd.Flags().Int32Var(&size, "size", 50, "Number of log entries per page")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (e.g. 'timestamp:desc', repeatable)")
+
+	return cmd
+}
+
+// buildLogSearchFilters assembles EQUALS SearchFilters for a log search from
+// the optional query, namespace, flow, trigger, and level selectors.
+func buildLogSearchFilters(query, namespace, flowID, triggerID, minLevel string) []kestra.SearchFilter {
+	filters := make([]kestra.SearchFilter, 0, 5)
+	add := func(field kestra.SearchFilterField, value string) {
+		if value != "" {
+			filters = append(filters, kestra.SearchFilter{
+				Field:     field,
+				Operation: kestra.OpEquals,
+				Value:     value,
+			})
+		}
+	}
+	add(kestra.FilterQuery, query)
+	add(kestra.FilterNamespace, namespace)
+	add(kestra.FilterFlowId, flowID)
+	add(kestra.FilterTriggerId, triggerID)
+	if minLevel != "" {
+		add(kestra.FilterMinLevel, strings.ToUpper(minLevel))
+	}
+	return filters
+}
+
+func runLogsSearch(client *Client, filters []kestra.SearchFilter, page, size int32, sort []string, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+	pageParam, sizeParam := int(page), int(size)
+
+	resp, err := client.Kestra.Logs().SearchLogs(client.Ctx, client.Tenant, &pageParam, &sizeParam, sort, filters)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if resp == nil {
+		resp = &kestra.PagedResultsLogEntry{}
+	}
+
+	logs := resp.GetResults()
+	result := make([]map[string]any, len(logs))
+	for i, entry := range logs {
+		result[i] = map[string]any{
+			"timestamp": entry.GetTimestamp().Format(time.RFC3339),
+			"level":     stringify(entry.GetLevel()),
+			"namespace": entry.GetNamespace(),
+			"flowId":    entry.GetFlowId(),
+			"taskId":    entry.GetTaskId(),
+			"message":   entry.GetMessage(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "TIMESTAMP\tLEVEL\tNAMESPACE\tFLOW\tTASK\tMESSAGE")
+		for _, entry := range logs {
+			task := entry.GetTaskId()
+			if task == "" {
+				task = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				entry.GetTimestamp().Format(time.RFC3339),
+				stringify(entry.GetLevel()),
+				entry.GetNamespace(),
+				entry.GetFlowId(),
+				task,
+				entry.GetMessage(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d log entry(ies) (page %d, total %d)\n", len(logs), page, resp.Total)
+		return nil
+	})
 }
 
 func newLogsListCommand() *cobra.Command {
