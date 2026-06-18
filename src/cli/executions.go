@@ -46,6 +46,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsBulkUnqueueCommand())
 	cmd.AddCommand(newExecutionsReplayByQueryCommand())
 	cmd.AddCommand(newExecutionsDeleteByQueryCommand())
+	cmd.AddCommand(newExecutionsUnqueueByQueryCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1495,8 +1496,60 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	})
 }
 
+func newExecutionsUnqueueByQueryCommand() *cobra.Command {
+	var state string
+
+	cmd := &cobra.Command{
+		Use:   "unqueue-by-query",
+		Short: "Unqueue all executions matching the server-side query.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsUnqueueByQuery(client, state, filters, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&state, "state", "", "New state for the unqueued executions")
+	addByQueryFilterFlags(cmd, &filterFlags)
+
+	return cmd
+}
+
+func runExecutionsUnqueueByQuery(client *Client, state string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.UnqueueExecutionsByQuery(client.Ctx, client.Tenant).Filters(filters)
+	if state != "" {
+		req = req.NewState(kestra.StateType(strings.ToUpper(state)))
+	}
+
+	result, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(result)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if count >= 0 {
+			fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
+		} else {
+			fmt.Fprintf(w, "Unqueue by-query completed.\n")
+		}
+		return nil
+	})
+}
+
 func newExecutionsDeleteByQueryCommand() *cobra.Command {
 	var includeNonTerminated, deleteLogs, deleteMetrics, deleteStorage bool
+	var filterFlags byQueryFilterFlags
 
 	cmd := &cobra.Command{
 		Use:   "delete-by-query",
