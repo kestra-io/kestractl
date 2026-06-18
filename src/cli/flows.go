@@ -51,6 +51,8 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsRevisionsCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
 	cmd.AddCommand(newFlowsValidateCommand())
+	cmd.AddCommand(newFlowsEnableCommand())
+	cmd.AddCommand(newFlowsDisableCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
 
 	return cmd
@@ -111,6 +113,100 @@ func runFlowsDelete(client *Client, namespace, flowID string, skipConfirm bool, 
 
 	return renderStatus(renderer, fmt.Sprintf("Flow '%s' deleted from namespace '%s'.", flowID, namespace),
 		map[string]any{"namespace": namespace, "flowId": flowID, "status": "deleted"})
+}
+
+func newFlowsEnableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "enable <namespace> <flow_id> [flow_id...]",
+		Short: "Enable one or more flows.",
+		Long: `Enable one or more flows in a namespace. Disabled flows do not execute,
+even when their triggers fire; enabling them restores normal scheduling.`,
+		Example: `  # Enable a single flow
+	  kestractl flows enable my.namespace my-flow
+
+	  # Enable several flows at once
+	  kestractl flows enable my.namespace flow-a flow-b flow-c`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsToggle(client, args[0], args[1:], true, renderer)
+		},
+	}
+
+	return cmd
+}
+
+func newFlowsDisableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "disable <namespace> <flow_id> [flow_id...]",
+		Short: "Disable one or more flows.",
+		Long: `Disable one or more flows in a namespace. Disabled flows are not executed,
+even when their triggers fire, until they are re-enabled.`,
+		Example: `  # Disable a single flow
+	  kestractl flows disable my.namespace my-flow
+
+	  # Disable several flows at once
+	  kestractl flows disable my.namespace flow-a flow-b flow-c`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsToggle(client, args[0], args[1:], false, renderer)
+		},
+	}
+
+	return cmd
+}
+
+// runFlowsToggle enables or disables the given flows (all within one namespace)
+// via the bulk by-ids endpoints.
+func runFlowsToggle(client *Client, namespace string, flowIDs []string, enable bool, renderer *Renderer) error {
+	items := make([]kestra.IdWithNamespace, 0, len(flowIDs))
+	for _, id := range flowIDs {
+		item := kestra.NewIdWithNamespace()
+		item.SetNamespace(namespace)
+		item.SetId(id)
+		items = append(items, *item)
+	}
+
+	var (
+		resp *kestra.BulkResponse
+		err  error
+	)
+	if enable {
+		resp, _, err = client.API.FlowsAPI.EnableFlowsByIds(client.Ctx, client.Tenant).
+			IdWithNamespace(items).Execute()
+	} else {
+		resp, _, err = client.API.FlowsAPI.DisableFlowsByIds(client.Ctx, client.Tenant).
+			IdWithNamespace(items).Execute()
+	}
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	action := "enabled"
+	if !enable {
+		action = "disabled"
+	}
+	count := len(flowIDs)
+	if resp != nil {
+		count = int(resp.GetCount())
+	}
+	return renderStatus(renderer, fmt.Sprintf("%d flow(s) %s in namespace '%s'.", count, action, namespace),
+		map[string]any{"namespace": namespace, "count": count, "status": action})
 }
 
 func newFlowsListCommand() *cobra.Command {
