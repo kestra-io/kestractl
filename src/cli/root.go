@@ -124,6 +124,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newTestSuitesCommand())
 	root.AddCommand(newServerCommand())
 	root.AddCommand(newSecretsCommand())
+	root.AddCommand(newAppsCommand())
 
 	return root
 }
