@@ -26,8 +26,61 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsResumeCommand())
 	cmd.AddCommand(newExecutionsPauseCommand())
 	cmd.AddCommand(newExecutionsForceRunCommand())
+	cmd.AddCommand(newExecutionsUnqueueCommand())
 
 	return cmd
+}
+
+func newExecutionsUnqueueCommand() *cobra.Command {
+	var state string
+
+	cmd := &cobra.Command{
+		Use:   "unqueue <execution_id>",
+		Short: "Unqueue a queued execution.",
+		Long: `Unqueue an execution that is waiting in the queue.
+
+Use --state to set the state the execution transitions to (defaults to the
+server's behavior, typically RUNNING).`,
+		Example: `  # Unqueue an execution
+	  kestractl executions unqueue 2TLGqHrXC9k8BczKJe5djX
+
+	  # Unqueue and mark it as CANCELLED
+	  kestractl executions unqueue 2TLGqHrXC9k8BczKJe5djX --state CANCELLED`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsUnqueue(client, args[0], state, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&state, "state", "", "Target state for the unqueued execution (e.g. RUNNING, CANCELLED)")
+
+	return cmd
+}
+
+func runExecutionsUnqueue(client *Client, executionID, state string, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.UnqueueExecution(client.Ctx, executionID, client.Tenant)
+	if state != "" {
+		req = req.State(kestra.StateType(strings.ToUpper(state)))
+	}
+
+	exec, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		return fmt.Errorf("unqueue returned no execution")
+	}
+
+	return renderExecutionResult(renderer, exec, fmt.Sprintf("Execution '%s' unqueued", executionID))
 }
 
 func newExecutionsForceRunCommand() *cobra.Command {
