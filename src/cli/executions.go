@@ -47,6 +47,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsReplayByQueryCommand())
 	cmd.AddCommand(newExecutionsDeleteByQueryCommand())
 	cmd.AddCommand(newExecutionsUnqueueByQueryCommand())
+	cmd.AddCommand(newExecutionsSetLabelsByQueryCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1496,8 +1497,61 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	})
 }
 
+func newExecutionsSetLabelsByQueryCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "set-labels-by-query <key=value> [key=value...]",
+		Short:   "Set labels on all terminated executions matching the server-side query.",
+		Example: "  kestractl executions set-labels-by-query env=prod team=data",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			labels, err := parseLabels(args)
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsSetLabelsByQuery(client, labels, filters, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func runExecutionsSetLabelsByQuery(client *Client, labels []kestra.Label, filters []kestra.QueryFilter, renderer *Renderer) error {
+	result, _, err := client.API.ExecutionsAPI.
+		SetLabelsOnTerminatedExecutionsByQuery(client.Ctx, client.Tenant).
+		Label(labels).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(result)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if count >= 0 {
+			fmt.Fprintf(w, "Set labels on %d execution(s).\n", count)
+		} else {
+			fmt.Fprintf(w, "Set-labels by-query completed.\n")
+		}
+		return nil
+	})
+}
+
 func newExecutionsUnqueueByQueryCommand() *cobra.Command {
 	var state string
+	var filterFlags byQueryFilterFlags
 
 	cmd := &cobra.Command{
 		Use:   "unqueue-by-query",
