@@ -22,8 +22,94 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsGetCommand())
 	cmd.AddCommand(newExecutionsListCommand())
 	cmd.AddCommand(newExecutionsKillCommand())
+	cmd.AddCommand(newExecutionsRestartCommand())
 
 	return cmd
+}
+
+// executionToMap converts an SDK Execution into the map shape used for both
+// JSON output and table rendering across the execution action commands.
+func executionToMap(exec *kestra.Execution) map[string]any {
+	result := map[string]any{
+		"id":           exec.GetId(),
+		"flowId":       exec.GetFlowId(),
+		"namespace":    exec.GetNamespace(),
+		"flowRevision": exec.GetFlowRevision(),
+	}
+	st := exec.GetState()
+	stateMap := map[string]any{"current": st.GetCurrent()}
+	if !st.GetStartDate().IsZero() {
+		stateMap["startDate"] = st.GetStartDate().Format(time.RFC3339)
+	}
+	stateMap["duration"] = st.GetDuration()
+	result["state"] = stateMap
+	return result
+}
+
+// renderExecutionResult renders a single execution returned by an action
+// command (restart, resume, force-run, ...) with a leading status headline.
+func renderExecutionResult(renderer *Renderer, exec *kestra.Execution, headline string) error {
+	result := executionToMap(exec)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, headline)
+		fmt.Fprintf(w, "Execution ID: %s\n", stringify(result["id"]))
+		fmt.Fprintf(w, "Flow: %s\n", stringify(result["flowId"]))
+		fmt.Fprintf(w, "Namespace: %s\n", stringify(result["namespace"]))
+		printExecutionState(w, result, true)
+		return nil
+	})
+}
+
+func newExecutionsRestartCommand() *cobra.Command {
+	var revision int32
+
+	cmd := &cobra.Command{
+		Use:   "restart <execution_id>",
+		Short: "Restart a failed or terminated execution.",
+		Long: `Restart an execution from its failed or terminated tasks.
+
+By default the execution is restarted on the same flow revision. Use
+--revision to restart against a specific flow revision.`,
+		Example: `  # Restart an execution
+	  kestractl executions restart 2TLGqHrXC9k8BczKJe5djX
+
+	  # Restart against a specific flow revision
+	  kestractl executions restart 2TLGqHrXC9k8BczKJe5djX --revision 3`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsRestart(client, args[0], cmd.Flags().Changed("revision"), revision, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&revision, "revision", 0, "Flow revision to restart against")
+
+	return cmd
+}
+
+func runExecutionsRestart(client *Client, executionID string, hasRevision bool, revision int32, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.RestartExecution(client.Ctx, executionID, client.Tenant)
+	if hasRevision {
+		req = req.Revision(revision)
+	}
+
+	exec, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		return fmt.Errorf("restart returned no execution")
+	}
+
+	return renderExecutionResult(renderer, exec, fmt.Sprintf("Execution '%s' restarted", executionID))
 }
 
 func newExecutionsKillCommand() *cobra.Command {

@@ -98,6 +98,63 @@ func TestExecutionsKillCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsRestartCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsRestartCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsRestartCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsRestartCommand()
+	_, err := executeCommand(cmd, "exec-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestExecutionToMap(t *testing.T) {
+	exec := kestra.NewExecutionWithDefaults()
+	exec.SetId("exec-1")
+	exec.SetFlowId("my-flow")
+	exec.SetNamespace("my.ns")
+	exec.SetFlowRevision(2)
+	st := kestra.NewStateWithDefaults()
+	st.SetCurrent(kestra.STATETYPE_SUCCESS)
+	exec.SetState(*st)
+
+	m := executionToMap(exec)
+	if m["id"] != "exec-1" {
+		t.Errorf("expected id exec-1, got %v", m["id"])
+	}
+	if m["flowId"] != "my-flow" {
+		t.Errorf("expected flowId my-flow, got %v", m["flowId"])
+	}
+	if m["namespace"] != "my.ns" {
+		t.Errorf("expected namespace my.ns, got %v", m["namespace"])
+	}
+	state, ok := m["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected state map, got %T", m["state"])
+	}
+	if state["current"] != kestra.STATETYPE_SUCCESS {
+		t.Errorf("expected SUCCESS state, got %v", state["current"])
+	}
+}
+
 func TestBuildExecutionFilters(t *testing.T) {
 	tests := []struct {
 		name      string
