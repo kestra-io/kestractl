@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,5 +212,33 @@ func TestNamespaceFilesDeleteCommand_Help(t *testing.T) {
 		if !strings.Contains(output, s) {
 			t.Fatalf("expected help to contain '%s', got: %s", s, output)
 		}
+	}
+}
+
+func TestNamespaceFilesSearchCommand_NoArgs(t *testing.T) {
+	cmd := newNamespaceFilesSearchCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestNamespaceFilesSearchCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newNamespaceFilesSearchCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
 	}
 }

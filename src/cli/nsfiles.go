@@ -28,6 +28,7 @@ func newNamespaceFilesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespaceFilesGetCommand())
 	cmd.AddCommand(newNamespaceFilesUploadCommand())
 	cmd.AddCommand(newNamespaceFilesDeleteCommand())
+	cmd.AddCommand(newNamespaceFilesSearchCommand())
 
 	return cmd
 }
@@ -889,4 +890,57 @@ func formatNamespaceFileModified(lastModified, created int64) string {
 	}
 	timeValue := time.Unix(0, timestamp*int64(time.Millisecond)).UTC()
 	return timeValue.Format(time.RFC3339)
+}
+
+func newNamespaceFilesSearchCommand() *cobra.Command {
+	var query string
+
+	cmd := &cobra.Command{
+		Use:   "search <namespace>",
+		Short: "Search files in a namespace.",
+		Example: `  kestractl nsfiles search my.namespace
+  kestractl nsfiles search my.namespace --query flow
+  kestractl nsfiles search my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespaceFilesSearch(client, args[0], query, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Search query to filter files")
+	return cmd
+}
+
+func runNamespaceFilesSearch(client *Client, namespace, query string, renderer *Renderer) error {
+	req := client.API.FilesAPI.SearchNamespaceFiles(client.Ctx, namespace, client.Tenant)
+	if query != "" {
+		req = req.Q(query)
+	}
+
+	files, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(files))
+	for i, f := range files {
+		result[i] = map[string]any{"path": f}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "PATH")
+		for _, f := range files {
+			fmt.Fprintln(w, f)
+		}
+		fmt.Fprintf(w, "\nTotal files: %d\n", len(files))
+		return nil
+	})
 }
