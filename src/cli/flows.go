@@ -47,6 +47,7 @@ func newFlowsCommand() *cobra.Command {
 
 	cmd.AddCommand(newFlowsListCommand())
 	cmd.AddCommand(newFlowsGetCommand())
+	cmd.AddCommand(newFlowsRevisionsCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
 	cmd.AddCommand(newFlowsValidateCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
@@ -273,6 +274,71 @@ func runFlowsGet(client *Client, namespace, flowID string, renderer *Renderer) e
 	}
 	_, err = io.WriteString(renderer.Writer(), source)
 	return err
+}
+
+func newFlowsRevisionsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "revisions <namespace> <flow_id>",
+		Short: "List the revisions of a flow.",
+		Long: `List every stored revision of a flow, newest revisions last.
+
+Each revision is an immutable snapshot of the flow source created when the
+flow was updated.`,
+		Example: `  # List a flow's revisions
+	  kestractl flows revisions my.namespace my-flow
+
+	  # JSON output (includes the source of each revision)
+	  kestractl flows revisions my.namespace my-flow --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsRevisions(client, args[0], args[1], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runFlowsRevisions(client *Client, namespace, flowID string, renderer *Renderer) error {
+	revisions, _, err := client.API.FlowsAPI.ListFlowRevisions(client.Ctx, namespace, flowID, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if renderer.IsJSON() {
+		result := make([]map[string]any, len(revisions))
+		for i, rev := range revisions {
+			result[i] = map[string]any{
+				"revision":  rev.GetRevision(),
+				"namespace": rev.GetNamespace(),
+				"id":        rev.GetId(),
+				"disabled":  rev.GetDisabled(),
+				"source":    rev.GetSource(),
+			}
+		}
+		return renderer.RenderJSON(result)
+	}
+
+	return renderer.Render(revisions, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "REVISION\tDISABLED\tDESCRIPTION")
+		for _, rev := range revisions {
+			description := rev.GetDescription()
+			if description == "" {
+				description = "-"
+			}
+			fmt.Fprintf(w, "%d\t%t\t%s\n", rev.GetRevision(), rev.GetDisabled(), description)
+		}
+		fmt.Fprintf(w, "\nTotal revisions: %d\n", len(revisions))
+		return nil
+	})
 }
 
 func newFlowsDeployCommand() *cobra.Command {
