@@ -49,6 +49,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsGetCommand())
 	cmd.AddCommand(newFlowsNamespacesCommand())
 	cmd.AddCommand(newFlowsRevisionsCommand())
+	cmd.AddCommand(newFlowsDependenciesCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
 	cmd.AddCommand(newFlowsValidateCommand())
 	cmd.AddCommand(newFlowsEnableCommand())
@@ -209,6 +210,94 @@ func runFlowsToggle(client *Client, namespace string, flowIDs []string, enable b
 	}
 	return renderStatus(renderer, fmt.Sprintf("%d flow(s) %s in namespace '%s'.", count, action, namespace),
 		map[string]any{"namespace": namespace, "count": count, "status": action})
+}
+
+func newFlowsDependenciesCommand() *cobra.Command {
+	var (
+		expandAll       bool
+		destinationOnly bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "dependencies <namespace> <flow_id>",
+		Short: "Show the dependency graph of a flow.",
+		Long: `Show the flows that depend on, or are depended upon by, a flow.
+
+Dependencies are produced by subflow tasks and flow triggers. Use --expand-all
+to recursively expand the graph, and --destination-only to only show flows that
+this flow depends on (its downstream destinations).`,
+		Example: `  # Show a flow's direct dependencies
+	  kestractl flows dependencies my.namespace my-flow
+
+	  # Expand the full dependency graph as JSON
+	  kestractl flows dependencies my.namespace my-flow --expand-all --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsDependencies(client, args[0], args[1], expandAll, destinationOnly, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&expandAll, "expand-all", false, "Recursively expand the full dependency graph")
+	cmd.Flags().BoolVar(&destinationOnly, "destination-only", false, "Only show flows this flow depends on")
+
+	return cmd
+}
+
+func runFlowsDependencies(client *Client, namespace, flowID string, expandAll, destinationOnly bool, renderer *Renderer) error {
+	req := client.API.FlowsAPI.FlowDependencies(client.Ctx, namespace, flowID, client.Tenant)
+	if expandAll {
+		req = req.ExpandAll(true)
+	}
+	if destinationOnly {
+		req = req.DestinationOnly(true)
+	}
+	graph, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if graph == nil {
+		graph = kestra.NewFlowTopologyGraphWithDefaults()
+	}
+
+	nodes := graph.GetNodes()
+	edges := graph.GetEdges()
+
+	if renderer.IsJSON() {
+		nodeList := make([]map[string]any, len(nodes))
+		for i, n := range nodes {
+			nodeList[i] = map[string]any{
+				"uid":       n.GetUid(),
+				"id":        n.GetId(),
+				"namespace": n.GetNamespace(),
+			}
+		}
+		edgeList := make([]map[string]any, len(edges))
+		for i, e := range edges {
+			edgeList[i] = map[string]any{
+				"source":   e.GetSource(),
+				"target":   e.GetTarget(),
+				"relation": stringify(e.GetRelation()),
+			}
+		}
+		return renderer.RenderJSON(map[string]any{"nodes": nodeList, "edges": edgeList})
+	}
+
+	return renderer.Render(edges, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "SOURCE\tTARGET\tRELATION")
+		for _, e := range edges {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", e.GetSource(), e.GetTarget(), stringify(e.GetRelation()))
+		}
+		fmt.Fprintf(w, "\n%d node(s), %d dependency edge(s)\n", len(nodes), len(edges))
+		return nil
+	})
 }
 
 func newFlowsExportCommand() *cobra.Command {
