@@ -64,6 +64,9 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsConcurrencyLimitsCommand())
 	cmd.AddCommand(newFlowsDeleteRevisionsCommand())
 	cmd.AddCommand(newFlowsSearchBySourceCommand())
+	cmd.AddCommand(newFlowsDeleteByQueryCommand())
+	cmd.AddCommand(newFlowsDisableByQueryCommand())
+	cmd.AddCommand(newFlowsEnableByQueryCommand())
 
 	return cmd
 }
@@ -1407,6 +1410,78 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newFlowsByQueryOp(use, short, op string) *cobra.Command {
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolveOptional()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsByQueryOp(client, op, filters, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func newFlowsDeleteByQueryCommand() *cobra.Command {
+	return newFlowsByQueryOp("delete-by-query", "Delete all flows matching the server-side query.", "delete")
+}
+
+func newFlowsDisableByQueryCommand() *cobra.Command {
+	return newFlowsByQueryOp("disable-by-query", "Disable all flows matching the server-side query.", "disable")
+}
+
+func newFlowsEnableByQueryCommand() *cobra.Command {
+	return newFlowsByQueryOp("enable-by-query", "Enable all flows matching the server-side query.", "enable")
+}
+
+func runFlowsByQueryOp(client *Client, op string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	var resp *kestra.BulkResponse
+	var err error
+
+	switch op {
+	case "delete":
+		resp, _, err = client.API.FlowsAPI.
+			DeleteFlowsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	case "disable":
+		resp, _, err = client.API.FlowsAPI.
+			DisableFlowsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	default: // enable
+		resp, _, err = client.API.FlowsAPI.
+			EnableFlowsByQuery(client.Ctx, client.Tenant).Filters(filters).Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"operation": op, "count": count}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "By-query %s: %d flow(s) affected.\n", op, count)
 		return nil
 	})
 }
