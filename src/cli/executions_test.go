@@ -690,3 +690,32 @@ func TestExecutionsChangeStatusCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestExecutionsSearchByFlowCommand_MissingFlags(t *testing.T) {
+	cmd := newExecutionsSearchByFlowCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error for missing required flags")
+	}
+	if !strings.Contains(err.Error(), "namespace") && !strings.Contains(err.Error(), "required") {
+		t.Fatalf("expected missing flag error, got: %v", err)
+	}
+}
+
+func TestExecutionsSearchByFlowCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsSearchByFlowCommand()
+	_, err := executeCommand(cmd, "--namespace", "my.ns", "--flow-id", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+

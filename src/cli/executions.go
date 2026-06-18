@@ -33,6 +33,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsFlowGraphCommand())
 	cmd.AddCommand(newExecutionsLatestCommand())
 	cmd.AddCommand(newExecutionsChangeStatusCommand())
+	cmd.AddCommand(newExecutionsSearchByFlowCommand())
 
 	return cmd
 }
@@ -1123,6 +1124,100 @@ func formatDuration(raw any) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+func newExecutionsSearchByFlowCommand() *cobra.Command {
+	var namespace, flowID string
+	var page, size int32
+
+	cmd := &cobra.Command{
+		Use:   "search-by-flow",
+		Short: "Search executions for a specific flow.",
+		Example: `  kestractl executions search-by-flow --namespace my.ns --flow-id my-flow
+  kestractl executions search-by-flow --namespace my.ns --flow-id my-flow --page 2 --size 20`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsSearchByFlow(client, namespace, flowID, page, size, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "Namespace of the flow (required)")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Flow ID (required)")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 50, "Page size")
+	_ = cmd.MarkFlagRequired("namespace")
+	_ = cmd.MarkFlagRequired("flow-id")
+	return cmd
+}
+
+func runExecutionsSearchByFlow(client *Client, namespace, flowID string, page, size int32, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	resp, _, err := client.API.ExecutionsAPI.
+		SearchExecutionsByFlowId(client.Ctx, client.Tenant).
+		Namespace(namespace).
+		FlowId(flowID).
+		Page(page).
+		Size(size).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	executions := resp.GetResults()
+	result := make([]map[string]any, len(executions))
+	for i, exec := range executions {
+		row := map[string]any{
+			"id":        exec.GetId(),
+			"namespace": exec.GetNamespace(),
+			"flowId":    exec.GetFlowId(),
+		}
+		st := exec.GetState()
+		row["state"] = st.GetCurrent()
+		if !st.GetStartDate().IsZero() {
+			row["startDate"] = st.GetStartDate().Format(time.RFC3339)
+		}
+		row["duration"] = st.GetDuration()
+		result[i] = row
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tFLOW\tSTATE\tSTARTED\tDURATION")
+		for _, row := range result {
+			started := "-"
+			if s, ok := row["startDate"].(string); ok && s != "" {
+				started = s
+			}
+			duration := "-"
+			if d, ok := row["duration"]; ok {
+				if ds := formatDuration(d); ds != "" {
+					duration = ds
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				stringify(row["id"]),
+				stringify(row["namespace"]),
+				stringify(row["flowId"]),
+				stringify(row["state"]),
+				started,
+				duration,
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d execution(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		return nil
+	})
 }
 
 func parseISO8601Duration(value string) (string, error) {
