@@ -180,6 +180,62 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestFlowsEnableCommand_NotEnoughArgs(t *testing.T) {
+	cmd := newFlowsEnableCommand()
+	_, err := executeCommand(cmd, "my.ns")
+	if err == nil {
+		t.Fatal("expected error when fewer than 2 args provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsEnableCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsEnableCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsDisableCommand_NotEnoughArgs(t *testing.T) {
+	cmd := newFlowsDisableCommand()
+	_, err := executeCommand(cmd, "my.ns")
+	if err == nil {
+		t.Fatal("expected error when fewer than 2 args provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsDisableCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDisableCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestFlowsNamespacesCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {
