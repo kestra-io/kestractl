@@ -5,6 +5,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -18,6 +19,7 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersDeleteCommand())
 	cmd.AddCommand(newTriggersUnlockCommand())
 	cmd.AddCommand(newTriggersRestartCommand())
+	cmd.AddCommand(newTriggersUpdateCommand())
 
 	return cmd
 }
@@ -240,6 +242,63 @@ func runTriggersRestart(client *Client, namespace, flowID, triggerID string, ren
 
 	return renderer.Render(resp, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Trigger '%s' in flow '%s/%s' restarted.\n", triggerID, namespace, flowID)
+		return nil
+	})
+}
+
+func newTriggersUpdateCommand() *cobra.Command {
+	var disabled bool
+
+	cmd := &cobra.Command{
+		Use:   "update <namespace> <flow_id> <trigger_id>",
+		Short: "Update a trigger.",
+		Example: `  kestractl triggers update my.namespace my-flow my-trigger --disabled
+  kestractl triggers update my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersUpdate(client, args[0], args[1], args[2], disabled, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&disabled, "disabled", false, "Set the trigger as disabled")
+	return cmd
+}
+
+func runTriggersUpdate(client *Client, namespace, flowID, triggerID string, disabled bool, renderer *Renderer) error {
+	t := kestra.NewTrigger(namespace, flowID, triggerID, time.Now())
+	t.SetDisabled(disabled)
+
+	updated, _, err := client.API.TriggersAPI.
+		UpdateTrigger(client.Ctx, client.Tenant).
+		Trigger(*t).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if updated == nil {
+		updated = kestra.NewTriggerWithDefaults()
+	}
+
+	result := map[string]any{
+		"namespace": updated.GetNamespace(),
+		"flowId":    updated.GetFlowId(),
+		"triggerId": updated.GetTriggerId(),
+		"disabled":  updated.GetDisabled(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", updated.GetNamespace())
+		fmt.Fprintf(w, "FLOW\t%s\n", updated.GetFlowId())
+		fmt.Fprintf(w, "TRIGGER\t%s\n", updated.GetTriggerId())
+		fmt.Fprintf(w, "DISABLED\t%v\n", updated.GetDisabled())
+		fmt.Fprintln(w, "\nTrigger updated.")
 		return nil
 	})
 }
