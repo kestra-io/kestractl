@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -67,6 +68,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsEvalExpressionCommand())
 	cmd.AddCommand(newExecutionsChangeStatusByIdsCommand())
 	cmd.AddCommand(newExecutionsTriggerWebhookCommand())
+	cmd.AddCommand(newExecutionsWatchCommand())
 
 	return cmd
 }
@@ -2363,4 +2365,61 @@ func triggerWebhookPost(client *Client, namespace, flowID, key string) (map[stri
 		}
 	}
 	return result, nil
+}
+
+func newExecutionsWatchCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "watch <execution_id>",
+		Short:   "Watch an execution in real time.",
+		Long:    "Stream execution status updates via SSE until the execution reaches a terminal state or the connection closes.",
+		Aliases: []string{"follow"},
+		Example: `  kestractl executions watch 2TLGqHrXC9k8BczKJe5djX`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsWatch(client, args[0], cmd.OutOrStdout())
+		},
+	}
+	return cmd
+}
+
+func runExecutionsWatch(client *Client, executionID string, out io.Writer) error {
+	ctx, cancel := context.WithCancel(client.Ctx)
+	defer cancel()
+
+	ch, err := client.Kestra.Executions().FollowExecution(ctx, executionID, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	var lastState string
+	for exec := range ch {
+		state := exec.GetState()
+		current := string((&state).GetCurrent())
+		lastState = current
+		fmt.Fprintf(out, "[%s] %s\n", time.Now().Format(time.RFC3339), current)
+		if isTerminalExecutionState(current) {
+			break
+		}
+	}
+
+	if lastState == "" || !isTerminalExecutionState(lastState) {
+		return fmt.Errorf("watch: stream closed before execution reached a terminal state (last: %q)", lastState)
+	}
+	switch strings.ToUpper(lastState) {
+	case "FAILED", "KILLED", "CANCELLED":
+		return fmt.Errorf("execution ended with state: %s", strings.ToUpper(lastState))
+	}
+	return nil
+}
+
+func isTerminalExecutionState(state string) bool {
+	switch strings.ToUpper(state) {
+	case "SUCCESS", "FAILED", "KILLED", "WARNING", "CANCELLED":
+		return true
+	}
+	return false
 }

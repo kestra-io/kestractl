@@ -3,6 +3,9 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -1364,6 +1367,120 @@ func TestExecutionsTriggerWebhookCommand_ClientError(t *testing.T) {
 
 	cmd := newExecutionsTriggerWebhookCommand()
 	_, err := executeCommand(cmd, "my.ns", "my-flow", "my-key")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestExecutionsWatchCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsWatchCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+const executionSSETemplate = `{"id":"e1","namespace":"prod","flowId":"myflow","flowRevision":1,"originalId":"e1","deleted":false,"metadata":{"originalCreatedDate":"2024-01-01T00:00:00Z"},"state":{"current":"%s","histories":[]}}`
+
+func TestRunExecutionsWatch_TerminatesOnSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		for _, state := range []string{"RUNNING", "SUCCESS"} {
+			fmt.Fprintf(w, "data: "+executionSSETemplate+"\n\n", state)
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runExecutionsWatch(newTestClient(t, server.URL), "e1", &buf); err != nil {
+		t.Fatalf("runExecutionsWatch error: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "RUNNING") {
+		t.Errorf("expected RUNNING in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "SUCCESS") {
+		t.Errorf("expected SUCCESS in output, got:\n%s", out)
+	}
+}
+
+func TestRunExecutionsWatch_ErrorOnFailed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		for _, state := range []string{"RUNNING", "FAILED"} {
+			fmt.Fprintf(w, "data: "+executionSSETemplate+"\n\n", state)
+			flusher.Flush()
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsWatch(newTestClient(t, server.URL), "e1", &buf)
+	if err == nil {
+		t.Fatal("expected error for FAILED execution, got nil")
+	}
+	if !strings.Contains(err.Error(), "FAILED") {
+		t.Errorf("expected FAILED in error, got: %v", err)
+	}
+}
+
+func TestRunExecutionsWatch_ErrorOnDroppedStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		fmt.Fprintf(w, "data: "+executionSSETemplate+"\n\n", "RUNNING")
+		flusher.Flush()
+		// Close without sending a terminal state.
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsWatch(newTestClient(t, server.URL), "e1", &buf)
+	if err == nil {
+		t.Fatal("expected error when stream closes before terminal state")
+	}
+	if !strings.Contains(err.Error(), "stream closed") {
+		t.Errorf("expected 'stream closed' in error, got: %v", err)
+	}
+}
+
+func TestExecutionsWatchCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsWatchCommand()
+	_, err := executeCommand(cmd, "e1")
 	if err == nil {
 		t.Fatal("expected client error")
 	}
