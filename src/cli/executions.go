@@ -31,8 +31,92 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsReplayCommand())
 	cmd.AddCommand(newExecutionsSetLabelsCommand())
 	cmd.AddCommand(newExecutionsFlowGraphCommand())
+	cmd.AddCommand(newExecutionsLatestCommand())
 
 	return cmd
+}
+
+// parseFlowRefs converts "namespace:flowId" strings into flow filters for the
+// latest-executions endpoint.
+func parseFlowRefs(refs []string) ([]kestra.ExecutionRepositoryInterfaceFlowFilter, error) {
+	filters := make([]kestra.ExecutionRepositoryInterfaceFlowFilter, 0, len(refs))
+	for _, r := range refs {
+		ns, id, ok := strings.Cut(r, ":")
+		if !ok || ns == "" || id == "" {
+			return nil, fmt.Errorf("invalid flow reference %q: expected format namespace:flowId", r)
+		}
+		filters = append(filters, *kestra.NewExecutionRepositoryInterfaceFlowFilter(ns, id))
+	}
+	return filters, nil
+}
+
+func newExecutionsLatestCommand() *cobra.Command {
+	var flows []string
+
+	cmd := &cobra.Command{
+		Use:   "latest",
+		Short: "Show the latest execution for each given flow.",
+		Long:  `Show the latest execution for each requested flow (namespace:flowId).`,
+		Example: `  # Latest execution of two flows
+  kestractl executions latest --flow company.team:daily --flow company.team:hourly`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if len(flows) == 0 {
+				return fmt.Errorf("at least one --flow namespace:flowId is required")
+			}
+			filters, err := parseFlowRefs(flows)
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsLatest(client, filters, renderer)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&flows, "flow", nil, "Flow reference as namespace:flowId (repeatable)")
+
+	return cmd
+}
+
+func runExecutionsLatest(client *Client, filters []kestra.ExecutionRepositoryInterfaceFlowFilter, renderer *Renderer) error {
+	results, _, err := client.API.ExecutionsAPI.LatestExecutions(client.Ctx, client.Tenant).
+		ExecutionRepositoryInterfaceFlowFilter(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if renderer.IsJSON() {
+		list := make([]map[string]any, len(results))
+		for i, r := range results {
+			list[i] = map[string]any{
+				"id":        r.GetId(),
+				"namespace": r.GetNamespace(),
+				"flowId":    r.GetFlowId(),
+				"status":    string(r.GetStatus()),
+				"startDate": r.GetStartDate().Format(time.RFC3339),
+			}
+		}
+		return renderer.RenderJSON(list)
+	}
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tFLOW\tEXECUTION\tSTATUS\tSTARTED")
+		for _, r := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				r.GetNamespace(), r.GetFlowId(), r.GetId(),
+				string(r.GetStatus()), r.GetStartDate().Format(time.RFC3339))
+		}
+		return nil
+	})
 }
 
 func newExecutionsFlowGraphCommand() *cobra.Command {
