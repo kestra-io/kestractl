@@ -76,6 +76,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsListByNamespaceCommand())
 	cmd.AddCommand(newFlowsListDeprecatedCommand())
 	cmd.AddCommand(newFlowsExpressionsCommand())
+	cmd.AddCommand(newFlowsNamespaceDependenciesCommand())
 
 	return cmd
 }
@@ -2147,6 +2148,90 @@ func runFlowsExpressions(client *Client, path string, taskID string, renderer *R
 	return renderer.Render(m, func(w *tabwriter.Writer) error {
 		pretty, _ := json.MarshalIndent(m, "", "  ")
 		fmt.Fprintln(w, string(pretty))
+		return nil
+	})
+}
+
+func newFlowsNamespaceDependenciesCommand() *cobra.Command {
+	var destinationOnly bool
+
+	cmd := &cobra.Command{
+		Use:   "namespace-dependencies <namespace>",
+		Short: "Show the dependency graph for all flows in a namespace.",
+		Long: `Show the combined dependency graph for all flows within a namespace.
+
+Use --destination-only to filter to only downstream destinations.`,
+		Example: `  # Show namespace-level dependency graph
+  kestractl flows namespace-dependencies my.namespace
+
+  # Only show destination flows
+  kestractl flows namespace-dependencies my.namespace --destination-only
+
+  # Output as JSON
+  kestractl flows namespace-dependencies my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsNamespaceDependencies(client, args[0], destinationOnly, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&destinationOnly, "destination-only", false, "Only show flows that are depended upon")
+
+	return cmd
+}
+
+func runFlowsNamespaceDependencies(client *Client, namespace string, destinationOnly bool, renderer *Renderer) error {
+	var destPtr *bool
+	if destinationOnly {
+		v := true
+		destPtr = &v
+	}
+
+	graph, err := client.Kestra.Flows().FlowDependenciesFromNamespace(client.Ctx, namespace, client.Tenant, destPtr)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if graph == nil {
+		graph = kestra.NewFlowTopologyGraphWithDefaults()
+	}
+
+	nodes := graph.GetNodes()
+	edges := graph.GetEdges()
+
+	if renderer.IsJSON() {
+		nodeList := make([]map[string]any, len(nodes))
+		for i, n := range nodes {
+			nodeList[i] = map[string]any{
+				"uid":       n.GetUid(),
+				"id":        n.GetId(),
+				"namespace": n.GetNamespace(),
+			}
+		}
+		edgeList := make([]map[string]any, len(edges))
+		for i, e := range edges {
+			edgeList[i] = map[string]any{
+				"source":   e.GetSource(),
+				"target":   e.GetTarget(),
+				"relation": stringify(e.GetRelation()),
+			}
+		}
+		return renderer.RenderJSON(map[string]any{"nodes": nodeList, "edges": edgeList})
+	}
+
+	return renderer.Render(edges, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "SOURCE\tTARGET\tRELATION")
+		for _, e := range edges {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", e.GetSource(), e.GetTarget(), stringify(e.GetRelation()))
+		}
+		fmt.Fprintf(w, "\n%d node(s), %d dependency edge(s)\n", len(nodes), len(edges))
 		return nil
 	})
 }
