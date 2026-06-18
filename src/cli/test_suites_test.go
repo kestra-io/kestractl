@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -142,6 +143,50 @@ func TestTestSuitesUpdateCommand_NoArgs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accepts 2 arg") {
 		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTestSuitesValidateCommand_MissingFile(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newTestSuitesValidateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestTestSuitesValidateCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	f, err := os.CreateTemp("", "suite-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("id: my-suite\nnamespace: my.ns\n")
+	f.Close()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTestSuitesValidateCommand()
+	_, err = executeCommand(cmd, "--file", f.Name())
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
 	}
 }
 
