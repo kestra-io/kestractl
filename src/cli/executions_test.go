@@ -126,6 +126,34 @@ func TestExecutionsRestartCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsResumeCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsResumeCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsResumeCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsResumeCommand()
+	_, err := executeCommand(cmd, "exec-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestExecutionToMap(t *testing.T) {
 	exec := kestra.NewExecutionWithDefaults()
 	exec.SetId("exec-1")
