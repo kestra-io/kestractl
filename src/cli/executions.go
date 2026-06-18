@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -49,6 +51,8 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsUnqueueByQueryCommand())
 	cmd.AddCommand(newExecutionsSetLabelsByQueryCommand())
 	cmd.AddCommand(newExecutionsUpdateStatusByQueryCommand())
+	cmd.AddCommand(newExecutionsDownloadFileCommand())
+	cmd.AddCommand(newExecutionsFileMetadataCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1494,6 +1498,100 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	result := map[string]any{"count": count, "ids": ids}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
+		return nil
+	})
+}
+
+func newExecutionsDownloadFileCommand() *cobra.Command {
+	var storagePath, outputFile string
+
+	cmd := &cobra.Command{
+		Use:   "download-file <execution_id>",
+		Short: "Download a file produced by an execution.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if storagePath == "" {
+				return fmt.Errorf("--path is required")
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			if outputFile == "" {
+				outputFile = filepath.Base(storagePath)
+			}
+			return runExecutionsDownloadFile(client, args[0], storagePath, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVarP(&storagePath, "path", "p", "", "Internal storage URI of the file (required)")
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Local output file path (default: filename from storage path)")
+
+	return cmd
+}
+
+func runExecutionsDownloadFile(client *Client, executionID, storagePath, outputFile string, out io.Writer) error {
+	f, _, err := client.API.ExecutionsAPI.
+		DownloadFileFromExecution(client.Ctx, executionID, client.Tenant).
+		Path(storagePath).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+	if err := os.WriteFile(outputFile, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+	fmt.Fprintf(out, "Downloaded %d bytes to %s\n", len(data), outputFile)
+	return nil
+}
+
+func newExecutionsFileMetadataCommand() *cobra.Command {
+	var storagePath string
+
+	cmd := &cobra.Command{
+		Use:   "file-metadata <execution_id>",
+		Short: "Get file metadata for a file produced by an execution.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if storagePath == "" {
+				return fmt.Errorf("--path is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsFileMetadata(client, args[0], storagePath, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&storagePath, "path", "p", "", "Internal storage URI of the file (required)")
+
+	return cmd
+}
+
+func runExecutionsFileMetadata(client *Client, executionID, storagePath string, renderer *Renderer) error {
+	meta, _, err := client.API.ExecutionsAPI.
+		FileMetadatasFromExecution(client.Ctx, executionID, client.Tenant).
+		Path(storagePath).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{"path": storagePath, "size": meta.GetSize()}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "PATH\t%s\n", storagePath)
+		fmt.Fprintf(w, "SIZE\t%d bytes\n", meta.GetSize())
 		return nil
 	})
 }

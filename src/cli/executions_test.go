@@ -878,6 +878,79 @@ func TestExecutionsBulkUnqueueCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsDownloadFileCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsDownloadFileCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsDownloadFileCommand_MissingPath(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newExecutionsDownloadFileCommand()
+	_, err := executeCommand(cmd, "exec-id-123")
+	if err == nil {
+		t.Fatal("expected error when --path not provided")
+	}
+	if !strings.Contains(err.Error(), "--path") {
+		t.Fatalf("expected path error, got: %v", err)
+	}
+}
+
+func TestExecutionsDownloadFileCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsDownloadFileCommand()
+	_, err := executeCommand(cmd, "exec-id-123", "--path", "kestra://myfile.csv", "--output-file", "/dev/null")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestExecutionsFileMetadataCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsFileMetadataCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsFileMetadataCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsFileMetadataCommand()
+	_, err := executeCommand(cmd, "exec-id-123", "--path", "kestra://myfile.csv")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestExecutionsUpdateStatusByQueryCommand_MissingStatus(t *testing.T) {
 	origOutput := globalFlags.Output
 	globalFlags.Output = "table"
