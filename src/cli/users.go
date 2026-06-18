@@ -35,6 +35,7 @@ Users are instance-level resources. Managing users requires Kestra Enterprise Ed
 	cmd.AddCommand(newUsersRevokeRefreshTokenCommand())
 	cmd.AddCommand(newUsersPatchSuperAdminCommand())
 	cmd.AddCommand(newUsersDeleteAuthMethodCommand())
+	cmd.AddCommand(newUsersChangeMyPasswordCommand())
 
 	return cmd
 }
@@ -919,4 +920,44 @@ func runUsersDeleteAuthMethod(client *Client, id, auth string, renderer *Rendere
 		fmt.Fprintf(w, "Auth method '%s' removed.\n\nUser ID:\t%s\n", auth, user.GetId())
 		return nil
 	})
+}
+
+func newUsersChangeMyPasswordCommand() *cobra.Command {
+	var oldPassword, newPassword string
+
+	cmd := &cobra.Command{
+		Use:   "change-my-password",
+		Short: "Change the current user's own password.",
+		Long:  "Update the password for the currently authenticated user using the old and new passwords.",
+		Example: `  kestractl users change-my-password --old-password <current> --new-password <new>`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersChangeMyPassword(client, oldPassword, newPassword, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&oldPassword, "old-password", "", "Current password")
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "New password")
+	_ = cmd.MarkFlagRequired("old-password")
+	_ = cmd.MarkFlagRequired("new-password")
+	return cmd
+}
+
+func runUsersChangeMyPassword(client *Client, oldPassword, newPassword string, renderer *Renderer) error {
+	req := kestra.MeControllerApiUpdatePasswordRequest{
+		OldPassword: &oldPassword,
+		NewPassword: &newPassword,
+	}
+	if _, err := client.Kestra.Users().UpdateCurrentUserPassword(client.Ctx, req); err != nil {
+		return formatSDKError(err)
+	}
+	return renderStatus(renderer, "Password updated successfully.",
+		map[string]any{"status": "updated"})
 }
