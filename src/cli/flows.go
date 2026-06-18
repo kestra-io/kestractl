@@ -80,6 +80,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsValidateTaskCommand())
 	cmd.AddCommand(newFlowsValidateTriggerCommand())
 	cmd.AddCommand(newFlowsUpdateConcurrencyCommand())
+	cmd.AddCommand(newFlowsNamespaceSyncCommand())
 
 	return cmd
 }
@@ -2412,3 +2413,62 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 		return nil
 	})
 }
+
+func newFlowsNamespaceSyncCommand() *cobra.Command {
+	var (
+		deleteMissing bool
+		override      bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "namespace-sync <namespace> <file>",
+		Short: "Sync all flows in a namespace from a YAML file.",
+		Long: `Create or update all flows in the given namespace from a YAML file.
+Flows in the namespace that are not present in the file can optionally be deleted with --delete.`,
+		Example: `  # Sync flows in namespace prod.analytics from a YAML file
+  kestractl flows namespace-sync prod.analytics flows.yaml
+
+  # Sync and delete flows not present in the file
+  kestractl flows namespace-sync prod.analytics flows.yaml --delete
+
+  # Override existing flows
+  kestractl flows namespace-sync prod.analytics flows.yaml --override`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, override, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the file")
+	cmd.Flags().BoolVar(&override, "override", false, "Override existing flows")
+	return cmd
+}
+
+func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMissing, override bool, renderer *Renderer) error {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	results, err := client.Kestra.Flows().UpdateFlowsInNamespace(
+		client.Ctx, namespace, client.Tenant, string(content),
+		boolPtr(deleteMissing), boolPtr(override))
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Namespace '%s' synced: %d flow(s) updated.\n", namespace, len(results))
+		return nil
+	})
+}
+
+func boolPtr(b bool) *bool { return &b }
