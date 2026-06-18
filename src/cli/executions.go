@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,6 +65,8 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsRestartByQueryCommand())
 	cmd.AddCommand(newExecutionsForceRunByQueryCommand())
 	cmd.AddCommand(newExecutionsEvalExpressionCommand())
+	cmd.AddCommand(newExecutionsChangeStatusByIdsCommand())
+	cmd.AddCommand(newExecutionsTriggerWebhookCommand())
 
 	return cmd
 }
@@ -2163,4 +2168,199 @@ func runExecutionsEvalExpression(client *Client, executionID, expression string,
 		fmt.Fprintf(w, "%s\n", result.GetResult())
 		return nil
 	})
+}
+
+func newExecutionsChangeStatusByIdsCommand() *cobra.Command {
+	var newStatus string
+
+	cmd := &cobra.Command{
+		Use:   "change-status-by-ids <execution_id>...",
+		Short: "Change the status of multiple executions by IDs.",
+		Example: `  kestractl executions change-status-by-ids id1 id2 --status SUCCESS
+  kestractl executions change-status-by-ids id1 id2 --status FAILED --output json`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if newStatus == "" {
+				return fmt.Errorf("--status is required")
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsChangeStatusByIds(client, args, newStatus, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&newStatus, "status", "", "New status to set (e.g. SUCCESS, FAILED, KILLED) (required)")
+	return cmd
+}
+
+func runExecutionsChangeStatusByIds(client *Client, ids []string, newStatus string, renderer *Renderer) error {
+	result, err := client.Kestra.Executions().UpdateExecutionsStatusByIds(client.Ctx, client.Tenant, newStatus, ids)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	var count int32
+	var opID string
+	if result != nil {
+		count = result.GetTotalItems()
+		opID = result.GetOperationId()
+	}
+	row := map[string]any{"count": count, "operationId": opID, "newStatus": newStatus}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk change-status to %s: %d execution(s) scheduled (operationId: %s).\n", newStatus, count, opID)
+		return nil
+	})
+}
+
+func newExecutionsTriggerWebhookCommand() *cobra.Command {
+	var method string
+
+	cmd := &cobra.Command{
+		Use:   "trigger-webhook <namespace> <flow_id> <key>",
+		Short: "Trigger an execution via a webhook.",
+		Example: `  kestractl executions trigger-webhook my.namespace my-flow my-key
+  kestractl executions trigger-webhook my.namespace my-flow my-key --method POST
+  kestractl executions trigger-webhook my.namespace my-flow my-key --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsTriggerWebhook(client, args[0], args[1], args[2], method, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&method, "method", "GET", "HTTP method to use (GET or POST)")
+	return cmd
+}
+
+func runExecutionsTriggerWebhook(client *Client, namespace, flowID, key, method string, renderer *Renderer) error {
+	var row map[string]any
+
+	switch strings.ToUpper(method) {
+	case "POST":
+		result, err := triggerWebhookPost(client, namespace, flowID, key)
+		if err != nil {
+			return err
+		}
+		row = result
+	case "GET":
+		// The SDK's only POST webhook helper appends a path segment, so we issue
+		// POST directly (see triggerWebhookPost); GET has a path-less helper.
+		result, err := client.Kestra.Executions().TriggerExecutionByGetWebhook(
+			client.Ctx, client.Tenant, namespace, flowID, key)
+		if err != nil {
+			return formatSDKError(err)
+		}
+		if result != nil {
+			row = map[string]any{
+				"id":        result.GetId(),
+				"namespace": result.GetNamespace(),
+				"flowId":    result.GetFlowId(),
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported method %q: use GET or POST", method)
+	}
+
+	if len(row) == 0 {
+		return renderer.Render(map[string]any{"namespace": namespace, "flowId": flowID}, func(w *tabwriter.Writer) error {
+			fmt.Fprintf(w, "Webhook triggered for flow '%s/%s'.\n", namespace, flowID)
+			return nil
+		})
+	}
+
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
+		if v, ok := row["id"]; ok {
+			fmt.Fprintf(w, "EXECUTION ID\t%v\n", v)
+		}
+		if v, ok := row["namespace"]; ok {
+			fmt.Fprintf(w, "NAMESPACE\t%v\n", v)
+		}
+		if v, ok := row["flowId"]; ok {
+			fmt.Fprintf(w, "FLOW\t%v\n", v)
+		}
+		fmt.Fprintln(w, "\nWebhook triggered.")
+		return nil
+	})
+}
+
+// triggerWebhookPost issues a POST to the canonical webhook endpoint. The SDK
+// only exposes a POST helper that appends a trailing path segment, which the
+// server rejects with 404, so we build the request directly while reusing the
+// SDK's configured host, default headers, and context-based authentication.
+func triggerWebhookPost(client *Client, namespace, flowID, key string) (map[string]any, error) {
+	cfg := client.API.GetConfig()
+
+	base := ""
+	if len(cfg.Servers) > 0 {
+		base = cfg.Servers[0].URL
+	}
+	if base == "" {
+		base = cfg.Scheme + "://" + cfg.Host
+	}
+	base = strings.TrimRight(base, "/")
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/executions/webhook/%s/%s/%s",
+		base,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(namespace),
+		url.PathEscape(flowID),
+		url.PathEscape(key),
+	)
+
+	req, err := http.NewRequestWithContext(client.Ctx, http.MethodPost, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	// Reuse the auth the SDK stored on the context.
+	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for h, v := range cfg.DefaultHeader {
+		req.Header.Set(h, v)
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read webhook response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, formatErrorBody(body, fmt.Sprintf("status %d", resp.StatusCode))
+	}
+
+	result := map[string]any{}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("failed to parse webhook response: %w", err)
+		}
+	}
+	return result, nil
 }
