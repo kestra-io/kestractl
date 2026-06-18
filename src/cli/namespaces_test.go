@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -281,6 +285,127 @@ func TestNamespacesSearchCommand_ClientError(t *testing.T) {
 
 	cmd := newNamespacesSearchCommand()
 	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestNamespacesExportPluginDefaultsCommand_NoArgs(t *testing.T) {
+	cmd := newNamespacesExportPluginDefaultsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestNamespacesExportPluginDefaultsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newNamespacesExportPluginDefaultsCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunNamespacesExportPluginDefaults_ToStdout(t *testing.T) {
+	yamlContent := []byte("- type: io.kestra.plugin.core.log.Log\n  values: {}\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(yamlContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	cmd := newNamespacesExportPluginDefaultsCommand()
+	cmd.SetOut(&buf)
+
+	err := runNamespacesExportPluginDefaults(newTestClient(t, server.URL), "my.namespace", "", cmd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "io.kestra.plugin.core.log.Log") {
+		t.Errorf("expected YAML in output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunNamespacesExportPluginDefaults_ToFile(t *testing.T) {
+	yamlContent := []byte("- type: io.kestra.plugin.core.log.Log\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(yamlContent)
+	}))
+	t.Cleanup(server.Close)
+
+	f, err := os.CreateTemp("", "plugin-defaults-*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	defer os.Remove(f.Name())
+
+	var buf bytes.Buffer
+	cmd := newNamespacesExportPluginDefaultsCommand()
+	cmd.SetOut(&buf)
+
+	err = runNamespacesExportPluginDefaults(newTestClient(t, server.URL), "my.namespace", f.Name(), cmd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(yamlContent) {
+		t.Errorf("file content mismatch: got %q, want %q", data, yamlContent)
+	}
+	if !strings.Contains(buf.String(), "exported") {
+		t.Errorf("expected confirmation message, got:\n%s", buf.String())
+	}
+}
+
+func TestNamespacesImportPluginDefaultsCommand_MissingFile(t *testing.T) {
+	cmd := newNamespacesImportPluginDefaultsCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestNamespacesImportPluginDefaultsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	f, err := os.CreateTemp("", "plugin-defaults-*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("- type: io.kestra.plugin.core.log.Log\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	cmd := newNamespacesImportPluginDefaultsCommand()
+	_, err = executeCommand(cmd, "my.namespace", "--file", f.Name())
 	if err == nil {
 		t.Fatal("expected client error")
 	}
