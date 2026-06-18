@@ -27,6 +27,7 @@ Groups are tenant-scoped resources. Managing groups requires Kestra Enterprise E
 	cmd.AddCommand(newGroupsMembersCommand())
 	cmd.AddCommand(newGroupsAutocompleteCommand())
 	cmd.AddCommand(newGroupsListByIdsCommand())
+	cmd.AddCommand(newGroupsSetMembershipCommand())
 
 	return cmd
 }
@@ -529,6 +530,49 @@ func newGroupsListByIdsCommand() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func newGroupsSetMembershipCommand() *cobra.Command {
+	var membership string
+
+	cmd := &cobra.Command{
+		Use:   "set-membership <group_id> <user_id>",
+		Short: "Set a user's membership type in a group.",
+		Long:  "Update a user's membership type (OWNER or MEMBER) in a group.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runGroupsSetMembership(client, args[0], args[1], membership, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&membership, "membership", "MEMBER", "Membership type: OWNER or MEMBER")
+
+	return cmd
+}
+
+func runGroupsSetMembership(client *Client, groupID, userID, membership string, renderer *Renderer) error {
+	member, _, err := client.API.GroupsAPI.
+		SetUserMembershipForGroup(client.Ctx, groupID, userID, client.Tenant).
+		Membership(kestra.GroupIdentifierMembership(membership)).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderStatus(renderer,
+		fmt.Sprintf("User '%s' membership set to '%s' in group '%s'.", member.GetId(), membership, groupID),
+		map[string]any{"groupId": groupID, "userId": member.GetId(), "membership": membership, "status": "updated"})
 }
 
 func runGroupsListByIds(client *Client, ids []string, renderer *Renderer) error {
