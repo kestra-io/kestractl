@@ -17,6 +17,7 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersListCommand())
 	cmd.AddCommand(newTriggersDeleteCommand())
 	cmd.AddCommand(newTriggersUnlockCommand())
+	cmd.AddCommand(newTriggersRestartCommand())
 
 	return cmd
 }
@@ -199,6 +200,46 @@ func runTriggersUnlock(client *Client, namespace, flowID, triggerID string, rend
 		fmt.Fprintf(w, "TRIGGER\t%s\n", t.GetTriggerId())
 		fmt.Fprintf(w, "DISABLED\t%v\n", t.GetDisabled())
 		fmt.Fprintln(w, "\nTrigger unlocked.")
+		return nil
+	})
+}
+
+func newTriggersRestartCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "restart <namespace> <flow_id> <trigger_id>",
+		Short: "Restart a trigger.",
+		Example: `  kestractl triggers restart my.namespace my-flow my-trigger
+  kestractl triggers restart my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersRestart(client, args[0], args[1], args[2], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersRestart(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
+	resp, _, err := client.API.TriggersAPI.
+		RestartTrigger(client.Ctx, namespace, flowID, triggerID, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if resp == nil {
+		resp = make(map[string]interface{})
+	}
+
+	return renderer.Render(resp, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Trigger '%s' in flow '%s/%s' restarted.\n", triggerID, namespace, flowID)
 		return nil
 	})
 }
