@@ -844,6 +844,71 @@ func executeCommand(cmd *cobra.Command, args ...string) (string, error) {
 	return buf.String() + stdout, err
 }
 
+func TestFlowsExportByIdsCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsExportByIdsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestFlowsExportByIdsCommand_InvalidFormat(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newFlowsExportByIdsCommand()
+	_, err := executeCommand(cmd, "bad-format")
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+	if !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected namespace error, got: %v", err)
+	}
+}
+
+func TestFlowsExportByIdsCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsExportByIdsCommand()
+	_, err := executeCommand(cmd, "my.ns/flow1", "--output-file", "/dev/null")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsExportByQueryCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsExportByQueryCommand()
+	_, err := executeCommand(cmd, "--output-file", "/dev/null")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestFlowsDeleteByQueryCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {

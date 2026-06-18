@@ -67,6 +67,8 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsDeleteByQueryCommand())
 	cmd.AddCommand(newFlowsDisableByQueryCommand())
 	cmd.AddCommand(newFlowsEnableByQueryCommand())
+	cmd.AddCommand(newFlowsExportByIdsCommand())
+	cmd.AddCommand(newFlowsExportByQueryCommand())
 
 	return cmd
 }
@@ -1414,8 +1416,98 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 	})
 }
 
+func newFlowsExportByIdsCommand() *cobra.Command {
+	var outputFile string
+
+	cmd := &cobra.Command{
+		Use:     "export-by-ids <namespace/id>...",
+		Short:   "Export flows as a ZIP archive by their IDs.",
+		Example: "  kestractl flows export-by-ids my.ns/flow1 my.ns/flow2 --output-file flows.zip",
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ids, err := parseFlowIds(args)
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			if outputFile == "" {
+				outputFile = "flows-export.zip"
+			}
+			return runFlowsExportByIds(client, ids, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Output ZIP file path (default: flows-export.zip)")
+
+	return cmd
+}
+
+func runFlowsExportByIds(client *Client, ids []kestra.IdWithNamespace, outputFile string, out io.Writer) error {
+	zipContent, _, err := client.API.FlowsAPI.
+		ExportFlowsByIds(client.Ctx, client.Tenant).
+		IdWithNamespace(ids).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if err := os.WriteFile(outputFile, []byte(zipContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write ZIP: %w", err)
+	}
+	fmt.Fprintf(out, "Exported %d flow(s) to %s\n", len(ids), outputFile)
+	return nil
+}
+
+func newFlowsExportByQueryCommand() *cobra.Command {
+	var outputFile string
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "export-by-query",
+		Short: "Export all flows matching the server-side query as a ZIP archive.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			filters, err := filterFlags.resolveOptional()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			if outputFile == "" {
+				outputFile = "flows-export.zip"
+			}
+			return runFlowsExportByQuery(client, outputFile, filters, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Output ZIP file path (default: flows-export.zip)")
+	addByQueryFilterFlags(cmd, &filterFlags)
+
+	return cmd
+}
+
+func runFlowsExportByQuery(client *Client, outputFile string, filters []kestra.QueryFilter, out io.Writer) error {
+	zipContent, _, err := client.API.FlowsAPI.
+		ExportFlowsByQuery(client.Ctx, client.Tenant).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if err := os.WriteFile(outputFile, []byte(zipContent), 0o644); err != nil {
+		return fmt.Errorf("failed to write ZIP: %w", err)
+	}
+	fmt.Fprintf(out, "Exported flows to %s\n", outputFile)
+	return nil
+}
+
 func newFlowsByQueryOp(use, short, op string) *cobra.Command {
-	return &cobra.Command{
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
