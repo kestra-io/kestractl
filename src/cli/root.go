@@ -122,6 +122,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newBindingsCommand())
 	root.AddCommand(newTriggersCommand())
 	root.AddCommand(newTestSuitesCommand())
+	root.AddCommand(newServerCommand())
 
 	return root
 }
