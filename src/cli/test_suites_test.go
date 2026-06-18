@@ -59,6 +59,38 @@ func TestTestSuitesGetCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestTestSuitesDeleteCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesDeleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTestSuitesDeleteCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTestSuitesDeleteCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-suite")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestTestSuitesCommand_Structure(t *testing.T) {
 	cmd := newTestSuitesCommand()
 	if cmd.Use != "test-suites" {

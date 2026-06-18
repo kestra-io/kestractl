@@ -15,6 +15,7 @@ func newTestSuitesCommand() *cobra.Command {
 
 	cmd.AddCommand(newTestSuitesListCommand())
 	cmd.AddCommand(newTestSuitesGetCommand())
+	cmd.AddCommand(newTestSuitesDeleteCommand())
 
 	return cmd
 }
@@ -153,6 +154,42 @@ func runTestSuitesGet(client *Client, namespace, id string, renderer *Renderer) 
 		}
 		fmt.Fprintf(w, "DISABLED\t%v\n", suite.GetDisabled())
 		fmt.Fprintf(w, "TEST CASES\t%d\n", len(suite.GetTestCases()))
+		return nil
+	})
+}
+
+func newTestSuitesDeleteCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete <namespace> <id>",
+		Short: "Delete a test suite.",
+		Example: `  kestractl test-suites delete my.namespace my-test-suite`,
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesDelete(client, args[0], args[1], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTestSuitesDelete(client *Client, namespace, id string, renderer *Renderer) error {
+	_, _, err := client.API.TestSuitesAPI.
+		DeleteTestSuite(client.Ctx, namespace, id, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{"namespace": namespace, "id": id, "deleted": true}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Test suite '%s/%s' deleted.\n", namespace, id)
 		return nil
 	})
 }
