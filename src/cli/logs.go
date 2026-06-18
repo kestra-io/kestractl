@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -19,10 +21,84 @@ func newLogsCommand() *cobra.Command {
 
 	cmd.AddCommand(newLogsListCommand())
 	cmd.AddCommand(newLogsSearchCommand())
+	cmd.AddCommand(newLogsDownloadCommand())
 	cmd.AddCommand(newLogsDeleteCommand())
 	cmd.AddCommand(newLogsDeleteFlowCommand())
 
 	return cmd
+}
+
+func newLogsDownloadCommand() *cobra.Command {
+	var (
+		minLevel   string
+		taskRunID  string
+		taskID     string
+		attempt    int
+		outputFile string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "download <execution_id>",
+		Short: "Download logs for an execution as a plain-text file.",
+		Long: `Download the log entries produced by an execution as plain text.
+
+By default the logs are streamed to stdout. Use --output-file to write them
+to a file instead. The --min-level / --task-id / --task-run-id / --attempt
+filters narrow the downloaded logs the same way as 'logs list'.`,
+		Example: `  # Stream logs to stdout
+	  kestractl logs download 2TLGqHrXC9k8BczKJe5djX
+
+	  # Save logs to a file
+	  kestractl logs download 2TLGqHrXC9k8BczKJe5djX --output-file run.log
+
+	  # Download only errors
+	  kestractl logs download 2TLGqHrXC9k8BczKJe5djX --min-level ERROR`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			opts := logFilterOptions(minLevel, taskRunID, taskID, cmd.Flags().Changed("attempt"), attempt)
+			return runLogsDownload(client, args[0], opts, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&minLevel, "min-level", "", "Minimum log level to download (e.g. TRACE, DEBUG, INFO, WARN, ERROR)")
+	cmd.Flags().StringVar(&taskRunID, "task-run-id", "", "Download logs for this task run ID")
+	cmd.Flags().StringVar(&taskID, "task-id", "", "Download logs for this task ID")
+	cmd.Flags().IntVar(&attempt, "attempt", 0, "Download logs for this attempt number")
+	cmd.Flags().StringVarP(&outputFile, "output-file", "f", "", "Write logs to this file instead of stdout")
+
+	return cmd
+}
+
+func runLogsDownload(client *Client, executionID string, opts logFilter, outputFile string, out io.Writer) error {
+	file, err := client.Kestra.Logs().DownloadLogsFromExecution(
+		client.Ctx, executionID, client.Tenant, opts.minLevel, opts.taskRunID, opts.taskID, opts.attempt)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	defer cleanupNamespaceTempFile(file)
+
+	dst := out
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to create output file %q: %w", outputFile, err)
+		}
+		defer f.Close()
+		dst = f
+	}
+
+	if _, err := io.Copy(dst, file); err != nil {
+		return fmt.Errorf("failed to write logs: %w", err)
+	}
+	if outputFile != "" {
+		fmt.Fprintf(out, "Logs for execution '%s' written to %s\n", executionID, outputFile)
+	}
+	return nil
 }
 
 func newLogsDeleteFlowCommand() *cobra.Command {
