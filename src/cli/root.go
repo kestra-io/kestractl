@@ -126,6 +126,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.AddCommand(newSecretsCommand())
 	root.AddCommand(newAppsCommand())
 	root.AddCommand(newDashboardsCommand())
+	root.AddCommand(newAssetsCommand())
 
 	return root
 }
