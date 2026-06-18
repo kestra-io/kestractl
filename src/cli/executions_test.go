@@ -210,6 +210,34 @@ func TestExecutionsForceRunCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsUnqueueCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsUnqueueCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsUnqueueCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsUnqueueCommand()
+	_, err := executeCommand(cmd, "exec-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestExecutionToMap(t *testing.T) {
 	exec := kestra.NewExecutionWithDefaults()
 	exec.SetId("exec-1")
