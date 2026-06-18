@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -629,6 +633,74 @@ func TestTriggersDeleteBackfillByQueryCommand_ClientError(t *testing.T) {
 	defer func() { newClientFunc = original }()
 
 	cmd := newTriggersDeleteBackfillByQueryCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunTriggersExportCSV_Stdout(t *testing.T) {
+	csvData := "namespace,flowId,triggerId,type\nprod,myflow,schedule,Schedule"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte(csvData))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runTriggersExportCSV(newTestClient(t, server.URL), "", &buf)
+	if err != nil {
+		t.Fatalf("runTriggersExportCSV error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "namespace") {
+		t.Errorf("expected CSV headers in output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunTriggersExportCSV_ToFile(t *testing.T) {
+	csvData := "namespace,flowId,triggerId,type\nprod,myflow,schedule,Schedule"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte(csvData))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp("", "triggers-*.csv")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	var buf bytes.Buffer
+	err = runTriggersExportCSV(newTestClient(t, server.URL), tmpFile.Name(), &buf)
+	if err != nil {
+		t.Fatalf("runTriggersExportCSV error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "exported") {
+		t.Errorf("expected export message, got:\n%s", buf.String())
+	}
+	written, _ := os.ReadFile(tmpFile.Name())
+	if !strings.Contains(string(written), "namespace") {
+		t.Errorf("expected CSV content in file, got:\n%s", written)
+	}
+}
+
+func TestTriggersExportCSVCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersExportCSVCommand()
 	_, err := executeCommand(cmd)
 	if err == nil {
 		t.Fatal("expected client error")
