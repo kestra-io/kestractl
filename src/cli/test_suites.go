@@ -27,6 +27,9 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesDisableBulkCommand())
 	cmd.AddCommand(newTestSuitesEnableBulkCommand())
 	cmd.AddCommand(newTestSuitesValidateCommand())
+	cmd.AddCommand(newTestSuitesSearchResultsCommand())
+	cmd.AddCommand(newTestSuitesLastResultCommand())
+	cmd.AddCommand(newTestSuitesRunByQueryCommand())
 
 	return cmd
 }
@@ -537,6 +540,205 @@ func runTestSuitesBulkOp(client *Client, ids []kestra.TestSuiteControllerTestSui
 	result := map[string]any{"operation": op, "count": count}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Bulk %s: %d test suite(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newTestSuitesSearchResultsCommand() *cobra.Command {
+	var (
+		page        int32
+		size        int32
+		sort        []string
+		testSuiteID string
+		namespace   string
+		flowID      string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "search-results",
+		Short: "Search test suite run results.",
+		Long:  "Search for test suite run results with optional filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesSearchResults(client, page, size, sort, testSuiteID, namespace, flowID, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (repeatable)")
+	cmd.Flags().StringVar(&testSuiteID, "test-suite-id", "", "Filter by test suite ID")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Filter by flow ID")
+
+	return cmd
+}
+
+func runTestSuitesSearchResults(client *Client, page, size int32, sort []string, testSuiteID, namespace, flowID string, renderer *Renderer) error {
+	req := client.API.TestSuitesAPI.
+		SearchTestSuitesResults(client.Ctx, client.Tenant).
+		Page(page).
+		Size(size)
+	if len(sort) > 0 {
+		req = req.Sort(sort)
+	}
+	if testSuiteID != "" {
+		req = req.TestSuiteId(testSuiteID)
+	}
+	if namespace != "" {
+		req = req.Namespace(namespace)
+	}
+	if flowID != "" {
+		req = req.FlowId(flowID)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tTEST SUITE ID\tNAMESPACE\tFLOW ID\tSTATE")
+		for _, r := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\n",
+				r.GetId(), r.GetTestSuiteId(), r.GetNamespace(), r.GetFlowId(), r.GetState())
+		}
+		fmt.Fprintf(w, "\nTotal: %d\n", resp.GetTotal())
+		return nil
+	})
+}
+
+func newTestSuitesLastResultCommand() *cobra.Command {
+	var ids []string
+
+	cmd := &cobra.Command{
+		Use:   "last-result",
+		Short: "Get last test suite run results for given IDs.",
+		Long:  "Retrieve the last run results for a set of test suites specified by namespace/id pairs.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesLastResult(client, ids, renderer)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&ids, "id", nil, "Test suite id as namespace/id (repeatable)")
+
+	return cmd
+}
+
+func runTestSuitesLastResult(client *Client, rawIDs []string, renderer *Renderer) error {
+	suiteIDs, err := parseTestSuiteIds(rawIDs)
+	if err != nil {
+		return err
+	}
+
+	body := kestra.NewTestSuiteControllerSearchTestsLastResult()
+	if len(suiteIDs) > 0 {
+		body.SetTestSuiteIds(suiteIDs)
+	}
+
+	resp, _, err := client.API.TestSuitesAPI.
+		TestsLastResult(client.Ctx, client.Tenant).
+		TestSuiteControllerSearchTestsLastResult(*body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tTEST SUITE ID\tNAMESPACE\tFLOW ID\tSTATE")
+		for _, r := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%v\n",
+				r.GetId(), r.GetTestSuiteId(), r.GetNamespace(), r.GetFlowId(), r.GetState())
+		}
+		fmt.Fprintf(w, "\nShowing %d result(s)\n", len(results))
+		return nil
+	})
+}
+
+func newTestSuitesRunByQueryCommand() *cobra.Command {
+	var (
+		namespace             string
+		flowID                string
+		includeChildNamespace bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "run-by-query",
+		Short: "Run test suites matching a query.",
+		Long:  "Run multiple test suites that match the given namespace/flow filters.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesRunByQuery(client, namespace, flowID, includeChildNamespace, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Namespace filter")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Flow ID filter")
+	cmd.Flags().BoolVar(&includeChildNamespace, "include-child-namespaces", false, "Include child namespaces")
+
+	return cmd
+}
+
+func runTestSuitesRunByQuery(client *Client, namespace, flowID string, includeChildNamespaces bool, renderer *Renderer) error {
+	body := kestra.NewTestSuiteServiceRunByQueryRequest(includeChildNamespaces)
+	if namespace != "" {
+		body.SetNamespace(namespace)
+	}
+	if flowID != "" {
+		body.SetFlowId(flowID)
+	}
+
+	resp, _, err := client.API.TestSuitesAPI.
+		RunTestSuitesByQuery(client.Ctx, client.Tenant).
+		TestSuiteServiceRunByQueryRequest(*body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := resp.GetNumberOfTestSuitesToBeRun()
+	caseCount := resp.GetNumberOfTestCasesToBeRun()
+
+	return renderer.Render(map[string]any{
+		"numberOfTestSuitesToBeRun": count,
+		"numberOfTestCasesToBeRun":  caseCount,
+	}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Queued %d test suite(s) with %d test case(s) to run.\n", count, caseCount)
 		return nil
 	})
 }
