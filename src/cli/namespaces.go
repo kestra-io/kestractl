@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
@@ -24,6 +25,8 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesSearchCommand())
 	cmd.AddCommand(newNamespacesInheritedPluginDefaultsCommand())
 	cmd.AddCommand(newNamespacesAutocompleteCommand())
+	cmd.AddCommand(newNamespacesExportPluginDefaultsCommand())
+	cmd.AddCommand(newNamespacesImportPluginDefaultsCommand())
 
 	return cmd
 }
@@ -609,6 +612,107 @@ func runNamespacesAutocomplete(client *Client, query string, existingOnly bool, 
 			fmt.Fprintln(w, ns)
 		}
 		fmt.Fprintf(w, "\nShowing %d namespace(s)\n", len(namespaces))
+		return nil
+	})
+}
+
+func newNamespacesExportPluginDefaultsCommand() *cobra.Command {
+	var outputFile string
+
+	cmd := &cobra.Command{
+		Use:   "export-plugin-defaults <namespace>",
+		Short: "Export plugin defaults for a namespace as YAML.",
+		Long: `Download the plugin defaults defined for the given namespace as a YAML file.
+
+The YAML content is written to stdout by default. Use --output-file to save it
+to a file instead.`,
+		Example: `  # Print plugin defaults to stdout
+  kestractl namespaces export-plugin-defaults my.namespace
+
+  # Save to file
+  kestractl namespaces export-plugin-defaults my.namespace --output-file defaults.yml`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesExportPluginDefaults(client, args[0], outputFile, cmd)
+		},
+	}
+
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Write YAML output to this file instead of stdout")
+	return cmd
+}
+
+func runNamespacesExportPluginDefaults(client *Client, namespace, outputFile string, cmd *cobra.Command) error {
+	data, err := client.Kestra.Namespaces().ExportPluginDefaults(client.Ctx, namespace, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if outputFile != "" {
+		if err := os.WriteFile(outputFile, data, 0o644); err != nil {
+			return fmt.Errorf("failed to write file: %w", err)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Plugin defaults exported to %s (%d bytes)\n", outputFile, len(data))
+		return nil
+	}
+
+	_, err = cmd.OutOrStdout().Write(data)
+	return err
+}
+
+func newNamespacesImportPluginDefaultsCommand() *cobra.Command {
+	var filePath string
+
+	cmd := &cobra.Command{
+		Use:   "import-plugin-defaults <namespace>",
+		Short: "Import plugin defaults for a namespace from a YAML file.",
+		Long: `Upload a YAML file containing plugin defaults for the given namespace.
+The file replaces any existing plugin defaults for that namespace.`,
+		Example: `  kestractl namespaces import-plugin-defaults my.namespace --file defaults.yml`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesImportPluginDefaults(client, args[0], filePath, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the YAML plugin defaults file (required)")
+	return cmd
+}
+
+func runNamespacesImportPluginDefaults(client *Client, namespace, filePath string, renderer *Renderer) error {
+	warnings, err := client.Kestra.Namespaces().ImportPluginDefaults(client.Ctx, namespace, client.Tenant, filePath)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"namespace": namespace,
+		"warnings":  warnings,
+		"status":    "imported",
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Plugin defaults imported for namespace %q.\n", namespace)
+		if len(warnings) > 0 {
+			fmt.Fprintln(w, "\nWarnings:")
+			for _, warn := range warnings {
+				fmt.Fprintf(w, "  - %s\n", warn)
+			}
+		}
 		return nil
 	})
 }
