@@ -54,6 +54,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsEnableCommand())
 	cmd.AddCommand(newFlowsDisableCommand())
 	cmd.AddCommand(newFlowsExportCommand())
+	cmd.AddCommand(newFlowsImportCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
 
 	return cmd
@@ -284,6 +285,66 @@ func runFlowsExport(client *Client, filters []kestra.QueryFilter, outputFile str
 	}
 	fmt.Fprintf(out, "Flows exported to %s (%d bytes)\n", outputFile, len(archive))
 	return nil
+}
+
+func newFlowsImportCommand() *cobra.Command {
+	var failOnError bool
+
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Import flows from a YAML file or ZIP archive.",
+		Long: `Import flows from a single YAML file or a ZIP archive of YAML files,
+such as one produced by 'flows export'.
+
+By default the import continues past individual failures. Use --fail-on-error
+to abort the whole import as soon as one flow fails to import.`,
+		Example: `  # Import flows from an archive
+	  kestractl flows import flows.zip
+
+	  # Import a single flow file, aborting on the first error
+	  kestractl flows import my-flow.yaml --fail-on-error`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runFlowsImport(client, args[0], failOnError, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&failOnError, "fail-on-error", false, "Abort the import as soon as one flow fails")
+
+	return cmd
+}
+
+func runFlowsImport(client *Client, path string, failOnError bool, renderer *Renderer) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open %q: %w", path, err)
+	}
+	defer file.Close()
+
+	imported, _, err := client.API.FlowsAPI.ImportFlows(client.Ctx, client.Tenant).
+		FileUpload(file).
+		FailOnError(failOnError).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(imported, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "IMPORTED")
+		for _, entry := range imported {
+			fmt.Fprintln(w, entry)
+		}
+		fmt.Fprintf(w, "\nTotal flows imported: %d\n", len(imported))
+		return nil
+	})
 }
 
 func newFlowsListCommand() *cobra.Command {

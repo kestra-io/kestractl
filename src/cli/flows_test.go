@@ -181,6 +181,51 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestFlowsImportCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsImportCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsImportCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsImportCommand()
+	_, err := executeCommand(cmd, "flows.zip")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsImportCommand_MissingFile(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return &Client{Tenant: "main"}, nil
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsImportCommand()
+	_, err := executeCommand(cmd, "/nonexistent/path/flows.zip")
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+	if !strings.Contains(err.Error(), "failed to open") {
+		t.Fatalf("expected open error, got: %v", err)
+	}
+}
+
 func TestFlowsExportCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {
