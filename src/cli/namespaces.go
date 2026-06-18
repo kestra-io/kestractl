@@ -22,6 +22,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesInheritedSecretsCommand())
 	cmd.AddCommand(newNamespacesInheritedVariablesCommand())
 	cmd.AddCommand(newNamespacesSearchCommand())
+	cmd.AddCommand(newNamespacesInheritedPluginDefaultsCommand())
 
 	return cmd
 }
@@ -423,6 +424,54 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Namespace, r.Key, r.Value)
 		}
 		fmt.Fprintf(w, "\nTotal variables: %d\n", len(rows))
+		return nil
+	})
+}
+
+func newNamespacesInheritedPluginDefaultsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "plugin-defaults <namespace>",
+		Short: "List inherited plugin defaults for a namespace.",
+		Example: `  kestractl namespaces plugin-defaults my.namespace
+  kestractl namespaces plugin-defaults my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesInheritedPluginDefaults(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runNamespacesInheritedPluginDefaults(client *Client, namespace string, renderer *Renderer) error {
+	defaults, _, err := client.API.NamespacesAPI.
+		InheritedPluginDefaults(client.Ctx, namespace, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(defaults))
+	for i, d := range defaults {
+		result[i] = map[string]any{
+			"type":   d.GetType(),
+			"forced": d.GetForced(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "TYPE\tFORCED")
+		for _, d := range defaults {
+			fmt.Fprintf(w, "%s\t%v\n", d.GetType(), d.GetForced())
+		}
+		fmt.Fprintf(w, "\nTotal plugin defaults: %d\n", len(defaults))
 		return nil
 	})
 }
