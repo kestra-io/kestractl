@@ -61,6 +61,8 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsDeleteBulkCommand())
 	cmd.AddCommand(newFlowsDisableBulkCommand())
 	cmd.AddCommand(newFlowsEnableBulkCommand())
+	cmd.AddCommand(newFlowsConcurrencyLimitsCommand())
+	cmd.AddCommand(newFlowsDeleteRevisionsCommand())
 
 	return cmd
 }
@@ -1406,4 +1408,98 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
 		return nil
 	})
+}
+
+func newFlowsConcurrencyLimitsCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "concurrency-limits",
+		Short: "List all flow concurrency limits.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsConcurrencyLimits(client, renderer)
+		},
+	}
+}
+
+func runFlowsConcurrencyLimits(client *Client, renderer *Renderer) error {
+	resp, _, err := client.API.FlowsAPI.
+		SearchConcurrencyLimits(client.Ctx, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	limits := resp.GetResults()
+	result := make([]map[string]any, len(limits))
+	for i, l := range limits {
+		result[i] = map[string]any{
+			"namespace": l.GetNamespace(),
+			"flow_id":   l.GetFlowId(),
+			"running":   l.GetRunning(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tFLOW_ID\tRUNNING")
+		for _, l := range limits {
+			fmt.Fprintf(w, "%s\t%s\t%d\n",
+				l.GetNamespace(),
+				l.GetFlowId(),
+				l.GetRunning(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d concurrency limit(s)\n", len(limits))
+		return nil
+	})
+}
+
+func newFlowsDeleteRevisionsCommand() *cobra.Command {
+	var revisions []int
+
+	cmd := &cobra.Command{
+		Use:   "delete-revisions <namespace> <flow_id>",
+		Short: "Delete specific revisions of a flow.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsDeleteRevisions(client, args[0], args[1], revisions, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().IntSliceVar(&revisions, "revisions", nil, "Specific revision numbers to delete (defaults to all non-latest revisions)")
+
+	return cmd
+}
+
+func runFlowsDeleteRevisions(client *Client, namespace, id string, revisions []int, out io.Writer) error {
+	req := client.API.FlowsAPI.DeleteRevisions(client.Ctx, namespace, id, client.Tenant)
+	if len(revisions) > 0 {
+		rev32 := make([]int32, len(revisions))
+		for i, r := range revisions {
+			rev32[i] = int32(r)
+		}
+		req = req.Revisions(rev32)
+	}
+	if _, err := req.Execute(); err != nil {
+		return formatSDKError(err)
+	}
+	if len(revisions) > 0 {
+		fmt.Fprintf(out, "Deleted %d revision(s) of flow %s/%s\n", len(revisions), namespace, id)
+	} else {
+		fmt.Fprintf(out, "Deleted old revisions of flow %s/%s\n", namespace, id)
+	}
+	return nil
 }

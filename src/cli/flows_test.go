@@ -844,6 +844,51 @@ func executeCommand(cmd *cobra.Command, args ...string) (string, error) {
 	return buf.String() + stdout, err
 }
 
+func TestFlowsConcurrencyLimitsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsConcurrencyLimitsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsDeleteRevisionsCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsDeleteRevisionsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsDeleteRevisionsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDeleteRevisionsCommand()
+	_, err := executeCommand(cmd, "my.namespace", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func captureStdout(fn func() error) (string, error) {
 	originalStdout := os.Stdout
 	r, w, err := os.Pipe()
