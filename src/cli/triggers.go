@@ -2,6 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -42,6 +44,7 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersPauseBackfillByQueryCommand())
 	cmd.AddCommand(newTriggersUnpauseBackfillByQueryCommand())
 	cmd.AddCommand(newTriggersDeleteBackfillByQueryCommand())
+	cmd.AddCommand(newTriggersExportCSVCommand())
 
 	return cmd
 }
@@ -1222,4 +1225,44 @@ func runTriggersBackfillBulkByQuery(client *Client, op string, renderer *Rendere
 		fmt.Fprintf(w, "Bulk backfill %s: %d trigger(s) scheduled (operationId: %s).\n", op, count, opID)
 		return nil
 	})
+}
+
+func newTriggersExportCSVCommand() *cobra.Command {
+	var outputFile string
+
+	cmd := &cobra.Command{
+		Use:   "export-csv",
+		Short: "Export all triggers as a CSV file.",
+		Long:  "Export triggers as CSV. The output is written to stdout or --output-file.",
+		Example: `  kestractl triggers export-csv
+  kestractl triggers export-csv --output-file triggers.csv`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersExportCSV(client, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "Write CSV to this file instead of stdout")
+	return cmd
+}
+
+func runTriggersExportCSV(client *Client, outputFile string, out io.Writer) error {
+	csv, err := client.Kestra.Triggers().ExportTriggers(client.Ctx, client.Tenant, nil)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if outputFile != "" {
+		if writeErr := os.WriteFile(outputFile, []byte(csv), 0o644); writeErr != nil {
+			return fmt.Errorf("failed to write %q: %w", outputFile, writeErr)
+		}
+		fmt.Fprintf(out, "Triggers exported to %s (%d bytes)\n", outputFile, len(csv))
+		return nil
+	}
+
+	_, err = fmt.Fprint(out, csv)
+	return err
 }
