@@ -29,8 +29,69 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsUnqueueCommand())
 	cmd.AddCommand(newExecutionsDeleteCommand())
 	cmd.AddCommand(newExecutionsReplayCommand())
+	cmd.AddCommand(newExecutionsSetLabelsCommand())
 
 	return cmd
+}
+
+// parseLabels converts "key=value" strings into Kestra Label values.
+func parseLabels(pairs []string) ([]kestra.Label, error) {
+	labels := make([]kestra.Label, 0, len(pairs))
+	for _, p := range pairs {
+		key, value, ok := strings.Cut(p, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid label %q: expected format key=value", p)
+		}
+		labels = append(labels, *kestra.NewLabel(key, value))
+	}
+	return labels, nil
+}
+
+func newExecutionsSetLabelsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set-labels <execution_id> <key=value> [key=value...]",
+		Short: "Set labels on a terminated execution.",
+		Long:  `Set (add or overwrite) labels on a terminated execution.`,
+		Example: `  # Add two labels to a terminated execution
+  kestractl executions set-labels 2TLGqHrXC9k8BczKJe5djX env=prod team=data`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			labels, err := parseLabels(args[1:])
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsSetLabels(client, args[0], labels, renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runExecutionsSetLabels(client *Client, executionID string, labels []kestra.Label, renderer *Renderer) error {
+	_, _, err := client.API.ExecutionsAPI.SetLabelsOnTerminatedExecution(client.Ctx, executionID, client.Tenant).
+		Label(labels).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":     executionID,
+		"labels": len(labels),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Set %d label(s) on execution '%s'\n", len(labels), executionID)
+		return nil
+	})
 }
 
 func newExecutionsReplayCommand() *cobra.Command {
