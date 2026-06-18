@@ -29,6 +29,7 @@ func newKVCommand() *cobra.Command {
 	cmd.AddCommand(newKVUpdateCommand())
 	cmd.AddCommand(newKVGetCommand())
 	cmd.AddCommand(newKVDeleteCommand())
+	cmd.AddCommand(newKVDeleteAllCommand())
 	cmd.AddCommand(newKVListInheritedCommand())
 
 	return cmd
@@ -512,6 +513,57 @@ func tryParseKVTypedValueFromError(err error) *kvTypedValue {
 	}
 
 	return result
+}
+
+func newKVDeleteAllCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-all <namespace> <key>...",
+		Short: "Bulk-delete multiple key-value pairs from a namespace.",
+		Example: `  kestractl kv delete-all my.namespace key1 key2 key3
+  kestractl kv delete-all my.namespace key1 --output json`,
+		Args: cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runKVDeleteAll(client, args[0], args[1:], renderer)
+		},
+	}
+	return cmd
+}
+
+func runKVDeleteAll(client *Client, namespace string, keys []string, renderer *Renderer) error {
+	req := kestra.NewKVControllerApiDeleteBulkRequest()
+	req.SetKeys(keys)
+
+	resp, _, err := client.API.KVAPI.
+		DeleteKeyValues(client.Ctx, namespace, client.Tenant).
+		KVControllerApiDeleteBulkRequest(*req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	deleted := resp.GetKeys()
+	result := map[string]any{
+		"namespace": namespace,
+		"deleted":   deleted,
+		"count":     len(deleted),
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Deleted %d key(s) from namespace %q.\n\n", len(deleted), namespace)
+		fmt.Fprintln(w, "KEY")
+		for _, k := range deleted {
+			fmt.Fprintln(w, k)
+		}
+		return nil
+	})
 }
 
 func newKVListInheritedCommand() *cobra.Command {
