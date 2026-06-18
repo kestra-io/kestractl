@@ -334,3 +334,48 @@ func TestGroupsAutocompleteCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestGroupsListByIdsCommand_NoArgs(t *testing.T) {
+	cmd := newGroupsListByIdsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestGroupsListByIdsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newGroupsListByIdsCommand()
+	_, err := executeCommand(cmd, "g1")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunGroupsListByIds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"g1","name":"admins"},{"id":"g2","name":"developers"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runGroupsListByIds(newTestClient(t, server.URL), []string{"g1", "g2"}, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runGroupsListByIds error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"g1", "admins", "developers", "Showing 2 group(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
