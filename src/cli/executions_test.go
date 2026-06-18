@@ -757,3 +757,79 @@ func TestExecutionsUpdateTaskRunCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestExecutionsBulkKillCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkKillCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsBulkKillCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsBulkKillCommand()
+	_, err := executeCommand(cmd, "id1", "id2")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestExecutionsBulkDeleteCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkDeleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkRestartCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkRestartCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkReplayCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkReplayCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkPauseCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkPauseCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkResumeCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkResumeCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkForceRunCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkForceRunCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}

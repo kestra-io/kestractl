@@ -35,6 +35,13 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsChangeStatusCommand())
 	cmd.AddCommand(newExecutionsSearchByFlowCommand())
 	cmd.AddCommand(newExecutionsUpdateTaskRunCommand())
+	cmd.AddCommand(newExecutionsBulkKillCommand())
+	cmd.AddCommand(newExecutionsBulkDeleteCommand())
+	cmd.AddCommand(newExecutionsBulkRestartCommand())
+	cmd.AddCommand(newExecutionsBulkReplayCommand())
+	cmd.AddCommand(newExecutionsBulkPauseCommand())
+	cmd.AddCommand(newExecutionsBulkResumeCommand())
+	cmd.AddCommand(newExecutionsBulkForceRunCommand())
 
 	return cmd
 }
@@ -1268,6 +1275,109 @@ func runExecutionsSearchByFlow(client *Client, namespace, flowID string, page, s
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d execution(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newExecutionsBulkCommand(use, short, op string) *cobra.Command {
+	return &cobra.Command{
+		Use:     fmt.Sprintf("%s <execution_id>...", use),
+		Short:   short,
+		Example: fmt.Sprintf("  kestractl executions %s id1 id2 id3", use),
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsBulkOp(client, args, op, renderer)
+		},
+	}
+}
+
+func newExecutionsBulkKillCommand() *cobra.Command {
+	return newExecutionsBulkCommand("kill-bulk", "Kill multiple executions.", "kill")
+}
+
+func newExecutionsBulkDeleteCommand() *cobra.Command {
+	return newExecutionsBulkCommand("delete-bulk", "Delete multiple executions.", "delete")
+}
+
+func newExecutionsBulkRestartCommand() *cobra.Command {
+	return newExecutionsBulkCommand("restart-bulk", "Restart multiple executions.", "restart")
+}
+
+func newExecutionsBulkReplayCommand() *cobra.Command {
+	return newExecutionsBulkCommand("replay-bulk", "Replay multiple executions.", "replay")
+}
+
+func newExecutionsBulkPauseCommand() *cobra.Command {
+	return newExecutionsBulkCommand("pause-bulk", "Pause multiple executions.", "pause")
+}
+
+func newExecutionsBulkResumeCommand() *cobra.Command {
+	return newExecutionsBulkCommand("resume-bulk", "Resume multiple executions.", "resume")
+}
+
+func newExecutionsBulkForceRunCommand() *cobra.Command {
+	return newExecutionsBulkCommand("force-run-bulk", "Force-run multiple executions.", "force-run")
+}
+
+func runExecutionsBulkOp(client *Client, ids []string, op string, renderer *Renderer) error {
+	var resp *kestra.BulkResponse
+	var err error
+
+	switch op {
+	case "kill":
+		resp, _, err = client.API.ExecutionsAPI.
+			KillExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	case "delete":
+		resp, _, err = client.API.ExecutionsAPI.
+			DeleteExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	case "restart":
+		resp, _, err = client.API.ExecutionsAPI.
+			RestartExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	case "replay":
+		resp, _, err = client.API.ExecutionsAPI.
+			ReplayExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	case "pause":
+		resp, _, err = client.API.ExecutionsAPI.
+			PauseExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	case "resume":
+		resp, _, err = client.API.ExecutionsAPI.
+			ResumeExecutionsByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	default: // force-run
+		resp, _, err = client.API.ExecutionsAPI.
+			ForceRunByIds(client.Ctx, client.Tenant).
+			RequestBody(ids).Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{
+		"operation": op,
+		"count":     count,
+		"ids":       ids,
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d execution(s) affected.\n", op, count)
 		return nil
 	})
 }
