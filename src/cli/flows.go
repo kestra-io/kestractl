@@ -69,6 +69,8 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsEnableByQueryCommand())
 	cmd.AddCommand(newFlowsExportByIdsCommand())
 	cmd.AddCommand(newFlowsExportByQueryCommand())
+	cmd.AddCommand(newFlowsGenerateGraphFromSourceCommand())
+	cmd.AddCommand(newFlowsTaskCommand())
 
 	return cmd
 }
@@ -1412,6 +1414,136 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newFlowsGenerateGraphFromSourceCommand() *cobra.Command {
+	var filePath string
+	var subflows []string
+
+	cmd := &cobra.Command{
+		Use:   "generate-graph-from-source",
+		Short: "Generate a topology graph from a flow YAML source file.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read file: %w", err)
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsGenerateGraphFromSource(client, string(content), subflows, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the flow YAML file (required)")
+	cmd.Flags().StringArrayVar(&subflows, "subflow", nil, "Subflow tasks to expand (repeatable)")
+
+	return cmd
+}
+
+func runFlowsGenerateGraphFromSource(client *Client, source string, subflows []string, renderer *Renderer) error {
+	req := client.API.FlowsAPI.
+		GenerateFlowGraphFromSource(client.Ctx, client.Tenant).
+		Body(source)
+	if len(subflows) > 0 {
+		req = req.Subflows(subflows)
+	}
+
+	graph, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if graph == nil {
+		graph = kestra.NewFlowGraphWithDefaults()
+	}
+
+	nodes := graph.GetNodes()
+	edges := graph.GetEdges()
+
+	nodeList := make([]map[string]any, len(nodes))
+	for i, n := range nodes {
+		nodeList[i] = map[string]any{"uid": n.GetUid(), "type": n.GetType()}
+	}
+	edgeList := make([]map[string]any, len(edges))
+	for i, e := range edges {
+		edgeList[i] = map[string]any{"source": e.GetSource(), "target": e.GetTarget()}
+	}
+
+	result := map[string]any{"nodes": nodeList, "edges": edgeList}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "UID\tTYPE")
+		for _, n := range nodes {
+			fmt.Fprintf(w, "%s\t%s\n", n.GetUid(), n.GetType())
+		}
+		fmt.Fprintf(w, "\nEdges: %d\n", len(edges))
+		return nil
+	})
+}
+
+func newFlowsTaskCommand() *cobra.Command {
+	var revision int32
+
+	cmd := &cobra.Command{
+		Use:   "task <namespace> <flow_id> <task_id>",
+		Short: "Get a task definition from a flow.",
+		Args:  cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsTask(client, args[0], args[1], args[2], revision, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&revision, "revision", 0, "Flow revision (default: latest)")
+
+	return cmd
+}
+
+func runFlowsTask(client *Client, namespace, flowID, taskID string, revision int32, renderer *Renderer) error {
+	req := client.API.FlowsAPI.TaskFromFlow(client.Ctx, namespace, flowID, taskID, client.Tenant)
+	if revision > 0 {
+		req = req.Revision(revision)
+	}
+
+	task, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":          task.GetId(),
+		"type":        task.GetType(),
+		"description": task.GetDescription(),
+		"version":     task.GetVersion(),
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", task.GetId())
+		fmt.Fprintf(w, "TYPE\t%s\n", task.GetType())
+		fmt.Fprintf(w, "DESCRIPTION\t%s\n", task.GetDescription())
+		fmt.Fprintf(w, "VERSION\t%s\n", task.GetVersion())
 		return nil
 	})
 }
