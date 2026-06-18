@@ -1097,6 +1097,87 @@ func TestFlowsDeleteRevisionsCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestFlowsListByNamespaceCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsListByNamespaceCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsListByNamespaceCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsListByNamespaceCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsListDeprecatedCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsListDeprecatedCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsExpressionsCommand_MissingFile(t *testing.T) {
+	cmd := newFlowsExpressionsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestFlowsExpressionsCommand_ClientError(t *testing.T) {
+	f, err := os.CreateTemp("", "flow-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("id: my-flow\nnamespace: my.ns\n")
+	f.Close()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsExpressionsCommand()
+	_, err = executeCommand(cmd, "--file", f.Name())
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func captureStdout(fn func() error) (string, error) {
 	originalStdout := os.Stdout
 	r, w, err := os.Pipe()
