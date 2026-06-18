@@ -20,6 +20,7 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersUnlockCommand())
 	cmd.AddCommand(newTriggersRestartCommand())
 	cmd.AddCommand(newTriggersUpdateCommand())
+	cmd.AddCommand(newTriggersSearchForFlowCommand())
 
 	return cmd
 }
@@ -270,6 +271,82 @@ func newTriggersUpdateCommand() *cobra.Command {
 
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "Set the trigger as disabled")
 	return cmd
+}
+
+func newTriggersSearchForFlowCommand() *cobra.Command {
+	var page, size int32
+	var query string
+
+	cmd := &cobra.Command{
+		Use:   "search-for-flow <namespace> <flow_id>",
+		Short: "List triggers for a specific flow.",
+		Example: `  kestractl triggers search-for-flow my.namespace my-flow
+  kestractl triggers search-for-flow my.namespace my-flow --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersSearchForFlow(client, args[0], args[1], page, size, query, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 50, "Page size")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter triggers by query string")
+	return cmd
+}
+
+func runTriggersSearchForFlow(client *Client, namespace, flowID string, page, size int32, query string, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	req := client.API.TriggersAPI.
+		SearchTriggersForFlow(client.Ctx, namespace, flowID, client.Tenant).
+		Page(page).
+		Size(size)
+	if query != "" {
+		req = req.Q(query)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	triggers := resp.GetResults()
+	result := make([]map[string]any, len(triggers))
+	for i, t := range triggers {
+		result[i] = map[string]any{
+			"namespace": t.GetNamespace(),
+			"flowId":    t.GetFlowId(),
+			"triggerId": t.GetTriggerId(),
+			"disabled":  t.GetDisabled(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tFLOW\tTRIGGER ID\tDISABLED")
+		for _, t := range triggers {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\n",
+				t.GetNamespace(),
+				t.GetFlowId(),
+				t.GetTriggerId(),
+				t.GetDisabled(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(triggers), page, resp.GetTotal())
+		return nil
+	})
 }
 
 func runTriggersUpdate(client *Client, namespace, flowID, triggerID string, disabled bool, renderer *Renderer) error {
