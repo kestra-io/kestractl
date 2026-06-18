@@ -428,6 +428,76 @@ func TestFlowsDeleteCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestFlowsDeleteBulkCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsDeleteBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestFlowsDeleteBulkCommand_InvalidFormat(t *testing.T) {
+	cmd := newFlowsDeleteBulkCommand()
+	_, err := executeCommand(cmd, "invalid-no-slash")
+	if err == nil {
+		t.Fatal("expected error for invalid flow id format")
+	}
+	if !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected format error, got: %v", err)
+	}
+}
+
+func TestFlowsDeleteBulkCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDeleteBulkCommand()
+	_, err := executeCommand(cmd, "my.ns/flow1", "my.ns/flow2")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsDisableBulkCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsDisableBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestFlowsEnableBulkCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsEnableBulkCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestParseFlowIds(t *testing.T) {
+	ids, err := parseFlowIds([]string{"my.ns/my-flow", "other.ns/other-flow"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 ids, got %d", len(ids))
+	}
+	if ids[0].GetNamespace() != "my.ns" || ids[0].GetId() != "my-flow" {
+		t.Fatalf("unexpected first id: %+v", ids[0])
+	}
+
+	_, err = parseFlowIds([]string{"invalid"})
+	if err == nil {
+		t.Fatal("expected error for invalid format")
+	}
+}
+
 func TestFlowsSearchCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {

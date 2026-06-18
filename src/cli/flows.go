@@ -58,6 +58,9 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsImportCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
 	cmd.AddCommand(newFlowsSearchCommand())
+	cmd.AddCommand(newFlowsDeleteBulkCommand())
+	cmd.AddCommand(newFlowsDisableBulkCommand())
+	cmd.AddCommand(newFlowsEnableBulkCommand())
 
 	return cmd
 }
@@ -1247,6 +1250,92 @@ func replaceNamespaceInYAML(content string, newNamespace string) (string, error)
 	}
 
 	return string(modified), nil
+}
+
+func parseFlowIds(args []string) ([]kestra.IdWithNamespace, error) {
+	ids := make([]kestra.IdWithNamespace, 0, len(args))
+	for _, arg := range args {
+		parts := strings.SplitN(arg, "/", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid flow identifier %q: expected format <namespace>/<id>", arg)
+		}
+		entry := kestra.NewIdWithNamespace()
+		entry.SetNamespace(parts[0])
+		entry.SetId(parts[1])
+		ids = append(ids, *entry)
+	}
+	return ids, nil
+}
+
+func newFlowsBulkOp(use, short, op string) *cobra.Command {
+	return &cobra.Command{
+		Use:     fmt.Sprintf("%s <namespace/id>...", use),
+		Short:   short,
+		Example: fmt.Sprintf("  kestractl flows %s my.ns/flow1 my.ns/flow2", use),
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			ids, err := parseFlowIds(args)
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsBulkOp(client, ids, op, renderer)
+		},
+	}
+}
+
+func newFlowsDeleteBulkCommand() *cobra.Command {
+	return newFlowsBulkOp("delete-bulk", "Delete multiple flows by namespace/id.", "delete")
+}
+
+func newFlowsDisableBulkCommand() *cobra.Command {
+	return newFlowsBulkOp("disable-bulk", "Disable multiple flows by namespace/id.", "disable")
+}
+
+func newFlowsEnableBulkCommand() *cobra.Command {
+	return newFlowsBulkOp("enable-bulk", "Enable multiple flows by namespace/id.", "enable")
+}
+
+func runFlowsBulkOp(client *Client, ids []kestra.IdWithNamespace, op string, renderer *Renderer) error {
+	var resp *kestra.BulkResponse
+	var err error
+
+	switch op {
+	case "delete":
+		resp, _, err = client.API.FlowsAPI.
+			DeleteFlowsByIds(client.Ctx, client.Tenant).
+			IdWithNamespace(ids).Execute()
+	case "disable":
+		resp, _, err = client.API.FlowsAPI.
+			DisableFlowsByIds(client.Ctx, client.Tenant).
+			IdWithNamespace(ids).Execute()
+	default: // enable
+		resp, _, err = client.API.FlowsAPI.
+			EnableFlowsByIds(client.Ctx, client.Tenant).
+			IdWithNamespace(ids).Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"operation": op, "count": count}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Bulk %s: %d flow(s) affected.\n", op, count)
+		return nil
+	})
 }
 
 func newFlowsSearchCommand() *cobra.Command {
