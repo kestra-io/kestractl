@@ -878,6 +878,38 @@ func TestExecutionsBulkUnqueueCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestExecutionsReplayWithInputsCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsReplayWithInputsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsReplayWithInputsCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsReplayWithInputsCommand()
+	_, err := executeCommand(cmd, "exec-id-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestExecutionsDownloadFileCommand_NoArgs(t *testing.T) {
 	cmd := newExecutionsDownloadFileCommand()
 	_, err := executeCommand(cmd)
