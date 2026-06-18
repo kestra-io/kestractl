@@ -253,3 +253,52 @@ func TestRunInvitationsDelete_CancelMakesNoRequest(t *testing.T) {
 		t.Errorf("expected cancellation message, got:\n%s", buf.String())
 	}
 }
+
+func TestInvitationsListByEmailCommand_NoArgs(t *testing.T) {
+	cmd := newInvitationsListByEmailCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunInvitationsListByEmail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id":"i1","email":"jane@example.com","status":"PENDING"},
+			{"id":"i2","email":"jane@example.com","status":"ACCEPTED"}
+		]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runInvitationsListByEmail(newTestClient(t, server.URL), "jane@example.com", newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runInvitationsListByEmail error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"i1", "i2", "jane@example.com", "PENDING", "ACCEPTED", "Total invitations: 2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunInvitationsListByEmail_Empty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runInvitationsListByEmail(newTestClient(t, server.URL), "nobody@example.com", newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runInvitationsListByEmail error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Total invitations: 0") {
+		t.Errorf("expected zero count, got:\n%s", buf.String())
+	}
+}

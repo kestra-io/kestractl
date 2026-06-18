@@ -22,6 +22,7 @@ Enterprise Edition.`,
 	}
 
 	cmd.AddCommand(newInvitationsListCommand())
+	cmd.AddCommand(newInvitationsListByEmailCommand())
 	cmd.AddCommand(newInvitationsGetCommand())
 	cmd.AddCommand(newInvitationsCreateCommand())
 	cmd.AddCommand(newInvitationsDeleteCommand())
@@ -113,6 +114,50 @@ func runInvitationsList(client *Client, email, status string, page, size int32, 
 				inv.GetSuperAdmin())
 		}
 		fmt.Fprintf(w, "\nTotal invitations: %d\n", resp.Total)
+		return nil
+	})
+}
+
+func newInvitationsListByEmailCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list-by-email <email>",
+		Short: "List all invitations for an email address.",
+		Long:  "Retrieve every invitation sent to the given email address, regardless of status.",
+		Example: `  kestractl invitations list-by-email jane@example.com
+  kestractl invitations list-by-email jane@example.com --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			return runInvitationsListByEmail(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runInvitationsListByEmail(client *Client, email string, renderer *Renderer) error {
+	results, err := client.Kestra.Invitations().ListInvitationsByEmail(client.Ctx, email, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if results == nil {
+		results = []kestra.IAMInvitationControllerApiInvitationDetail{}
+	}
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tEMAIL\tSTATUS\tSENT AT\tEXPIRED AT\tSUPERADMIN")
+		for _, inv := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\n",
+				inv.GetId(), inv.GetEmail(), inv.GetStatus(),
+				formatOptionalTime(inv.GetSentAt()), formatOptionalTime(inv.GetExpiredAt()),
+				inv.GetSuperAdmin())
+		}
+		fmt.Fprintf(w, "\nTotal invitations: %d\n", len(results))
 		return nil
 	})
 }
