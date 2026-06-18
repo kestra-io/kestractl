@@ -21,6 +21,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesUpdateCommand())
 	cmd.AddCommand(newNamespacesInheritedSecretsCommand())
 	cmd.AddCommand(newNamespacesInheritedVariablesCommand())
+	cmd.AddCommand(newNamespacesSearchCommand())
 
 	return cmd
 }
@@ -422,6 +423,83 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 			fmt.Fprintf(w, "%s\t%s\t%s\n", r.Namespace, r.Key, r.Value)
 		}
 		fmt.Fprintf(w, "\nTotal variables: %d\n", len(rows))
+		return nil
+	})
+}
+
+func newNamespacesSearchCommand() *cobra.Command {
+	var page, size int32
+	var query string
+	var existing bool
+
+	cmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search for namespaces.",
+		Example: `  kestractl namespaces search
+  kestractl namespaces search --query my.namespace
+  kestractl namespaces search --existing --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesSearch(client, page, size, query, existing, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 50, "Page size")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter namespaces by query string")
+	cmd.Flags().BoolVar(&existing, "existing", false, "Return only existing namespaces")
+	return cmd
+}
+
+func runNamespacesSearch(client *Client, page, size int32, query string, existing bool, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	req := client.API.NamespacesAPI.
+		SearchNamespaces(client.Ctx, client.Tenant).
+		Page(page).
+		Size(size).
+		Existing(existing)
+	if query != "" {
+		req = req.Q(query)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	namespaces := resp.GetResults()
+	result := make([]map[string]any, len(namespaces))
+	for i, ns := range namespaces {
+		result[i] = map[string]any{
+			"id":          ns.GetId(),
+			"description": ns.GetDescription(),
+			"deleted":     ns.GetDeleted(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tDESCRIPTION\tDELETED")
+		for _, ns := range namespaces {
+			fmt.Fprintf(w, "%s\t%s\t%v\n",
+				ns.GetId(),
+				ns.GetDescription(),
+				ns.GetDeleted(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d namespace(s) (page %d, total %d)\n", len(namespaces), page, resp.GetTotal())
 		return nil
 	})
 }
