@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,6 +73,9 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsGenerateGraphFromSourceCommand())
 	cmd.AddCommand(newFlowsTaskCommand())
 	cmd.AddCommand(newFlowsBulkUpdateCommand())
+	cmd.AddCommand(newFlowsListByNamespaceCommand())
+	cmd.AddCommand(newFlowsListDeprecatedCommand())
+	cmd.AddCommand(newFlowsExpressionsCommand())
 
 	return cmd
 }
@@ -1961,4 +1965,188 @@ func runFlowsDeleteRevisions(client *Client, namespace, id string, revisions []i
 		fmt.Fprintf(out, "Deleted old revisions of flow %s/%s\n", namespace, id)
 	}
 	return nil
+}
+
+func newFlowsListByNamespaceCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list-by-namespace <namespace>",
+		Short: "List all flows in a namespace (latest revision only).",
+		Example: `  kestractl flows list-by-namespace my.namespace
+  kestractl flows list-by-namespace my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsListByNamespace(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runFlowsListByNamespace(client *Client, namespace string, renderer *Renderer) error {
+	flows, err := client.Kestra.Flows().ListFlowsByNamespace(client.Ctx, namespace, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(flows))
+	for i, f := range flows {
+		result[i] = map[string]any{
+			"id":        f.GetId(),
+			"namespace": f.GetNamespace(),
+			"revision":  f.GetRevision(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tREVISION")
+		for _, f := range flows {
+			fmt.Fprintf(w, "%s\t%s\t%d\n",
+				f.GetId(),
+				f.GetNamespace(),
+				f.GetRevision(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d flow(s)\n", len(flows))
+		return nil
+	})
+}
+
+func newFlowsListDeprecatedCommand() *cobra.Command {
+	var namespace string
+
+	cmd := &cobra.Command{
+		Use:   "list-deprecated",
+		Short: "List flows that contain deprecated tasks.",
+		Example: `  kestractl flows list-deprecated
+  kestractl flows list-deprecated --namespace my.namespace
+  kestractl flows list-deprecated --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsListDeprecated(client, namespace, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&namespace, "namespace", "", "Filter by namespace")
+	return cmd
+}
+
+func runFlowsListDeprecated(client *Client, namespace string, renderer *Renderer) error {
+	var ns *string
+	if namespace != "" {
+		ns = &namespace
+	}
+
+	flows, err := client.Kestra.Flows().ListDeprecated(client.Ctx, client.Tenant, ns)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(flows))
+	for i, f := range flows {
+		tasks := make([]string, len(f.GetDeprecatedTasks()))
+		for j, t := range f.GetDeprecatedTasks() {
+			tasks[j] = t.GetTaskId()
+		}
+		result[i] = map[string]any{
+			"namespace":       f.GetNamespace(),
+			"flowId":          f.GetFlowId(),
+			"revision":        f.GetRevision(),
+			"deprecatedTasks": strings.Join(tasks, ", "),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tFLOW\tREVISION\tDEPRECATED TASKS")
+		for _, f := range flows {
+			tasks := make([]string, len(f.GetDeprecatedTasks()))
+			for j, t := range f.GetDeprecatedTasks() {
+				tasks[j] = t.GetTaskId()
+			}
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
+				f.GetNamespace(),
+				f.GetFlowId(),
+				f.GetRevision(),
+				strings.Join(tasks, ", "),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d flow(s) with deprecated tasks\n", len(flows))
+		return nil
+	})
+}
+
+func newFlowsExpressionsCommand() *cobra.Command {
+	var filePath, taskID string
+
+	cmd := &cobra.Command{
+		Use:   "expressions",
+		Short: "Get the expression context for a flow.",
+		Example: `  kestractl flows expressions --file my-flow.yaml
+  kestractl flows expressions --file my-flow.yaml --task-id my-task
+  kestractl flows expressions --file my-flow.yaml --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsExpressions(client, filePath, taskID, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the flow YAML file (required)")
+	cmd.Flags().StringVar(&taskID, "task-id", "", "Optional task ID to scope the expression context")
+	return cmd
+}
+
+func runFlowsExpressions(client *Client, path string, taskID string, renderer *Renderer) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var taskIDPtr *string
+	if taskID != "" {
+		taskIDPtr = &taskID
+	}
+
+	result, err := client.Kestra.Flows().Expressions(client.Ctx, client.Tenant, string(content), taskIDPtr)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	// Marshal the complex nested structure for the renderer.
+	data, marshalErr := json.Marshal(result)
+	if marshalErr != nil {
+		return fmt.Errorf("failed to marshal result: %w", marshalErr)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return renderer.Render(m, func(w *tabwriter.Writer) error {
+		pretty, _ := json.MarshalIndent(m, "", "  ")
+		fmt.Fprintln(w, string(pretty))
+		return nil
+	})
 }
