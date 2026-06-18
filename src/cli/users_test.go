@@ -628,3 +628,40 @@ func TestRunUsersDeleteAuthMethod(t *testing.T) {
 		t.Errorf("expected 'removed' message, got:\n%s", buf.String())
 	}
 }
+
+func TestUsersChangeMyPasswordCommand_RequiredFlags(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersChangeMyPasswordCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when required flags are missing")
+	}
+	if !strings.Contains(err.Error(), "old-password") && !strings.Contains(err.Error(), "new-password") {
+		t.Fatalf("expected required-flag error, got: %v", err)
+	}
+}
+
+func TestRunUsersChangeMyPassword(t *testing.T) {
+	var gotMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersChangeMyPassword(newTestClient(t, server.URL), "oldpass", "newpass", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersChangeMyPassword error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", gotMethod)
+	}
+	if !strings.Contains(buf.String(), "updated") {
+		t.Errorf("expected 'updated' message, got:\n%s", buf.String())
+	}
+}
