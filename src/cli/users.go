@@ -30,6 +30,7 @@ Users are instance-level resources. Managing users requires Kestra Enterprise Ed
 	cmd.AddCommand(newUsersSetGroupsCommand())
 	cmd.AddCommand(newUsersSetPasswordCommand())
 	cmd.AddCommand(newUsersTokensCommand())
+	cmd.AddCommand(newUsersAutocompleteCommand())
 
 	return cmd
 }
@@ -694,4 +695,67 @@ func confirm(in io.Reader, w io.Writer, prompt string) (bool, error) {
 	}
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes", nil
+}
+
+func newUsersAutocompleteCommand() *cobra.Command {
+	var (
+		query        string
+		existingOnly bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "autocomplete",
+		Short: "List users for autocomplete.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersAutocomplete(client, query, existingOnly, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Autocomplete search string")
+	cmd.Flags().BoolVar(&existingOnly, "existing-only", false, "Return only existing users")
+
+	return cmd
+}
+
+func runUsersAutocomplete(client *Client, query string, existingOnly bool, renderer *Renderer) error {
+	ac := kestra.NewIAMTenantAccessControllerUserApiAutocomplete()
+	if query != "" {
+		ac.SetQ(query)
+	}
+	if existingOnly {
+		ac.SetExistingOnly(existingOnly)
+	}
+
+	users, _, err := client.API.UsersAPI.
+		AutocompleteUsers(client.Ctx, client.Tenant).
+		IAMTenantAccessControllerUserApiAutocomplete(*ac).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(users))
+	for i, u := range users {
+		result[i] = map[string]any{"id": u.GetId(), "username": u.GetUsername(), "displayName": u.GetDisplayName()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tUSERNAME\tDISPLAY NAME")
+		for _, u := range users {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", u.GetId(), u.GetUsername(), u.GetDisplayName())
+		}
+		fmt.Fprintf(w, "\nShowing %d user(s)\n", len(users))
+		return nil
+	})
 }
