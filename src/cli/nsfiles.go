@@ -29,6 +29,7 @@ func newNamespaceFilesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespaceFilesUploadCommand())
 	cmd.AddCommand(newNamespaceFilesDeleteCommand())
 	cmd.AddCommand(newNamespaceFilesSearchCommand())
+	cmd.AddCommand(newNamespaceFilesMoveCommand())
 
 	return cmd
 }
@@ -917,6 +918,45 @@ func newNamespaceFilesSearchCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&query, "query", "q", "", "Search query to filter files")
 	return cmd
+}
+
+func newNamespaceFilesMoveCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "move <namespace> <from> <to>",
+		Short: "Move or rename a file or directory in a namespace.",
+		Example: `  kestractl nsfiles move my.namespace workflows/old-name.yml workflows/new-name.yml
+  kestractl nsfiles move my.namespace old-dir/ new-dir/`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespaceFilesMove(client, args[0], args[1], args[2], renderer)
+		},
+	}
+	return cmd
+}
+
+func runNamespaceFilesMove(client *Client, namespace, from, to string, renderer *Renderer) error {
+	_, err := client.API.FilesAPI.
+		MoveFileDirectory(client.Ctx, namespace, client.Tenant).
+		From(from).
+		To(to).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{"namespace": namespace, "from": from, "to": to}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Moved '%s' → '%s' in namespace '%s'.\n", from, to, namespace)
+		return nil
+	})
 }
 
 func runNamespaceFilesSearch(client *Client, namespace, query string, renderer *Renderer) error {
