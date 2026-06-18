@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -302,5 +303,46 @@ func TestRunRolesDelete_CancelMakesNoRequest(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "Cancelled") {
 		t.Errorf("expected cancellation message, got:\n%s", buf.String())
+	}
+}
+
+func TestRolesAutocompleteCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newRolesAutocompleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunRolesAutocomplete(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"r1","name":"admin"},{"id":"r2","name":"editor"}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runRolesAutocomplete(newTestClient(t, server.URL), "", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runRolesAutocomplete error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"r1", "admin", "editor", "Showing 2 role(s)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }
