@@ -123,6 +123,28 @@ func TestTestSuitesRunCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestTestSuitesCreateCommand_MissingFile(t *testing.T) {
+	cmd := newTestSuitesCreateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "file") {
+		t.Fatalf("expected file flag error, got: %v", err)
+	}
+}
+
+func TestTestSuitesUpdateCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesUpdateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
 func TestTestSuitesCommand_Structure(t *testing.T) {
 	cmd := newTestSuitesCommand()
 	if cmd.Use != "test-suites" {
