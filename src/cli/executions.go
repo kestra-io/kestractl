@@ -48,6 +48,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsDeleteByQueryCommand())
 	cmd.AddCommand(newExecutionsUnqueueByQueryCommand())
 	cmd.AddCommand(newExecutionsSetLabelsByQueryCommand())
+	cmd.AddCommand(newExecutionsUpdateStatusByQueryCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1497,11 +1498,68 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	})
 }
 
+func newExecutionsUpdateStatusByQueryCommand() *cobra.Command {
+	var newStatus string
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:   "update-status-by-query",
+		Short: "Change state of all executions matching the server-side query.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if newStatus == "" {
+				return fmt.Errorf("--new-status is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsUpdateStatusByQuery(client, newStatus, filters, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&newStatus, "new-status", "", "New status for matched executions (required)")
+	addByQueryFilterFlags(cmd, &filterFlags)
+
+	return cmd
+}
+
+func runExecutionsUpdateStatusByQuery(client *Client, newStatus string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	resp, _, err := client.API.ExecutionsAPI.
+		UpdateExecutionsStatusByQuery(client.Ctx, client.Tenant).
+		NewStatus(kestra.StateType(strings.ToUpper(newStatus))).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"count": count, "new_status": newStatus}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Updated status to %s for %d execution(s).\n", strings.ToUpper(newStatus), count)
+		return nil
+	})
+}
+
 func newExecutionsSetLabelsByQueryCommand() *cobra.Command {
-	return &cobra.Command{
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
 		Use:     "set-labels-by-query <key=value> [key=value...]",
 		Short:   "Set labels on all terminated executions matching the server-side query.",
-		Example: "  kestractl executions set-labels-by-query env=prod team=data",
+		Example: "  kestractl executions set-labels-by-query env=prod team=data --namespace my.ns",
 		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
