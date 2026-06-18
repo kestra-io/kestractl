@@ -180,6 +180,52 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestFlowsDeleteCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsDeleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsDeleteCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDeleteCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "--yes")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestFlowsDeleteCommand_CancelOnDecline(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return &Client{Tenant: "main"}, nil
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsDeleteCommand()
+	cmd.SetIn(strings.NewReader("n\n"))
+	out, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "Cancelled") {
+		t.Fatalf("expected cancellation output, got: %s", out)
+	}
+}
+
 func TestCollectFlowFiles(t *testing.T) {
 	testDir := "testdata/deploy_folder_test"
 

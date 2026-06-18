@@ -49,8 +49,66 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsGetCommand())
 	cmd.AddCommand(newFlowsDeployCommand())
 	cmd.AddCommand(newFlowsValidateCommand())
+	cmd.AddCommand(newFlowsDeleteCommand())
 
 	return cmd
+}
+
+func newFlowsDeleteCommand() *cobra.Command {
+	var skipConfirm bool
+
+	cmd := &cobra.Command{
+		Use:   "delete <namespace> <flow_id>",
+		Short: "Delete a flow.",
+		Long: `Delete a flow from a namespace.
+
+Prompts for confirmation unless --yes is provided.`,
+		Example: `  # Delete a flow (with confirmation)
+	  kestractl flows delete my.namespace my-flow
+
+	  # Delete without confirmation
+	  kestractl flows delete my.namespace my-flow --yes`,
+		Aliases: []string{"rm", "del"},
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runFlowsDelete(client, args[0], args[1], skipConfirm, cmd.InOrStdin(), renderer)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip the confirmation prompt")
+
+	return cmd
+}
+
+func runFlowsDelete(client *Client, namespace, flowID string, skipConfirm bool, in io.Reader, renderer *Renderer) error {
+	if !skipConfirm {
+		confirmed, err := confirm(in, os.Stderr,
+			fmt.Sprintf("Are you sure you want to delete flow '%s' in namespace '%s'? [y/N]: ", flowID, namespace))
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			return renderStatus(renderer, "Cancelled.",
+				map[string]any{"namespace": namespace, "flowId": flowID, "status": "cancelled"})
+		}
+	}
+
+	_, err := client.API.FlowsAPI.DeleteFlow(client.Ctx, namespace, flowID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderStatus(renderer, fmt.Sprintf("Flow '%s' deleted from namespace '%s'.", flowID, namespace),
+		map[string]any{"namespace": namespace, "flowId": flowID, "status": "deleted"})
 }
 
 func newFlowsListCommand() *cobra.Command {
