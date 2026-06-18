@@ -30,8 +30,99 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsDeleteCommand())
 	cmd.AddCommand(newExecutionsReplayCommand())
 	cmd.AddCommand(newExecutionsSetLabelsCommand())
+	cmd.AddCommand(newExecutionsFlowGraphCommand())
 
 	return cmd
+}
+
+func newExecutionsFlowGraphCommand() *cobra.Command {
+	var subflows []string
+
+	cmd := &cobra.Command{
+		Use:   "flow-graph <execution_id>",
+		Short: "Show the topology graph of an execution.",
+		Long:  `Show the nodes and edges of the flow graph for a given execution.`,
+		Example: `  # Print the execution graph
+  kestractl executions flow-graph 2TLGqHrXC9k8BczKJe5djX
+
+  # Expand specific subflows
+  kestractl executions flow-graph 2TLGqHrXC9k8BczKJe5djX --subflow my.ns.subflow`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsFlowGraph(client, args[0], subflows, renderer)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&subflows, "subflow", nil, "Subflow to expand (repeatable)")
+
+	return cmd
+}
+
+func runExecutionsFlowGraph(client *Client, executionID string, subflows []string, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.ExecutionFlowGraph(client.Ctx, executionID, client.Tenant)
+	if len(subflows) > 0 {
+		req = req.Subflows(subflows)
+	}
+	graph, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if graph == nil {
+		graph = kestra.NewFlowGraphWithDefaults()
+	}
+
+	nodes := graph.GetNodes()
+	edges := graph.GetEdges()
+
+	if renderer.IsJSON() {
+		nodeList := make([]map[string]any, len(nodes))
+		for i, n := range nodes {
+			nodeList[i] = map[string]any{
+				"uid":  n.GetUid(),
+				"type": n.GetType(),
+			}
+		}
+		edgeList := make([]map[string]any, len(edges))
+		for i, e := range edges {
+			edgeList[i] = map[string]any{
+				"source":   e.GetSource(),
+				"target":   e.GetTarget(),
+				"relation": edgeRelationValue(e),
+			}
+		}
+		return renderer.RenderJSON(map[string]any{
+			"nodes":     nodeList,
+			"edges":     edgeList,
+			"flowables": graph.GetFlowables(),
+		})
+	}
+
+	return renderer.Render(edges, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "SOURCE\tTARGET\tRELATION")
+		for _, e := range edges {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", e.GetSource(), e.GetTarget(), edgeRelationValue(e))
+		}
+		fmt.Fprintf(w, "\n%d node(s), %d edge(s)\n", len(nodes), len(edges))
+		return nil
+	})
+}
+
+// edgeRelationValue extracts the relation value of a flow graph edge, if any.
+func edgeRelationValue(e kestra.FlowGraphEdge) string {
+	rel := e.GetRelation()
+	if rel.Value != nil {
+		return *rel.Value
+	}
+	return ""
 }
 
 // parseLabels converts "key=value" strings into Kestra Label values.
