@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -327,5 +331,66 @@ func TestTestSuitesRunByQueryCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTestSuitesGetResultCommand_NoArgs(t *testing.T) {
+	cmd := newTestSuitesGetResultCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTestSuitesGetResultCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTestSuitesGetResultCommand()
+	_, err := executeCommand(cmd, "result-id-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunTestSuitesGetResult(t *testing.T) {
+	payload := map[string]any{
+		"id":          "result-id-123",
+		"testSuiteId": "suite-id-abc",
+		"namespace":   "my.namespace",
+		"flowId":      "my-flow",
+		"state":       "SUCCESS",
+		"startDate":   "2025-01-01T10:00:00Z",
+		"endDate":     "2025-01-01T10:05:00Z",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(payload)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runTestSuitesGetResult(newTestClient(t, server.URL), "result-id-123", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runTestSuitesGetResult error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"result-id-123", "suite-id-abc", "my.namespace", "my-flow", "SUCCESS"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
 	}
 }

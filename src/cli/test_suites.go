@@ -30,6 +30,7 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesSearchResultsCommand())
 	cmd.AddCommand(newTestSuitesLastResultCommand())
 	cmd.AddCommand(newTestSuitesRunByQueryCommand())
+	cmd.AddCommand(newTestSuitesGetResultCommand())
 
 	return cmd
 }
@@ -739,6 +740,53 @@ func runTestSuitesRunByQuery(client *Client, namespace, flowID string, includeCh
 		"numberOfTestCasesToBeRun":  caseCount,
 	}, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Queued %d test suite(s) with %d test case(s) to run.\n", count, caseCount)
+		return nil
+	})
+}
+
+func newTestSuitesGetResultCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get-result <result_id>",
+		Short: "Get a specific test suite run result.",
+		Long:  "Retrieve a test suite run result by its result ID.",
+		Example: `  kestractl test-suites get-result 01JXA1B2C3D4E5F6G7H8I9J0K1
+  kestractl test-suites get-result 01JXA1B2C3D4E5F6G7H8I9J0K1 --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesGetResult(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTestSuitesGetResult(client *Client, id string, renderer *Renderer) error {
+	result, err := client.Kestra.TestSuites().TestResult(client.Ctx, id, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Test Suite Run Result")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "ID:\t%s\n", result.GetId())
+		fmt.Fprintf(w, "Test Suite ID:\t%s\n", result.GetTestSuiteId())
+		fmt.Fprintf(w, "Namespace:\t%s\n", result.GetNamespace())
+		fmt.Fprintf(w, "Flow ID:\t%s\n", result.GetFlowId())
+		fmt.Fprintf(w, "State:\t%v\n", result.GetState())
+		if sd := result.GetStartDate(); !sd.IsZero() {
+			fmt.Fprintf(w, "Start Date:\t%s\n", sd.Format("2006-01-02T15:04:05Z"))
+		}
+		if ed := result.GetEndDate(); !ed.IsZero() {
+			fmt.Fprintf(w, "End Date:\t%s\n", ed.Format("2006-01-02T15:04:05Z"))
+		}
 		return nil
 	})
 }
