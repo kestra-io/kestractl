@@ -25,8 +25,46 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsRestartCommand())
 	cmd.AddCommand(newExecutionsResumeCommand())
 	cmd.AddCommand(newExecutionsPauseCommand())
+	cmd.AddCommand(newExecutionsForceRunCommand())
 
 	return cmd
+}
+
+func newExecutionsForceRunCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "force-run <execution_id>",
+		Short: "Force-run a queued or paused execution.",
+		Long:  `Force an execution to run immediately, bypassing queue or concurrency limits.`,
+		Example: `  # Force-run an execution
+	  kestractl executions force-run 2TLGqHrXC9k8BczKJe5djX`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsForceRun(client, args[0], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runExecutionsForceRun(client *Client, executionID string, renderer *Renderer) error {
+	exec, _, err := client.API.ExecutionsAPI.ForceRunExecution(client.Ctx, executionID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if exec == nil {
+		return fmt.Errorf("force-run returned no execution")
+	}
+
+	return renderExecutionResult(renderer, exec, fmt.Sprintf("Execution '%s' force-run requested", executionID))
 }
 
 func newExecutionsPauseCommand() *cobra.Command {
