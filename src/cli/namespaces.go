@@ -19,6 +19,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesCreateCommand())
 	cmd.AddCommand(newNamespacesDeleteCommand())
 	cmd.AddCommand(newNamespacesUpdateCommand())
+	cmd.AddCommand(newNamespacesInheritedSecretsCommand())
 
 	return cmd
 }
@@ -307,6 +308,63 @@ func runNamespacesUpdate(client *Client, id, description string, renderer *Rende
 			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
 		}
 		fmt.Fprintln(w, "\nNamespace updated.")
+		return nil
+	})
+}
+
+func newNamespacesInheritedSecretsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "inherited-secrets <namespace_id>",
+		Short: "List inherited secret keys for a namespace.",
+		Example: `  kestractl namespaces inherited-secrets my.namespace
+  kestractl namespaces inherited-secrets my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespacesInheritedSecrets(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runNamespacesInheritedSecrets(client *Client, namespace string, renderer *Renderer) error {
+	resp, _, err := client.API.NamespacesAPI.InheritedSecrets(client.Ctx, namespace, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	type row struct {
+		Namespace string `json:"namespace"`
+		Key       string `json:"key"`
+	}
+
+	var rows []row
+	if resp != nil {
+		for ns, keys := range *resp {
+			for _, k := range keys {
+				rows = append(rows, row{Namespace: ns, Key: k})
+			}
+		}
+	}
+
+	jsonRows := make([]map[string]any, len(rows))
+	for i, r := range rows {
+		jsonRows[i] = map[string]any{"namespace": r.Namespace, "key": r.Key}
+	}
+
+	return renderer.Render(jsonRows, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAMESPACE\tKEY")
+		for _, r := range rows {
+			fmt.Fprintf(w, "%s\t%s\n", r.Namespace, r.Key)
+		}
+		fmt.Fprintf(w, "\nTotal secret keys: %d\n", len(rows))
 		return nil
 	})
 }
