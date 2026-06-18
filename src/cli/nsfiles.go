@@ -30,6 +30,7 @@ func newNamespaceFilesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespaceFilesDeleteCommand())
 	cmd.AddCommand(newNamespaceFilesSearchCommand())
 	cmd.AddCommand(newNamespaceFilesMoveCommand())
+	cmd.AddCommand(newNamespaceFilesRevisionsCommand())
 
 	return cmd
 }
@@ -918,6 +919,57 @@ func newNamespaceFilesSearchCommand() *cobra.Command {
 
 	cmd.Flags().StringVarP(&query, "query", "q", "", "Search query to filter files")
 	return cmd
+}
+
+func newNamespaceFilesRevisionsCommand() *cobra.Command {
+	var path string
+
+	cmd := &cobra.Command{
+		Use:   "revisions <namespace>",
+		Short: "List revisions of a file in a namespace.",
+		Example: `  kestractl nsfiles revisions my.namespace --path workflows/my-flow.yml
+  kestractl nsfiles revisions my.namespace --path workflows/my-flow.yml --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runNamespaceFilesRevisions(client, args[0], path, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&path, "path", "p", "", "Path of the file to list revisions for (required)")
+	_ = cmd.MarkFlagRequired("path")
+	return cmd
+}
+
+func runNamespaceFilesRevisions(client *Client, namespace, path string, renderer *Renderer) error {
+	revisions, _, err := client.API.FilesAPI.
+		FileRevisions(client.Ctx, namespace, client.Tenant).
+		Path(path).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(revisions))
+	for i, r := range revisions {
+		result[i] = map[string]any{"revision": r.GetRevision()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "REVISION")
+		for _, r := range revisions {
+			fmt.Fprintf(w, "%d\n", r.GetRevision())
+		}
+		fmt.Fprintf(w, "\nTotal revisions: %d\n", len(revisions))
+		return nil
+	})
 }
 
 func newNamespaceFilesMoveCommand() *cobra.Command {
