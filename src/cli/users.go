@@ -31,6 +31,8 @@ Users are instance-level resources. Managing users requires Kestra Enterprise Ed
 	cmd.AddCommand(newUsersSetPasswordCommand())
 	cmd.AddCommand(newUsersTokensCommand())
 	cmd.AddCommand(newUsersAutocompleteCommand())
+	cmd.AddCommand(newUsersImpersonateCommand())
+	cmd.AddCommand(newUsersRevokeRefreshTokenCommand())
 
 	return cmd
 }
@@ -758,4 +760,80 @@ func runUsersAutocomplete(client *Client, query string, existingOnly bool, rende
 		fmt.Fprintf(w, "\nShowing %d user(s)\n", len(users))
 		return nil
 	})
+}
+
+func newUsersImpersonateCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "impersonate <user_id>",
+		Short: "Generate an impersonation token for a user.",
+		Long: `Generate a short-lived token that lets you act as another user.
+
+The response contains a JWT token. Use it in place of your regular credentials
+to perform actions on behalf of the specified user. Requires superadmin access.`,
+		Example: `  kestractl users impersonate <user_id>
+  kestractl users impersonate <user_id> --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersImpersonate(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runUsersImpersonate(client *Client, id string, renderer *Renderer) error {
+	resp, err := client.Kestra.Users().Impersonate(client.Ctx, id)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(resp, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "Impersonation token generated.")
+		fmt.Fprintln(w)
+		for k, v := range resp {
+			fmt.Fprintf(w, "%s:\t%v\n", k, v)
+		}
+		return nil
+	})
+}
+
+func newUsersRevokeRefreshTokenCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "revoke-refresh-token <user_id>",
+		Short: "Revoke all refresh tokens for a user.",
+		Long: `Invalidate all active refresh tokens for the given user, forcing them to log in again.
+
+This is a superadmin-only operation.`,
+		Example: `  kestractl users revoke-refresh-token <user_id>`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersRevokeRefreshToken(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runUsersRevokeRefreshToken(client *Client, id string, renderer *Renderer) error {
+	if err := client.Kestra.Users().DeleteRefreshToken(client.Ctx, id); err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderStatus(renderer,
+		fmt.Sprintf("Refresh tokens revoked for user '%s'.", id),
+		map[string]any{"id": id, "status": "revoked"})
 }

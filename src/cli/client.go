@@ -175,6 +175,15 @@ func formatSDKError(err error) error {
 		}
 		return formatErrorBody(apiErr.Body, errMsg)
 	}
+	// The hand-written client decodes successful (2xx/3xx) responses as JSON.
+	// When the server answers with HTML instead — typically a login page after
+	// an auth redirect — json.Unmarshal fails with a syntax error like
+	// "invalid character '<'". Surface a clear message rather than the raw
+	// parser error.
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return fmt.Errorf("API request failed: received a non-JSON response (likely an HTML page). Check your authentication and permissions for this operation")
+	}
 	return err
 }
 

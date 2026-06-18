@@ -120,6 +120,19 @@ func TestFormatSDKError_ApiError(t *testing.T) {
 		}
 	})
 
+	t.Run("json syntax error from html response", func(t *testing.T) {
+		// Mimic the hand-written client decoding an HTML page as JSON.
+		var htmlAsJSON map[string]any
+		jsonErr := json.Unmarshal([]byte("<html><body>login</body></html>"), &htmlAsJSON)
+		if jsonErr == nil {
+			t.Fatal("expected json unmarshal to fail")
+		}
+		err := formatSDKError(jsonErr)
+		if err == nil || !strings.Contains(err.Error(), "non-JSON response") {
+			t.Fatalf("expected non-JSON hint, got: %v", err)
+		}
+	})
+
 	t.Run("unrelated error passes through", func(t *testing.T) {
 		orig := errors.New("plain")
 		if got := formatSDKError(orig); got != orig {
