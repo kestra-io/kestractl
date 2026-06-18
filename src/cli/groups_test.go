@@ -379,3 +379,52 @@ func TestRunGroupsListByIds(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupsSetMembershipCommand_NoArgs(t *testing.T) {
+	cmd := newGroupsSetMembershipCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestGroupsSetMembershipCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newGroupsSetMembershipCommand()
+	_, err := executeCommand(cmd, "g1", "u1")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunGroupsSetMembership(t *testing.T) {
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"u1","username":"alice"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runGroupsSetMembership(newTestClient(t, server.URL), "g1", "u1", "OWNER", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runGroupsSetMembership error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", gotMethod)
+	}
+	_ = gotPath
+	if !strings.Contains(buf.String(), "OWNER") {
+		t.Errorf("expected OWNER in output, got:\n%s", buf.String())
+	}
+}
