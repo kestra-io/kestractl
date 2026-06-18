@@ -71,6 +71,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsExportByQueryCommand())
 	cmd.AddCommand(newFlowsGenerateGraphFromSourceCommand())
 	cmd.AddCommand(newFlowsTaskCommand())
+	cmd.AddCommand(newFlowsBulkUpdateCommand())
 
 	return cmd
 }
@@ -1414,6 +1415,81 @@ func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error 
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newFlowsBulkUpdateCommand() *cobra.Command {
+	var filePath, namespace string
+	var deleteUnlisted, allowNamespaceChild bool
+
+	cmd := &cobra.Command{
+		Use:   "bulk-update",
+		Short: "Update multiple flows from a YAML file (flows separated by ---).",
+		Long: `Create or update all flows defined in a multi-document YAML file.
+Flows already existing in the namespace but not present in the file will be deleted
+if --delete is set (default true).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read file: %w", err)
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsBulkUpdate(client, string(content), namespace, deleteUnlisted, allowNamespaceChild, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to YAML file with flows separated by --- (required)")
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Target namespace for all flows")
+	cmd.Flags().BoolVar(&deleteUnlisted, "delete", true, "Delete flows not present in the file")
+	cmd.Flags().BoolVar(&allowNamespaceChild, "allow-namespace-child", false, "Allow updating flows in child namespaces")
+
+	return cmd
+}
+
+func runFlowsBulkUpdate(client *Client, body, namespace string, deleteUnlisted, allowNamespaceChild bool, renderer *Renderer) error {
+	req := client.API.FlowsAPI.
+		BulkUpdateFlows(client.Ctx, client.Tenant).
+		Body(body).
+		Delete(deleteUnlisted).
+		AllowNamespaceChild(allowNamespaceChild)
+	if namespace != "" {
+		req = req.Namespace(namespace)
+	}
+
+	flows, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(flows))
+	for i, f := range flows {
+		result[i] = map[string]any{
+			"id":        f.GetId(),
+			"namespace": f.GetNamespace(),
+			"revision":  f.GetRevision(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tREVISION")
+		for _, f := range flows {
+			fmt.Fprintf(w, "%s\t%s\t%d\n", f.GetId(), f.GetNamespace(), f.GetRevision())
+		}
+		fmt.Fprintf(w, "\nBulk updated %d flow(s)\n", len(flows))
 		return nil
 	})
 }
