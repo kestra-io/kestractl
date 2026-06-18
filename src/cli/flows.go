@@ -57,6 +57,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsExportCommand())
 	cmd.AddCommand(newFlowsImportCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
+	cmd.AddCommand(newFlowsSearchCommand())
 
 	return cmd
 }
@@ -1246,4 +1247,74 @@ func replaceNamespaceInYAML(content string, newNamespace string) (string, error)
 	}
 
 	return string(modified), nil
+}
+
+func newFlowsSearchCommand() *cobra.Command {
+	var page, size int32
+
+	cmd := &cobra.Command{
+		Use:   "search",
+		Short: "Search for flows across all namespaces.",
+		Example: `  kestractl flows search
+  kestractl flows search --page 2 --size 20
+  kestractl flows search --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runFlowsSearch(client, page, size, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 50, "Page size")
+	return cmd
+}
+
+func runFlowsSearch(client *Client, page, size int32, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	resp, _, err := client.API.FlowsAPI.
+		SearchFlows(client.Ctx, client.Tenant).
+		Page(page).
+		Size(size).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	flows := resp.GetResults()
+	result := make([]map[string]any, len(flows))
+	for i, f := range flows {
+		result[i] = map[string]any{
+			"id":          f.GetId(),
+			"namespace":   f.GetNamespace(),
+			"revision":    f.GetRevision(),
+			"description": f.GetDescription(),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tREVISION\tDESCRIPTION")
+		for _, f := range flows {
+			fmt.Fprintf(w, "%s\t%s\t%d\t%s\n",
+				f.GetId(),
+				f.GetNamespace(),
+				f.GetRevision(),
+				f.GetDescription(),
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d flow(s) (page %d, total %d)\n", len(flows), page, resp.GetTotal())
+		return nil
+	})
 }
