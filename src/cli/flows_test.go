@@ -844,6 +844,42 @@ func executeCommand(cmd *cobra.Command, args ...string) (string, error) {
 	return buf.String() + stdout, err
 }
 
+func TestFlowsBulkUpdateCommand_MissingFile(t *testing.T) {
+	cmd := newFlowsBulkUpdateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when --file not provided")
+	}
+	if !strings.Contains(err.Error(), "--file") {
+		t.Fatalf("expected --file error, got: %v", err)
+	}
+}
+
+func TestFlowsBulkUpdateCommand_ClientError(t *testing.T) {
+	f, err := os.CreateTemp("", "flows-*.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.Remove(f.Name())
+	f.WriteString("id: test\nnamespace: my.ns\n")
+	f.Close()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsBulkUpdateCommand()
+	_, err = executeCommand(cmd, "--file", f.Name())
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestFlowsGenerateGraphFromSourceCommand_MissingFile(t *testing.T) {
 	cmd := newFlowsGenerateGraphFromSourceCommand()
 	_, err := executeCommand(cmd)
