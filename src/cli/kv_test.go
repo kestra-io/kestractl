@@ -2,6 +2,7 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -228,5 +229,33 @@ func TestTryParseKVTypedValueFromError(t *testing.T) {
 	}
 	if valueMap["a"] != 1.0 {
 		t.Fatalf("expected parsed value 1.0, got %v", valueMap["a"])
+	}
+}
+
+func TestKVListInheritedCommand_NoArgs(t *testing.T) {
+	cmd := newKVListInheritedCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestKVListInheritedCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newKVListInheritedCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
 	}
 }

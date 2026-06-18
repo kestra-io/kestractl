@@ -29,6 +29,7 @@ func newKVCommand() *cobra.Command {
 	cmd.AddCommand(newKVUpdateCommand())
 	cmd.AddCommand(newKVGetCommand())
 	cmd.AddCommand(newKVDeleteCommand())
+	cmd.AddCommand(newKVListInheritedCommand())
 
 	return cmd
 }
@@ -511,6 +512,61 @@ func tryParseKVTypedValueFromError(err error) *kvTypedValue {
 	}
 
 	return result
+}
+
+func newKVListInheritedCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list-inherited <namespace>",
+		Short: "List KV entries including inherited keys from parent namespaces.",
+		Example: `  kestractl kv list-inherited my.namespace
+  kestractl kv list-inherited my.namespace --output json`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runKVListInherited(client, args[0], renderer)
+		},
+	}
+	return cmd
+}
+
+func runKVListInherited(client *Client, namespace string, renderer *Renderer) error {
+	entries, _, err := client.API.KVAPI.
+		ListKeysWithInheritence(client.Ctx, namespace, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(entries))
+	for i, entry := range entries {
+		result[i] = map[string]any{
+			"namespace":    entry.GetNamespace(),
+			"key":          entry.GetKey(),
+			"creationDate": formatOptionalTime(entry.GetCreationDate()),
+			"updateDate":   formatOptionalTime(entry.GetUpdateDate()),
+		}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Found %d inherited key-value entries.\n\n", len(entries))
+		fmt.Fprintln(w, "NAMESPACE\tKEY\tCREATED\tUPDATED")
+		for _, entry := range entries {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+				entry.GetNamespace(),
+				entry.GetKey(),
+				formatOptionalTime(entry.GetCreationDate()),
+				formatOptionalTime(entry.GetUpdateDate()),
+			)
+		}
+		return nil
+	})
 }
 
 func isNotFoundSDKError(err error) bool {
