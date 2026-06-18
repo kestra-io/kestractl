@@ -596,3 +596,69 @@ func TestEdgeRelationValue(t *testing.T) {
 		}
 	})
 }
+
+func TestExecutionsLatestCommand_NoFlows(t *testing.T) {
+	cmd := newExecutionsLatestCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no --flow provided")
+	}
+	if !strings.Contains(err.Error(), "at least one --flow") {
+		t.Fatalf("expected flow-required error, got: %v", err)
+	}
+}
+
+func TestExecutionsLatestCommand_InvalidFlow(t *testing.T) {
+	cmd := newExecutionsLatestCommand()
+	_, err := executeCommand(cmd, "--flow", "noseparator")
+	if err == nil {
+		t.Fatal("expected error for malformed flow reference")
+	}
+	if !strings.Contains(err.Error(), "invalid flow reference") {
+		t.Fatalf("expected invalid flow reference error, got: %v", err)
+	}
+}
+
+func TestExecutionsLatestCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsLatestCommand()
+	_, err := executeCommand(cmd, "--flow", "my.ns:my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestParseFlowRefs(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		filters, err := parseFlowRefs([]string{"company.team:daily", "company.team:hourly"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(filters) != 2 {
+			t.Fatalf("expected 2 filters, got %d", len(filters))
+		}
+		if filters[0].GetNamespace() != "company.team" || filters[0].GetId() != "daily" {
+			t.Errorf("unexpected first filter: %+v", filters[0])
+		}
+	})
+
+	t.Run("missing separator", func(t *testing.T) {
+		if _, err := parseFlowRefs([]string{"bad"}); err == nil {
+			t.Fatal("expected error for missing separator")
+		}
+	})
+
+	t.Run("empty id", func(t *testing.T) {
+		if _, err := parseFlowRefs([]string{"ns:"}); err == nil {
+			t.Fatal("expected error for empty id")
+		}
+	})
+}
