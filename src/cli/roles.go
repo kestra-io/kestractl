@@ -28,6 +28,7 @@ Roles are tenant-scoped resources. Managing roles requires Kestra Enterprise Edi
 	cmd.AddCommand(newRolesCreateCommand())
 	cmd.AddCommand(newRolesUpdateCommand())
 	cmd.AddCommand(newRolesDeleteCommand())
+	cmd.AddCommand(newRolesAutocompleteCommand())
 
 	return cmd
 }
@@ -493,4 +494,60 @@ func runRolesDelete(client *Client, id string, skipConfirm bool, in io.Reader, r
 
 	return renderStatus(renderer, fmt.Sprintf("Role '%s' deleted.", id),
 		map[string]any{"id": id, "status": "deleted"})
+}
+
+func newRolesAutocompleteCommand() *cobra.Command {
+	var query string
+
+	cmd := &cobra.Command{
+		Use:   "autocomplete",
+		Short: "List roles for autocomplete.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runRolesAutocomplete(client, query, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Autocomplete search string")
+
+	return cmd
+}
+
+func runRolesAutocomplete(client *Client, query string, renderer *Renderer) error {
+	ac := kestra.NewApiAutocomplete()
+	if query != "" {
+		ac.SetQ(query)
+	}
+
+	roles, _, err := client.API.RolesAPI.
+		AutocompleteRoles(client.Ctx, client.Tenant).
+		ApiAutocomplete(*ac).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(roles))
+	for i, r := range roles {
+		result[i] = map[string]any{"id": r.GetId(), "name": r.GetName()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAME")
+		for _, r := range roles {
+			fmt.Fprintf(w, "%s\t%s\n", r.GetId(), r.GetName())
+		}
+		fmt.Fprintf(w, "\nShowing %d role(s)\n", len(roles))
+		return nil
+	})
 }
