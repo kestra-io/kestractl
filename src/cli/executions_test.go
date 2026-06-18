@@ -1273,3 +1273,32 @@ func TestExecutionsForceRunByQueryCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestExecutionsEvalExpressionCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsEvalExpressionCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsEvalExpressionCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsEvalExpressionCommand()
+	_, err := executeCommand(cmd, "exec-id", "{{ execution.id }}")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}

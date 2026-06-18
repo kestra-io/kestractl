@@ -61,6 +61,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
 	cmd.AddCommand(newExecutionsRestartByQueryCommand())
 	cmd.AddCommand(newExecutionsForceRunByQueryCommand())
+	cmd.AddCommand(newExecutionsEvalExpressionCommand())
 
 	return cmd
 }
@@ -2127,4 +2128,39 @@ func parseISO8601Duration(value string) (string, error) {
 
 	rounded := math.Round(dur.Seconds()*100) / 100
 	return fmt.Sprintf("%.2fs", rounded), nil
+}
+
+func newExecutionsEvalExpressionCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "eval-expression <execution_id> <expression>",
+		Short: "Evaluate a Pebble expression in the context of an execution.",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsEvalExpression(client, args[0], args[1], renderer)
+		},
+	}
+	return cmd
+}
+
+func runExecutionsEvalExpression(client *Client, executionID, expression string, renderer *Renderer) error {
+	result, err := client.Kestra.Executions().EvalExpression(client.Ctx, executionID, client.Tenant, expression)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(map[string]any{"result": result.GetResult()}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "%s\n", result.GetResult())
+		return nil
+	})
 }
