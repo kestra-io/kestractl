@@ -833,3 +833,47 @@ func TestExecutionsBulkForceRunCommand_NoArgs(t *testing.T) {
 		t.Fatal("expected error when no args provided")
 	}
 }
+
+func TestExecutionsBulkSetLabelsCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkSetLabelsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkSetLabelsCommand_NoIds(t *testing.T) {
+	cmd := newExecutionsBulkSetLabelsCommand()
+	_, err := executeCommand(cmd, "env=prod")
+	if err == nil {
+		t.Fatal("expected error when no --ids provided")
+	}
+	if !strings.Contains(err.Error(), "ids") {
+		t.Fatalf("expected ids error, got: %v", err)
+	}
+}
+
+func TestExecutionsBulkUnqueueCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsBulkUnqueueCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+}
+
+func TestExecutionsBulkUnqueueCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsBulkUnqueueCommand()
+	_, err := executeCommand(cmd, "id1", "id2")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}

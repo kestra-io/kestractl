@@ -42,6 +42,8 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsBulkPauseCommand())
 	cmd.AddCommand(newExecutionsBulkResumeCommand())
 	cmd.AddCommand(newExecutionsBulkForceRunCommand())
+	cmd.AddCommand(newExecutionsBulkSetLabelsCommand())
+	cmd.AddCommand(newExecutionsBulkUnqueueCommand())
 
 	return cmd
 }
@@ -1378,6 +1380,110 @@ func runExecutionsBulkOp(client *Client, ids []string, op string, renderer *Rend
 	}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Bulk %s: %d execution(s) affected.\n", op, count)
+		return nil
+	})
+}
+
+func newExecutionsBulkSetLabelsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "set-labels-bulk <key=value> [key=value...] --ids <id1> [--ids <id2>...]",
+		Short: "Set labels on multiple terminated executions.",
+		Example: `  kestractl executions set-labels-bulk env=prod team=data --ids id1 --ids id2
+  kestractl executions set-labels-bulk env=prod --ids id1 id2 id3`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			ids, _ := cmd.Flags().GetStringArray("ids")
+			if len(ids) == 0 {
+				return fmt.Errorf("at least one --ids value is required")
+			}
+			labels, err := parseLabels(args)
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsBulkSetLabels(client, ids, labels, renderer)
+		},
+	}
+	cmd.Flags().StringArray("ids", nil, "Execution IDs to label (repeatable)")
+	return cmd
+}
+
+func runExecutionsBulkSetLabels(client *Client, ids []string, labels []kestra.Label, renderer *Renderer) error {
+	req := kestra.NewExecutionControllerSetLabelsByIdsRequest(ids, labels)
+	resp, _, err := client.API.ExecutionsAPI.
+		SetLabelsOnTerminatedExecutionsByIds(client.Ctx, client.Tenant).
+		ExecutionControllerSetLabelsByIdsRequest(*req).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"count": count, "ids": ids, "labels": len(labels)}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Set %d label(s) on %d execution(s).\n", len(labels), count)
+		return nil
+	})
+}
+
+func newExecutionsBulkUnqueueCommand() *cobra.Command {
+	var state string
+
+	cmd := &cobra.Command{
+		Use:   "unqueue-bulk <execution_id>...",
+		Short: "Unqueue multiple executions.",
+		Example: `  kestractl executions unqueue-bulk id1 id2 id3
+  kestractl executions unqueue-bulk id1 id2 --state RUNNING`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsBulkUnqueue(client, args, state, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&state, "state", "", "Target state for unqueued executions")
+	return cmd
+}
+
+func runExecutionsBulkUnqueue(client *Client, ids []string, state string, renderer *Renderer) error {
+	req := client.API.ExecutionsAPI.
+		UnqueueExecutionsByIds(client.Ctx, client.Tenant).
+		RequestBody(ids)
+	if state != "" {
+		req = req.State(kestra.StateType(strings.ToUpper(state)))
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := int32(0)
+	if resp != nil {
+		count = resp.GetCount()
+	}
+
+	result := map[string]any{"count": count, "ids": ids}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Unqueued %d execution(s).\n", count)
 		return nil
 	})
 }
