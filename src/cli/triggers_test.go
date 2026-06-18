@@ -166,6 +166,60 @@ func TestTriggersUpdateCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestTriggersBackfillPauseCommand_NoArgs(t *testing.T) {
+	cmd := newTriggersBackfillPauseCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 3 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTriggersBackfillPauseCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newTriggersBackfillPauseCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "my-trigger")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTriggersBackfillUnpauseCommand_NoArgs(t *testing.T) {
+	cmd := newTriggersBackfillUnpauseCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 3 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestTriggersBackfillDeleteCommand_NoArgs(t *testing.T) {
+	cmd := newTriggersBackfillDeleteCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 3 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
 func TestTriggersSearchForFlowCommand_NoArgs(t *testing.T) {
 	cmd := newTriggersSearchForFlowCommand()
 	_, err := executeCommand(cmd)

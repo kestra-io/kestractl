@@ -21,6 +21,9 @@ func newTriggersCommand() *cobra.Command {
 	cmd.AddCommand(newTriggersRestartCommand())
 	cmd.AddCommand(newTriggersUpdateCommand())
 	cmd.AddCommand(newTriggersSearchForFlowCommand())
+	cmd.AddCommand(newTriggersBackfillPauseCommand())
+	cmd.AddCommand(newTriggersBackfillUnpauseCommand())
+	cmd.AddCommand(newTriggersBackfillDeleteCommand())
 
 	return cmd
 }
@@ -345,6 +348,119 @@ func runTriggersSearchForFlow(client *Client, namespace, flowID string, page, si
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(triggers), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newTriggersBackfillPauseCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backfill-pause <namespace> <flow_id> <trigger_id>",
+		Short: "Pause a trigger backfill.",
+		Example: `  kestractl triggers backfill-pause my.namespace my-flow my-trigger
+  kestractl triggers backfill-pause my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillOp(client, args[0], args[1], args[2], "pause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersBackfillUnpauseCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backfill-unpause <namespace> <flow_id> <trigger_id>",
+		Short: "Unpause a trigger backfill.",
+		Example: `  kestractl triggers backfill-unpause my.namespace my-flow my-trigger
+  kestractl triggers backfill-unpause my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillOp(client, args[0], args[1], args[2], "unpause", renderer)
+		},
+	}
+	return cmd
+}
+
+func newTriggersBackfillDeleteCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "backfill-delete <namespace> <flow_id> <trigger_id>",
+		Short: "Delete a trigger backfill.",
+		Example: `  kestractl triggers backfill-delete my.namespace my-flow my-trigger
+  kestractl triggers backfill-delete my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersBackfillOp(client, args[0], args[1], args[2], "delete", renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersBackfillOp(client *Client, namespace, flowID, triggerID, op string, renderer *Renderer) error {
+	t := kestra.NewTrigger(namespace, flowID, triggerID, time.Now())
+
+	var updated *kestra.Trigger
+	var err error
+
+	switch op {
+	case "pause":
+		updated, _, err = client.API.TriggersAPI.
+			PauseBackfill(client.Ctx, client.Tenant).
+			Trigger(*t).
+			Execute()
+	case "unpause":
+		updated, _, err = client.API.TriggersAPI.
+			UnpauseBackfill(client.Ctx, client.Tenant).
+			Trigger(*t).
+			Execute()
+	default: // delete
+		updated, _, err = client.API.TriggersAPI.
+			DeleteBackfill(client.Ctx, client.Tenant).
+			Trigger(*t).
+			Execute()
+	}
+
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	ns, fid, tid := namespace, flowID, triggerID
+	if updated != nil {
+		ns = updated.GetNamespace()
+		fid = updated.GetFlowId()
+		tid = updated.GetTriggerId()
+	}
+
+	result := map[string]any{
+		"operation": op,
+		"namespace": ns,
+		"flowId":    fid,
+		"triggerId": tid,
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Backfill %s for trigger '%s' in flow '%s/%s'.\n", op+"d", tid, ns, fid)
 		return nil
 	})
 }
