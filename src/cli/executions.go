@@ -27,8 +27,72 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsPauseCommand())
 	cmd.AddCommand(newExecutionsForceRunCommand())
 	cmd.AddCommand(newExecutionsUnqueueCommand())
+	cmd.AddCommand(newExecutionsDeleteCommand())
 
 	return cmd
+}
+
+func newExecutionsDeleteCommand() *cobra.Command {
+	var (
+		deleteLogs    bool
+		deleteMetrics bool
+		deleteStorage bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "delete <execution_id>",
+		Short: "Delete an execution.",
+		Long: `Delete an execution.
+
+By default only the execution record is removed. Use --delete-logs,
+--delete-metrics, and --delete-storage to also purge the associated logs,
+metrics, and internal storage files.`,
+		Example: `  # Delete an execution
+	  kestractl executions delete 2TLGqHrXC9k8BczKJe5djX
+
+	  # Delete an execution along with its logs and storage
+	  kestractl executions delete 2TLGqHrXC9k8BczKJe5djX --delete-logs --delete-storage`,
+		Aliases: []string{"rm", "del"},
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsDelete(client, args[0], deleteLogs, deleteMetrics, deleteStorage, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&deleteLogs, "delete-logs", false, "Also delete the execution's logs")
+	cmd.Flags().BoolVar(&deleteMetrics, "delete-metrics", false, "Also delete the execution's metrics")
+	cmd.Flags().BoolVar(&deleteStorage, "delete-storage", false, "Also delete the execution's internal storage files")
+
+	return cmd
+}
+
+func runExecutionsDelete(client *Client, executionID string, deleteLogs, deleteMetrics, deleteStorage bool, renderer *Renderer) error {
+	_, err := client.API.ExecutionsAPI.DeleteExecution(client.Ctx, executionID, client.Tenant).
+		DeleteLogs(deleteLogs).
+		DeleteMetrics(deleteMetrics).
+		DeleteStorage(deleteStorage).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":     executionID,
+		"status": "deleted",
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Execution '%s' deleted\n", executionID)
+		return nil
+	})
 }
 
 func newExecutionsUnqueueCommand() *cobra.Command {
