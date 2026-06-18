@@ -439,3 +439,100 @@ func TestRunUsersAutocomplete(t *testing.T) {
 		}
 	}
 }
+
+func TestUsersImpersonateCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersImpersonateCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestUsersImpersonateCommand_ClientError(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newUsersImpersonateCommand()
+	_, err := executeCommand(cmd, "user-id-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunUsersImpersonate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"token": "jwt-token-xyz", "expiresAt": "2025-12-31T00:00:00Z"})
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersImpersonate(newTestClient(t, server.URL), "user-id-123", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersImpersonate error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Impersonation token generated") {
+		t.Errorf("expected impersonation message, got:\n%s", buf.String())
+	}
+}
+
+func TestUsersRevokeRefreshTokenCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersRevokeRefreshTokenCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunUsersRevokeRefreshToken(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.Method != http.MethodDelete {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersRevokeRefreshToken(newTestClient(t, server.URL), "user-id-123", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersRevokeRefreshToken error: %v", err)
+	}
+	if !hit {
+		t.Error("expected DELETE request to be made")
+	}
+	if !strings.Contains(buf.String(), "revoked") {
+		t.Errorf("expected revoked message, got:\n%s", buf.String())
+	}
+}
