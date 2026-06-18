@@ -53,6 +53,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsValidateCommand())
 	cmd.AddCommand(newFlowsEnableCommand())
 	cmd.AddCommand(newFlowsDisableCommand())
+	cmd.AddCommand(newFlowsExportCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
 
 	return cmd
@@ -207,6 +208,82 @@ func runFlowsToggle(client *Client, namespace string, flowIDs []string, enable b
 	}
 	return renderStatus(renderer, fmt.Sprintf("%d flow(s) %s in namespace '%s'.", count, action, namespace),
 		map[string]any{"namespace": namespace, "count": count, "status": action})
+}
+
+func newFlowsExportCommand() *cobra.Command {
+	var (
+		namespace  string
+		query      string
+		outputFile string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export flows as a ZIP archive.",
+		Long: `Export flows matching the given filters as a ZIP archive of YAML files.
+
+By default every flow in the tenant is exported. Use --namespace and/or
+--query to narrow the selection. The archive is written to flows.zip unless
+--output-file is given (use '-' to stream to stdout).`,
+		Example: `  # Export all flows to flows.zip
+	  kestractl flows export
+
+	  # Export a single namespace to a custom file
+	  kestractl flows export --namespace my.namespace --output-file my-ns.zip
+
+	  # Stream the archive to stdout
+	  kestractl flows export --output-file -`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			filters := buildFlowExportFilters(namespace, query)
+			return runFlowsExport(client, filters, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Only export flows in this namespace")
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Only export flows matching this free-text query")
+	cmd.Flags().StringVarP(&outputFile, "output-file", "f", "flows.zip", "Write the archive to this file ('-' for stdout)")
+
+	return cmd
+}
+
+// buildFlowExportFilters assembles the QueryFilter list for a flow export from
+// the optional namespace and free-text query selectors.
+func buildFlowExportFilters(namespace, query string) []kestra.QueryFilter {
+	filters := make([]kestra.QueryFilter, 0, 2)
+	if namespace != "" {
+		filters = append(filters, equalsFilter(kestra.QUERYFILTERFIELD_NAMESPACE, namespace))
+	}
+	if query != "" {
+		filters = append(filters, equalsFilter(kestra.QUERYFILTERFIELD_QUERY, query))
+	}
+	return filters
+}
+
+func runFlowsExport(client *Client, filters []kestra.QueryFilter, outputFile string, out io.Writer) error {
+	req := client.API.FlowsAPI.ExportFlowsByQuery(client.Ctx, client.Tenant)
+	if len(filters) > 0 {
+		req = req.Filters(filters)
+	}
+	archive, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if outputFile == "" || outputFile == "-" {
+		_, err = io.WriteString(out, archive)
+		return err
+	}
+
+	if err := os.WriteFile(outputFile, []byte(archive), 0o644); err != nil {
+		return fmt.Errorf("failed to write archive to %q: %w", outputFile, err)
+	}
+	fmt.Fprintf(out, "Flows exported to %s (%d bytes)\n", outputFile, len(archive))
+	return nil
 }
 
 func newFlowsListCommand() *cobra.Command {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -178,6 +179,51 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to access path") {
 		t.Fatalf("expected path access error, got: %v", err)
 	}
+}
+
+func TestFlowsExportCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsExportCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestBuildFlowExportFilters(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		if got := buildFlowExportFilters("", ""); len(got) != 0 {
+			t.Fatalf("expected no filters, got %d", len(got))
+		}
+	})
+
+	t.Run("namespace and query", func(t *testing.T) {
+		filters := buildFlowExportFilters("my.ns", "boom")
+		if len(filters) != 2 {
+			t.Fatalf("expected 2 filters, got %d", len(filters))
+		}
+		got := map[kestra.QueryFilterField]any{}
+		for _, f := range filters {
+			if f.GetOperation() != kestra.QUERYFILTEROP_EQUALS {
+				t.Errorf("expected EQUALS op, got %v", f.GetOperation())
+			}
+			got[f.GetField()] = f.Value
+		}
+		if got[kestra.QUERYFILTERFIELD_NAMESPACE] != "my.ns" {
+			t.Errorf("namespace: got %v", got[kestra.QUERYFILTERFIELD_NAMESPACE])
+		}
+		if got[kestra.QUERYFILTERFIELD_QUERY] != "boom" {
+			t.Errorf("query: got %v", got[kestra.QUERYFILTERFIELD_QUERY])
+		}
+	})
 }
 
 func TestFlowsEnableCommand_NotEnoughArgs(t *testing.T) {
