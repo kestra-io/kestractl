@@ -14,6 +14,7 @@ func newTestSuitesCommand() *cobra.Command {
 	}
 
 	cmd.AddCommand(newTestSuitesListCommand())
+	cmd.AddCommand(newTestSuitesGetCommand())
 
 	return cmd
 }
@@ -100,6 +101,58 @@ func runTestSuitesList(client *Client, namespace, flowID string, page, size int3
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d test suite(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		return nil
+	})
+}
+
+func newTestSuitesGetCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "get <namespace> <id>",
+		Short: "Get a test suite by namespace and ID.",
+		Example: `  kestractl test-suites get my.namespace my-test-suite
+  kestractl test-suites get my.namespace my-test-suite --output json`,
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesGet(client, args[0], args[1], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTestSuitesGet(client *Client, namespace, id string, renderer *Renderer) error {
+	suite, _, err := client.API.TestSuitesAPI.
+		TestSuite(client.Ctx, namespace, id, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":          suite.GetId(),
+		"namespace":   suite.GetNamespace(),
+		"flowId":      suite.GetFlowId(),
+		"description": suite.GetDescription(),
+		"disabled":    suite.GetDisabled(),
+		"testCases":   len(suite.GetTestCases()),
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "ID\t%s\n", suite.GetId())
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", suite.GetNamespace())
+		fmt.Fprintf(w, "FLOW\t%s\n", suite.GetFlowId())
+		if desc := suite.GetDescription(); desc != "" {
+			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
+		}
+		fmt.Fprintf(w, "DISABLED\t%v\n", suite.GetDisabled())
+		fmt.Fprintf(w, "TEST CASES\t%d\n", len(suite.GetTestCases()))
 		return nil
 	})
 }
