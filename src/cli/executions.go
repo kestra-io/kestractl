@@ -24,8 +24,50 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsKillCommand())
 	cmd.AddCommand(newExecutionsRestartCommand())
 	cmd.AddCommand(newExecutionsResumeCommand())
+	cmd.AddCommand(newExecutionsPauseCommand())
 
 	return cmd
+}
+
+func newExecutionsPauseCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pause <execution_id>",
+		Short: "Pause a running execution.",
+		Long:  `Pause a running execution. Paused executions can later be resumed.`,
+		Example: `  # Pause a running execution
+	  kestractl executions pause 2TLGqHrXC9k8BczKJe5djX`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsPause(client, args[0], renderer)
+		},
+	}
+
+	return cmd
+}
+
+func runExecutionsPause(client *Client, executionID string, renderer *Renderer) error {
+	_, err := client.API.ExecutionsAPI.PauseExecution(client.Ctx, executionID, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := map[string]any{
+		"id":     executionID,
+		"status": "paused",
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Execution '%s' paused\n", executionID)
+		return nil
+	})
 }
 
 func newExecutionsResumeCommand() *cobra.Command {
