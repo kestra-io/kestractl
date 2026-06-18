@@ -44,6 +44,7 @@ func newExecutionsCommand() *cobra.Command {
 	cmd.AddCommand(newExecutionsBulkForceRunCommand())
 	cmd.AddCommand(newExecutionsBulkSetLabelsCommand())
 	cmd.AddCommand(newExecutionsBulkUnqueueCommand())
+	cmd.AddCommand(newExecutionsReplayByQueryCommand())
 	cmd.AddCommand(newExecutionsKillByQueryCommand())
 	cmd.AddCommand(newExecutionsPauseByQueryCommand())
 	cmd.AddCommand(newExecutionsResumeByQueryCommand())
@@ -1493,8 +1494,60 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 	})
 }
 
+func newExecutionsReplayByQueryCommand() *cobra.Command {
+	var latestRevision bool
+
+	cmd := &cobra.Command{
+		Use:   "replay-by-query",
+		Short: "Replay all executions matching the server-side query.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runExecutionsReplayByQuery(client, latestRevision, filters, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&latestRevision, "latest-revision", false, "Use the latest flow revision instead of the original")
+	addByQueryFilterFlags(cmd, &filterFlags)
+
+	return cmd
+}
+
+func runExecutionsReplayByQuery(client *Client, latestRevision bool, filters []kestra.QueryFilter, renderer *Renderer) error {
+	result, _, err := client.API.ExecutionsAPI.
+		ReplayExecutionsByQuery(client.Ctx, client.Tenant).
+		LatestRevision(latestRevision).
+		Filters(filters).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	count := extractCount(result)
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		if count >= 0 {
+			fmt.Fprintf(w, "Replayed %d execution(s).\n", count)
+		} else {
+			fmt.Fprintf(w, "Replay by-query completed.\n")
+		}
+		return nil
+	})
+}
+
 func newExecutionsByQueryCommand(use, short, op string) *cobra.Command {
-	return &cobra.Command{
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
 		Use:   use,
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
