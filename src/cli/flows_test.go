@@ -180,6 +180,34 @@ func TestFlowsDeployCommand_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestFlowsRevisionsCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsRevisionsCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestFlowsRevisionsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newFlowsRevisionsCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestFlowsDeleteCommand_NoArgs(t *testing.T) {
 	cmd := newFlowsDeleteCommand()
 	_, err := executeCommand(cmd)
