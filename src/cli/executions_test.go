@@ -472,3 +472,79 @@ func TestPrintExecutionState_Unknown(t *testing.T) {
 		t.Errorf("expected 'unknown' state, got: %s", output)
 	}
 }
+
+func TestExecutionsSetLabelsCommand_NotEnoughArgs(t *testing.T) {
+	cmd := newExecutionsSetLabelsCommand()
+	_, err := executeCommand(cmd, "exec-123")
+	if err == nil {
+		t.Fatal("expected error when not enough args provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsSetLabelsCommand_InvalidLabel(t *testing.T) {
+	cmd := newExecutionsSetLabelsCommand()
+	_, err := executeCommand(cmd, "exec-123", "noequalsign")
+	if err == nil {
+		t.Fatal("expected error for malformed label")
+	}
+	if !strings.Contains(err.Error(), "invalid label") {
+		t.Fatalf("expected invalid label error, got: %v", err)
+	}
+}
+
+func TestExecutionsSetLabelsCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsSetLabelsCommand()
+	_, err := executeCommand(cmd, "exec-123", "env=prod")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestParseLabels(t *testing.T) {
+	t.Run("valid pairs", func(t *testing.T) {
+		labels, err := parseLabels([]string{"env=prod", "team=data"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(labels) != 2 {
+			t.Fatalf("expected 2 labels, got %d", len(labels))
+		}
+		if labels[0].GetKey() != "env" || labels[0].GetValue() != "prod" {
+			t.Errorf("unexpected first label: %+v", labels[0])
+		}
+	})
+
+	t.Run("empty value allowed", func(t *testing.T) {
+		labels, err := parseLabels([]string{"key="})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if labels[0].GetKey() != "key" || labels[0].GetValue() != "" {
+			t.Errorf("unexpected label: %+v", labels[0])
+		}
+	})
+
+	t.Run("missing separator", func(t *testing.T) {
+		if _, err := parseLabels([]string{"bad"}); err == nil {
+			t.Fatal("expected error for missing separator")
+		}
+	})
+
+	t.Run("empty key", func(t *testing.T) {
+		if _, err := parseLabels([]string{"=value"}); err == nil {
+			t.Fatal("expected error for empty key")
+		}
+	})
+}
