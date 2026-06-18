@@ -8,6 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -19,8 +20,154 @@ func newExecutionsCommand() *cobra.Command {
 
 	cmd.AddCommand(newExecutionsRunCommand())
 	cmd.AddCommand(newExecutionsGetCommand())
+	cmd.AddCommand(newExecutionsListCommand())
 
 	return cmd
+}
+
+func newExecutionsListCommand() *cobra.Command {
+	var (
+		namespace string
+		flowID    string
+		state     string
+		page      int32
+		size      int32
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List executions.",
+		Long: `Search and list executions, optionally filtered by namespace, flow, or state.
+
+Results are paginated. Use --page and --size to navigate larger result sets.`,
+		Example: `  # List the most recent executions
+	  kestractl executions list
+
+	  # List executions for a namespace
+	  kestractl executions list --namespace my.namespace
+
+	  # List failed executions for a specific flow
+	  kestractl executions list --namespace my.namespace --flow-id my-flow --state FAILED
+
+	  # Paginate
+	  kestractl executions list --page 2 --size 100
+
+	  # JSON output
+	  kestractl executions list --output json`,
+		Aliases: []string{"ls"},
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+
+			return runExecutionsList(client, namespace, flowID, state, page, size, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
+	cmd.Flags().StringVar(&flowID, "flow-id", "", "Filter by flow ID")
+	cmd.Flags().StringVar(&state, "state", "", "Filter by execution state (e.g. SUCCESS, FAILED, RUNNING)")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number (1-based)")
+	cmd.Flags().Int32Var(&size, "size", 50, "Number of executions per page")
+
+	return cmd
+}
+
+// equalsFilter builds a QueryFilter matching field == value. The Value field is
+// assigned directly because the generated SetValue setter has a mismatched
+// (map-only) signature.
+func equalsFilter(field kestra.QueryFilterField, value string) kestra.QueryFilter {
+	f := kestra.NewQueryFilter()
+	f.SetField(field)
+	f.SetOperation(kestra.QUERYFILTEROP_EQUALS)
+	f.Value = value
+	return *f
+}
+
+// buildExecutionFilters assembles the QueryFilter list for an executions search
+// from the optional namespace, flow ID, and state selectors.
+func buildExecutionFilters(namespace, flowID, state string) []kestra.QueryFilter {
+	filters := make([]kestra.QueryFilter, 0, 3)
+	if namespace != "" {
+		filters = append(filters, equalsFilter(kestra.QUERYFILTERFIELD_NAMESPACE, namespace))
+	}
+	if flowID != "" {
+		filters = append(filters, equalsFilter(kestra.QUERYFILTERFIELD_FLOW_ID, flowID))
+	}
+	if state != "" {
+		filters = append(filters, equalsFilter(kestra.QUERYFILTERFIELD_STATE, strings.ToUpper(state)))
+	}
+	return filters
+}
+
+func runExecutionsList(client *Client, namespace, flowID, state string, page, size int32, renderer *Renderer) error {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 50
+	}
+
+	req := client.API.ExecutionsAPI.SearchExecutions(client.Ctx, client.Tenant).
+		Page(page).
+		Size(size)
+	if filters := buildExecutionFilters(namespace, flowID, state); len(filters) > 0 {
+		req = req.Filters(filters)
+	}
+
+	resp, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	executions := resp.GetResults()
+	result := make([]map[string]any, len(executions))
+	for i, exec := range executions {
+		row := map[string]any{
+			"id":        exec.GetId(),
+			"namespace": exec.GetNamespace(),
+			"flowId":    exec.GetFlowId(),
+		}
+		st := exec.GetState()
+		row["state"] = st.GetCurrent()
+		if !st.GetStartDate().IsZero() {
+			row["startDate"] = st.GetStartDate().Format(time.RFC3339)
+		}
+		row["duration"] = st.GetDuration()
+		result[i] = row
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAMESPACE\tFLOW\tSTATE\tSTARTED\tDURATION")
+		for _, row := range result {
+			started := "-"
+			if s, ok := row["startDate"].(string); ok && s != "" {
+				started = s
+			}
+			duration := "-"
+			if d, ok := row["duration"]; ok {
+				if ds := formatDuration(d); ds != "" {
+					duration = ds
+				}
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				stringify(row["id"]),
+				stringify(row["namespace"]),
+				stringify(row["flowId"]),
+				stringify(row["state"]),
+				started,
+				duration,
+			)
+		}
+		fmt.Fprintf(w, "\nShowing %d execution(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		return nil
+	})
 }
 
 func newExecutionsRunCommand() *cobra.Command {
