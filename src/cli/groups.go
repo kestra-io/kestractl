@@ -26,6 +26,7 @@ Groups are tenant-scoped resources. Managing groups requires Kestra Enterprise E
 	cmd.AddCommand(newGroupsDeleteCommand())
 	cmd.AddCommand(newGroupsMembersCommand())
 	cmd.AddCommand(newGroupsAutocompleteCommand())
+	cmd.AddCommand(newGroupsListByIdsCommand())
 
 	return cmd
 }
@@ -504,4 +505,55 @@ func runGroupsMembersRemove(client *Client, groupID, userID string, renderer *Re
 
 	return renderStatus(renderer, fmt.Sprintf("User '%s' removed from group '%s'.", userID, groupID),
 		map[string]any{"groupId": groupID, "userId": userID, "status": "removed"})
+}
+
+func newGroupsListByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "list-by-ids <id>...",
+		Short: "List groups by ID.",
+		Long:  "Fetch multiple groups by their IDs in a single request.",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runGroupsListByIds(client, args, renderer)
+		},
+	}
+	return cmd
+}
+
+func runGroupsListByIds(client *Client, ids []string, renderer *Renderer) error {
+	body := kestra.NewApiIds()
+	body.SetIds(ids)
+
+	groups, _, err := client.API.GroupsAPI.
+		ListGroupIds(client.Ctx, client.Tenant).
+		ApiIds(*body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	result := make([]map[string]any, len(groups))
+	for i, g := range groups {
+		result[i] = map[string]any{"id": g.GetId(), "name": g.GetName()}
+	}
+
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ID\tNAME")
+		for _, g := range groups {
+			fmt.Fprintf(w, "%s\t%s\n", g.GetId(), g.GetName())
+		}
+		fmt.Fprintf(w, "\nShowing %d group(s)\n", len(groups))
+		return nil
+	})
 }
