@@ -536,3 +536,95 @@ func TestRunUsersRevokeRefreshToken(t *testing.T) {
 		t.Errorf("expected revoked message, got:\n%s", buf.String())
 	}
 }
+
+func TestUsersPatchSuperAdminCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersPatchSuperAdminCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunUsersPatchSuperAdmin_Grant(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.Method != http.MethodPatch {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersPatchSuperAdmin(newTestClient(t, server.URL), "user-id-123", true, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersPatchSuperAdmin error: %v", err)
+	}
+	if !hit {
+		t.Error("expected PATCH request to be made")
+	}
+	if !strings.Contains(buf.String(), "granted") {
+		t.Errorf("expected 'granted' message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunUsersPatchSuperAdmin_Revoke(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersPatchSuperAdmin(newTestClient(t, server.URL), "user-id-123", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersPatchSuperAdmin error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "revoked") {
+		t.Errorf("expected 'revoked' message, got:\n%s", buf.String())
+	}
+}
+
+func TestUsersDeleteAuthMethodCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersDeleteAuthMethodCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunUsersDeleteAuthMethod(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"user-id-123","username":"alice","email":"alice@example.com"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersDeleteAuthMethod(newTestClient(t, server.URL), "user-id-123", "BASIC_AUTH", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersDeleteAuthMethod error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "removed") {
+		t.Errorf("expected 'removed' message, got:\n%s", buf.String())
+	}
+}

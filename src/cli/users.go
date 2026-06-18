@@ -33,6 +33,8 @@ Users are instance-level resources. Managing users requires Kestra Enterprise Ed
 	cmd.AddCommand(newUsersAutocompleteCommand())
 	cmd.AddCommand(newUsersImpersonateCommand())
 	cmd.AddCommand(newUsersRevokeRefreshTokenCommand())
+	cmd.AddCommand(newUsersPatchSuperAdminCommand())
+	cmd.AddCommand(newUsersDeleteAuthMethodCommand())
 
 	return cmd
 }
@@ -836,4 +838,85 @@ func runUsersRevokeRefreshToken(client *Client, id string, renderer *Renderer) e
 	return renderStatus(renderer,
 		fmt.Sprintf("Refresh tokens revoked for user '%s'.", id),
 		map[string]any{"id": id, "status": "revoked"})
+}
+
+func newUsersPatchSuperAdminCommand() *cobra.Command {
+	var superAdmin bool
+
+	cmd := &cobra.Command{
+		Use:   "set-super-admin <id>",
+		Short: "Grant or revoke superadmin status for a user. Superadmin only.",
+		Args:  cobra.ExactArgs(1),
+		Example: `  kestractl users set-super-admin <id> --super-admin=true
+  kestractl users set-super-admin <id> --super-admin=false`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersPatchSuperAdmin(client, args[0], superAdmin, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&superAdmin, "super-admin", false, "Set superadmin status (true or false)")
+	return cmd
+}
+
+func runUsersPatchSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
+	body := map[string]any{"superAdmin": superAdmin}
+	if err := client.Kestra.Users().PatchUserSuperAdmin(client.Ctx, id, body); err != nil {
+		return formatSDKError(err)
+	}
+
+	status := "revoked"
+	if superAdmin {
+		status = "granted"
+	}
+	return renderStatus(renderer,
+		fmt.Sprintf("Superadmin status %s for user '%s'.", status, id),
+		map[string]any{"id": id, "superAdmin": superAdmin, "status": status})
+}
+
+func newUsersDeleteAuthMethodCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-auth-method <id> <auth-method>",
+		Short: "Delete an authentication method from a user. Superadmin only.",
+		Args:  cobra.ExactArgs(2),
+		Example: `  kestractl users delete-auth-method <user-id> BASIC_AUTH
+  kestractl users delete-auth-method <user-id> GOOGLE_OAUTH`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersDeleteAuthMethod(client, args[0], args[1], renderer)
+		},
+	}
+	return cmd
+}
+
+func runUsersDeleteAuthMethod(client *Client, id, auth string, renderer *Renderer) error {
+	user, err := client.Kestra.Users().DeleteUserAuthMethod(client.Ctx, id, auth)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	if user == nil {
+		return renderStatus(renderer,
+			fmt.Sprintf("Auth method '%s' removed from user '%s'.", auth, id),
+			map[string]any{"id": id, "auth": auth, "status": "removed"})
+	}
+
+	return renderer.Render(user, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Auth method '%s' removed.\n\nUser ID:\t%s\n", auth, user.GetId())
+		return nil
+	})
 }
