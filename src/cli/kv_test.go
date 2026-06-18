@@ -232,6 +232,45 @@ func TestTryParseKVTypedValueFromError(t *testing.T) {
 	}
 }
 
+func TestKVDeleteAllCommand_NoArgs(t *testing.T) {
+	cmd := newKVDeleteAllCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestKVDeleteAllCommand_OnlyNamespace(t *testing.T) {
+	cmd := newKVDeleteAllCommand()
+	_, err := executeCommand(cmd, "my.namespace")
+	if err == nil {
+		t.Fatal("expected error when only namespace provided")
+	}
+	if !strings.Contains(err.Error(), "requires at least 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestKVDeleteAllCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newKVDeleteAllCommand()
+	_, err := executeCommand(cmd, "my.namespace", "key1", "key2")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
 func TestKVListInheritedCommand_NoArgs(t *testing.T) {
 	cmd := newKVListInheritedCommand()
 	_, err := executeCommand(cmd)
