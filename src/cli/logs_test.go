@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 )
 
 func TestLogsListCommand_NoArgs(t *testing.T) {
@@ -32,6 +34,55 @@ func TestLogsListCommand_ClientError(t *testing.T) {
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
 	}
+}
+
+func TestLogsSearchCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newLogsSearchCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestBuildLogSearchFilters(t *testing.T) {
+	t.Run("empty", func(t *testing.T) {
+		filters := buildLogSearchFilters("", "", "", "", "")
+		if len(filters) != 0 {
+			t.Fatalf("expected no filters, got %d", len(filters))
+		}
+	})
+
+	t.Run("all filters with upper-cased level", func(t *testing.T) {
+		filters := buildLogSearchFilters("boom", "my.ns", "my-flow", "trg-1", "warn")
+		if len(filters) != 5 {
+			t.Fatalf("expected 5 filters, got %d", len(filters))
+		}
+		got := map[kestra.SearchFilterField]any{}
+		for _, f := range filters {
+			if f.Operation != kestra.OpEquals {
+				t.Errorf("expected EQUALS op, got %v", f.Operation)
+			}
+			got[f.Field] = f.Value
+		}
+		if got[kestra.FilterQuery] != "boom" {
+			t.Errorf("query: got %v", got[kestra.FilterQuery])
+		}
+		if got[kestra.FilterNamespace] != "my.ns" {
+			t.Errorf("namespace: got %v", got[kestra.FilterNamespace])
+		}
+		if got[kestra.FilterMinLevel] != "WARN" {
+			t.Errorf("expected upper-cased WARN, got %v", got[kestra.FilterMinLevel])
+		}
+	})
 }
 
 func TestLogFilterOptions(t *testing.T) {
