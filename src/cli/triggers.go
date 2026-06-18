@@ -16,6 +16,7 @@ func newTriggersCommand() *cobra.Command {
 
 	cmd.AddCommand(newTriggersListCommand())
 	cmd.AddCommand(newTriggersDeleteCommand())
+	cmd.AddCommand(newTriggersUnlockCommand())
 
 	return cmd
 }
@@ -145,6 +146,59 @@ func runTriggersDelete(client *Client, namespace, flowID, triggerID string, rend
 	}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Trigger '%s' deleted from flow '%s/%s'.\n", triggerID, namespace, flowID)
+		return nil
+	})
+}
+
+func newTriggersUnlockCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "unlock <namespace> <flow_id> <trigger_id>",
+		Short: "Unlock a locked trigger.",
+		Example: `  kestractl triggers unlock my.namespace my-flow my-trigger
+  kestractl triggers unlock my.namespace my-flow my-trigger --output json`,
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTriggersUnlock(client, args[0], args[1], args[2], renderer)
+		},
+	}
+	return cmd
+}
+
+func runTriggersUnlock(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
+	t, _, err := client.API.TriggersAPI.
+		UnlockTrigger(client.Ctx, namespace, flowID, triggerID, client.Tenant).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if t == nil {
+		result := map[string]any{"namespace": namespace, "flowId": flowID, "triggerId": triggerID}
+		return renderer.Render(result, func(w *tabwriter.Writer) error {
+			fmt.Fprintf(w, "Trigger '%s' unlocked.\n", triggerID)
+			return nil
+		})
+	}
+
+	result := map[string]any{
+		"namespace": t.GetNamespace(),
+		"flowId":    t.GetFlowId(),
+		"triggerId": t.GetTriggerId(),
+		"disabled":  t.GetDisabled(),
+	}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", t.GetNamespace())
+		fmt.Fprintf(w, "FLOW\t%s\n", t.GetFlowId())
+		fmt.Fprintf(w, "TRIGGER\t%s\n", t.GetTriggerId())
+		fmt.Fprintf(w, "DISABLED\t%v\n", t.GetDisabled())
+		fmt.Fprintln(w, "\nTrigger unlocked.")
 		return nil
 	})
 }
