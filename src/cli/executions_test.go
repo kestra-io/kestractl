@@ -548,3 +548,51 @@ func TestParseLabels(t *testing.T) {
 		}
 	})
 }
+
+func TestExecutionsFlowGraphCommand_NoArgs(t *testing.T) {
+	cmd := newExecutionsFlowGraphCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestExecutionsFlowGraphCommand_ClientError(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newExecutionsFlowGraphCommand()
+	_, err := executeCommand(cmd, "exec-123")
+	if err == nil {
+		t.Fatal("expected client error")
+	}
+	if !strings.Contains(err.Error(), "client error") {
+		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestEdgeRelationValue(t *testing.T) {
+	t.Run("nil relation value", func(t *testing.T) {
+		e := *kestra.NewFlowGraphEdge()
+		if got := edgeRelationValue(e); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+
+	t.Run("populated relation value", func(t *testing.T) {
+		e := *kestra.NewFlowGraphEdge()
+		rel := kestra.NewRelation1()
+		v := "ERROR"
+		rel.Value = &v
+		e.SetRelation(*rel)
+		if got := edgeRelationValue(e); got != "ERROR" {
+			t.Errorf("expected ERROR, got %q", got)
+		}
+	})
+}
