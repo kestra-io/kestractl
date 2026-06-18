@@ -26,6 +26,7 @@ func newTestSuitesCommand() *cobra.Command {
 	cmd.AddCommand(newTestSuitesDeleteBulkCommand())
 	cmd.AddCommand(newTestSuitesDisableBulkCommand())
 	cmd.AddCommand(newTestSuitesEnableBulkCommand())
+	cmd.AddCommand(newTestSuitesValidateCommand())
 
 	return cmd
 }
@@ -377,6 +378,79 @@ func runTestSuitesRun(client *Client, namespace, id string, testCases []string, 
 		fmt.Fprintf(w, "STATE\t%s\n", string(result.GetState()))
 		fmt.Fprintf(w, "PASSED\t%d\n", passed)
 		fmt.Fprintf(w, "FAILED\t%d\n", failed)
+		return nil
+	})
+}
+
+func newTestSuitesValidateCommand() *cobra.Command {
+	var filePath string
+
+	cmd := &cobra.Command{
+		Use:   "validate",
+		Short: "Validate a test suite YAML definition.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			if filePath == "" {
+				return fmt.Errorf("--file is required")
+			}
+			content, err := os.ReadFile(filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read file: %w", err)
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runTestSuitesValidate(client, string(content), renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the test suite YAML file (required)")
+
+	return cmd
+}
+
+func runTestSuitesValidate(client *Client, body string, renderer *Renderer) error {
+	result, _, err := client.API.TestSuitesAPI.
+		ValidateTestSuite(client.Ctx, client.Tenant).
+		Body(body).
+		Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	constraints := result.GetConstraints()
+	warnings := result.GetWarnings()
+	infos := result.GetInfos()
+
+	jsonResult := map[string]any{
+		"namespace":   result.GetNamespace(),
+		"flow":        result.GetFlow(),
+		"constraints": constraints,
+		"warnings":    warnings,
+		"infos":       infos,
+		"outdated":    result.GetOutdated(),
+	}
+
+	return renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
+		if constraints != "" {
+			fmt.Fprintf(w, "VIOLATIONS\t%s\n", constraints)
+		}
+		if len(warnings) > 0 {
+			fmt.Fprintf(w, "WARNINGS\t%d\n", len(warnings))
+		}
+		if len(infos) > 0 {
+			fmt.Fprintf(w, "INFOS\t%d\n", len(infos))
+		}
+		if constraints == "" {
+			fmt.Fprintln(w, "Validation passed.")
+		}
 		return nil
 	})
 }
