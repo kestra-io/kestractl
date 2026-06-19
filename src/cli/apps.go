@@ -29,6 +29,14 @@ Apps are low-code interfaces built on top of flows. Requires Kestra Enterprise E
 	cmd.AddCommand(newAppsDisableCommand())
 	cmd.AddCommand(newAppsExportCommand())
 	cmd.AddCommand(newAppsImportCommand())
+	cmd.AddCommand(newAppsBulkDeleteCommand())
+	cmd.AddCommand(newAppsBulkEnableCommand())
+	cmd.AddCommand(newAppsBulkDisableCommand())
+	cmd.AddCommand(newAppsTagsCommand())
+	cmd.AddCommand(newAppsCatalogCommand())
+	cmd.AddCommand(newAppsFileMetaCommand())
+	cmd.AddCommand(newAppsFilePreviewCommand())
+	cmd.AddCommand(newAppsLogsCommand())
 
 	return cmd
 }
@@ -456,4 +464,426 @@ func runAppsImport(client *Client, filePath string, renderer *Renderer) error {
 		}
 		return nil
 	})
+}
+
+// --- Bulk operations ---------------------------------------------------------
+
+func newAppsBulkDeleteCommand() *cobra.Command {
+	var skipConfirm bool
+
+	cmd := &cobra.Command{
+		Use:   "bulk-delete <uid> [<uid>...]",
+		Short: "Delete multiple apps in a single request.",
+		Args:  cobra.MinimumNArgs(1),
+		Example: `  kestractl apps bulk-delete uid-1 uid-2 uid-3
+  kestractl apps bulk-delete uid-1 uid-2 --yes`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsBulkDelete(client, args, skipConfirm, cmd.InOrStdin(), renderer)
+		},
+	}
+
+	cmd.Flags().BoolVarP(&skipConfirm, "yes", "y", false, "Skip the confirmation prompt")
+	return cmd
+}
+
+func runAppsBulkDelete(client *Client, uids []string, skipConfirm bool, in io.Reader, renderer *Renderer) error {
+	if !skipConfirm {
+		confirmed, err := confirm(in, os.Stderr,
+			fmt.Sprintf("Are you sure you want to delete %d app(s)? [y/N]: ", len(uids)))
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			return renderStatus(renderer, "Cancelled.", map[string]any{"status": "cancelled"})
+		}
+	}
+
+	req := kestra.NewAppsControllerApiBulkOperationRequest()
+	req.SetUids(uids)
+
+	resp, err := client.Kestra.Apps().BulkDeleteApps(client.Ctx, client.Tenant, req)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderBulkAppsResult(renderer, resp, fmt.Sprintf("%d app(s) deleted.", len(uids)))
+}
+
+func newAppsBulkEnableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "bulk-enable <uid> [<uid>...]",
+		Short:   "Enable multiple apps in a single request.",
+		Args:    cobra.MinimumNArgs(1),
+		Example: `  kestractl apps bulk-enable uid-1 uid-2 uid-3`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsBulkToggle(client, args, true, renderer)
+		},
+	}
+	return cmd
+}
+
+func newAppsBulkDisableCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "bulk-disable <uid> [<uid>...]",
+		Short:   "Disable multiple apps in a single request.",
+		Args:    cobra.MinimumNArgs(1),
+		Example: `  kestractl apps bulk-disable uid-1 uid-2 uid-3`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsBulkToggle(client, args, false, renderer)
+		},
+	}
+	return cmd
+}
+
+func runAppsBulkToggle(client *Client, uids []string, enable bool, renderer *Renderer) error {
+	req := kestra.NewAppsControllerApiBulkOperationRequest()
+	req.SetUids(uids)
+
+	var (
+		resp map[string]interface{}
+		err  error
+	)
+	if enable {
+		resp, err = client.Kestra.Apps().BulkEnableApps(client.Ctx, client.Tenant, req)
+	} else {
+		resp, err = client.Kestra.Apps().BulkDisableApps(client.Ctx, client.Tenant, req)
+	}
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	action := "disabled"
+	if enable {
+		action = "enabled"
+	}
+	return renderBulkAppsResult(renderer, resp, fmt.Sprintf("%d app(s) %s.", len(uids), action))
+}
+
+// renderBulkAppsResult renders the generic map returned by the bulk app
+// endpoints: a human-readable summary for table output, the raw payload for JSON.
+func renderBulkAppsResult(renderer *Renderer, resp map[string]interface{}, message string) error {
+	if renderer.IsJSON() {
+		if resp == nil {
+			resp = map[string]interface{}{}
+		}
+		return renderer.RenderJSON(resp)
+	}
+	return renderer.Render(resp, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, message)
+		return nil
+	})
+}
+
+// --- Tags & catalog ----------------------------------------------------------
+
+func newAppsTagsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "tags",
+		Short:   "List all tags used across apps.",
+		Example: `  kestractl apps tags`,
+		Args:    cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsTags(client, renderer)
+		},
+	}
+	return cmd
+}
+
+func runAppsTags(client *Client, renderer *Renderer) error {
+	resp, err := client.Kestra.Apps().ListTags(client.Ctx, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	tags := []string{}
+	if resp != nil {
+		tags = resp.GetTags()
+	}
+
+	return renderer.Render(tags, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "TAG")
+		for _, t := range tags {
+			fmt.Fprintln(w, t)
+		}
+		fmt.Fprintf(w, "\nTotal tags: %d\n", len(tags))
+		return nil
+	})
+}
+
+func newAppsCatalogCommand() *cobra.Command {
+	var (
+		query string
+		page  int32
+		size  int32
+	)
+
+	cmd := &cobra.Command{
+		Use:   "catalog",
+		Short: "Search apps available in the catalog.",
+		Example: `  kestractl apps catalog
+  kestractl apps catalog --query reporting --output json`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsCatalog(client, query, page, size, renderer)
+		},
+	}
+
+	cmd.Flags().StringVarP(&query, "query", "q", "", "Filter by query string")
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
+	return cmd
+}
+
+func runAppsCatalog(client *Client, query string, page, size int32, renderer *Renderer) error {
+	pageInt, sizeInt := int(page), int(size)
+
+	var filters []kestra.SearchFilter
+	if query != "" {
+		filters = append(filters, kestra.SearchFilter{
+			Field:     kestra.FilterQuery,
+			Operation: kestra.OpEquals,
+			Value:     query,
+		})
+	}
+
+	resp, err := client.Kestra.Apps().SearchAppsFromCatalog(client.Ctx, client.Tenant, &pageInt, &sizeInt, filters)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if resp == nil {
+		resp = &kestra.PagedResultsAppsControllerApiAppCatalogItem{}
+	}
+
+	results := resp.GetResults()
+	if results == nil {
+		results = []kestra.AppsControllerApiAppCatalogItem{}
+	}
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "UID\tNAME\tTYPE\tTAGS\tDESCRIPTION")
+		for _, c := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				c.GetUid(), c.GetName(), c.GetType(),
+				strings.Join(c.GetTags(), ","), c.GetDescription())
+		}
+		fmt.Fprintf(w, "\nTotal catalog apps: %d\n", resp.GetTotal())
+		return nil
+	})
+}
+
+// --- App execution view (files & logs) ---------------------------------------
+
+func newAppsFileMetaCommand() *cobra.Command {
+	var path string
+
+	cmd := &cobra.Command{
+		Use:   "file-meta <id>",
+		Short: "Get metadata for a file produced by an app execution.",
+		Long:  "Get metadata (e.g. size) for a file referenced by an app execution view.",
+		Args:  cobra.ExactArgs(1),
+		Example: `  kestractl apps file-meta <view-id> --path /path/to/file`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if path == "" {
+				return fmt.Errorf("--path is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAppsFileMeta(client, args[0], path, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&path, "path", "", "Internal storage path of the file (required)")
+	return cmd
+}
+
+func runAppsFileMeta(client *Client, id, path string, renderer *Renderer) error {
+	meta, err := client.Kestra.Apps().FileMetaFromAppExecution(client.Ctx, id, client.Tenant, path)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(meta, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "File Metadata")
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "Path:\t%s\n", path)
+		if meta != nil {
+			fmt.Fprintf(w, "Size:\t%d\n", meta.GetSize())
+		}
+		return nil
+	})
+}
+
+func newAppsFilePreviewCommand() *cobra.Command {
+	var (
+		path     string
+		maxRows  int
+		encoding string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "file-preview <id>",
+		Short: "Preview a file produced by an app execution.",
+		Long:  "Preview the content of a file referenced by an app execution view.",
+		Args:  cobra.ExactArgs(1),
+		Example: `  kestractl apps file-preview <view-id> --path /path/to/file
+  kestractl apps file-preview <view-id> --path /path/to/file --max-rows 50`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if path == "" {
+				return fmt.Errorf("--path is required")
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			var maxRowsPtr *int
+			if cmd.Flags().Changed("max-rows") {
+				maxRowsPtr = &maxRows
+			}
+			var encodingPtr *string
+			if encoding != "" {
+				encodingPtr = &encoding
+			}
+			return runAppsFilePreview(client, args[0], path, maxRowsPtr, encodingPtr, renderer)
+		},
+	}
+
+	cmd.Flags().StringVar(&path, "path", "", "Internal storage path of the file (required)")
+	cmd.Flags().IntVar(&maxRows, "max-rows", 0, "Maximum number of rows to preview")
+	cmd.Flags().StringVar(&encoding, "encoding", "", "File encoding (e.g. UTF-8)")
+	return cmd
+}
+
+func runAppsFilePreview(client *Client, id, path string, maxRows *int, encoding *string, renderer *Renderer) error {
+	preview, err := client.Kestra.Apps().FilePreviewFromAppExecution(client.Ctx, id, client.Tenant, path, maxRows, encoding)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if preview == nil {
+		preview = map[string]interface{}{}
+	}
+
+	return renderer.Render(preview, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, toPrettyString(preview))
+		return nil
+	})
+}
+
+func newAppsLogsCommand() *cobra.Command {
+	var (
+		executionID string
+		minLevel    string
+		taskIDs     []string
+		outputFile  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "logs <id>",
+		Short: "Download logs for an app execution.",
+		Long: `Download the logs produced by an app execution view as plain text.
+
+By default the logs are streamed to stdout. Use --output-file to write them
+to a file instead.`,
+		Args: cobra.ExactArgs(1),
+		Example: `  kestractl apps logs <view-id>
+  kestractl apps logs <view-id> --execution-id <exec-id> --min-level ERROR
+  kestractl apps logs <view-id> --output-file app.log`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			var execPtr *string
+			if executionID != "" {
+				execPtr = &executionID
+			}
+			var levelPtr *string
+			if minLevel != "" {
+				upper := strings.ToUpper(minLevel)
+				levelPtr = &upper
+			}
+			return runAppsLogs(client, args[0], execPtr, levelPtr, taskIDs, outputFile, cmd.OutOrStdout())
+		},
+	}
+
+	cmd.Flags().StringVar(&executionID, "execution-id", "", "Filter logs by app execution ID")
+	cmd.Flags().StringVar(&minLevel, "min-level", "", "Minimum log level (e.g. TRACE, DEBUG, INFO, WARN, ERROR)")
+	cmd.Flags().StringArrayVar(&taskIDs, "task-id", nil, "Filter logs by task ID (repeatable)")
+	cmd.Flags().StringVarP(&outputFile, "output-file", "f", "", "Write logs to this file instead of stdout")
+	return cmd
+}
+
+func runAppsLogs(client *Client, id string, executionID, minLevel *string, taskIDs []string, outputFile string, out io.Writer) error {
+	file, err := client.Kestra.Apps().LogsFromAppExecution(client.Ctx, id, client.Tenant, executionID, minLevel, taskIDs)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	defer cleanupNamespaceTempFile(file)
+
+	dst := out
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to create output file %q: %w", outputFile, err)
+		}
+		defer f.Close()
+		dst = f
+	}
+
+	if _, err := io.Copy(dst, file); err != nil {
+		return fmt.Errorf("failed to write logs: %w", err)
+	}
+	if outputFile != "" {
+		fmt.Fprintf(out, "Logs for app execution '%s' written to %s\n", id, outputFile)
+	}
+	return nil
 }

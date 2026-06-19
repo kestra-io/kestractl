@@ -575,6 +575,25 @@ kestractl apps export --output-file apps.zip
 
 # Import apps from a ZIP archive
 kestractl apps import apps.zip
+
+# Bulk enable / disable / delete multiple apps
+kestractl apps bulk-enable  uid-1 uid-2 uid-3
+kestractl apps bulk-disable uid-1 uid-2 uid-3
+kestractl apps bulk-delete  uid-1 uid-2 --yes
+
+# List all tags used across apps
+kestractl apps tags
+
+# Search apps from the catalog
+kestractl apps catalog
+kestractl apps catalog --query reporting --output json
+
+# Inspect files produced by an app execution view
+kestractl apps file-meta    <view-id> --path /path/to/file
+kestractl apps file-preview <view-id> --path /path/to/file --max-rows 50
+
+# Download logs for an app execution
+kestractl apps logs <view-id> --min-level ERROR --output-file app.log
 ```
 
 ### Assets (Enterprise Edition)
