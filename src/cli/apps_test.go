@@ -392,6 +392,256 @@ func TestRunAppsImport_WithErrors(t *testing.T) {
 	}
 }
 
+func TestAppsCommand_Structure_NewSubcommands(t *testing.T) {
+	cmd := newAppsCommand()
+	subNames := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		subNames[sub.Name()] = true
+	}
+	for _, want := range []string{"bulk-delete", "bulk-enable", "bulk-disable", "tags", "catalog", "file-meta", "file-preview", "logs"} {
+		if !subNames[want] {
+			t.Errorf("expected subcommand %q to exist", want)
+		}
+	}
+}
+
+func TestRunAppsBulkDelete_Confirmed(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Errorf("expected DELETE, got %s", r.Method)
+		}
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":2}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsBulkDelete(newTestClient(t, server.URL), []string{"uid-1", "uid-2"}, false, strings.NewReader("y\n"), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsBulkDelete error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2 app(s) deleted") {
+		t.Errorf("expected deletion message, got:\n%s", buf.String())
+	}
+	if !strings.Contains(string(gotBody), "uid-1") || !strings.Contains(string(gotBody), "uid-2") {
+		t.Errorf("expected uids in request body, got: %s", gotBody)
+	}
+}
+
+func TestRunAppsBulkDelete_Cancelled(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsBulkDelete(newTestClient(t, server.URL), []string{"uid-1"}, false, strings.NewReader("n\n"), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsBulkDelete error: %v", err)
+	}
+	if hit {
+		t.Error("expected no API request when cancelled")
+	}
+	if !strings.Contains(buf.String(), "Cancelled") {
+		t.Errorf("expected cancellation message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunAppsBulkToggle_Enable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/apps/enable") {
+			t.Errorf("expected enable path, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":3}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsBulkToggle(newTestClient(t, server.URL), []string{"a", "b", "c"}, true, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsBulkToggle error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "3 app(s) enabled") {
+		t.Errorf("expected enabled message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunAppsBulkToggle_Disable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/apps/disable") {
+			t.Errorf("expected disable path, got %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsBulkToggle(newTestClient(t, server.URL), []string{"a"}, false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsBulkToggle error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 app(s) disabled") {
+		t.Errorf("expected disabled message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunAppsTags(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tags":["prod","reporting","internal"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsTags(newTestClient(t, server.URL), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsTags error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"prod", "reporting", "internal", "Total tags: 3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAppsCatalog(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[
+			{"uid":"cat-1","name":"Reporting","type":"DASHBOARD","tags":["analytics"],"description":"A report app"}
+		],"total":1}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsCatalog(newTestClient(t, server.URL), "report", 1, 100, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsCatalog error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"cat-1", "Reporting", "DASHBOARD", "analytics", "Total catalog apps: 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunAppsFileMeta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("path"); got != "/my/file.csv" {
+			t.Errorf("expected path query, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"size":2048}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAppsFileMeta(newTestClient(t, server.URL), "view-1", "/my/file.csv", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsFileMeta error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"/my/file.csv", "2048"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestAppsFileMetaCommand_NoPath(t *testing.T) {
+	cmd := newAppsFileMetaCommand()
+	_, err := executeCommand(cmd, "view-1")
+	if err == nil {
+		t.Fatal("expected error when --path is missing")
+	}
+	if !strings.Contains(err.Error(), "--path is required") {
+		t.Fatalf("expected --path error, got: %v", err)
+	}
+}
+
+func TestRunAppsFilePreview(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("maxRows"); got != "10" {
+			t.Errorf("expected maxRows=10, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"csv","content":["a","b"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	maxRows := 10
+	err := runAppsFilePreview(newTestClient(t, server.URL), "view-1", "/my/file.csv", &maxRows, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAppsFilePreview error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "csv") {
+		t.Errorf("expected preview content, got:\n%s", buf.String())
+	}
+}
+
+func TestRunAppsLogs_ToStdout(t *testing.T) {
+	logContent := "2024-01-01 INFO some log line\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("minLevel"); got != "ERROR" {
+			t.Errorf("expected minLevel=ERROR, got %q", got)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(logContent))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	level := "ERROR"
+	err := runAppsLogs(newTestClient(t, server.URL), "view-1", nil, &level, nil, "", &buf)
+	if err != nil {
+		t.Fatalf("runAppsLogs error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "some log line") {
+		t.Errorf("expected log content, got:\n%s", buf.String())
+	}
+}
+
+func TestRunAppsLogs_ToFile(t *testing.T) {
+	logContent := "log file content\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte(logContent))
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp("", "app-logs-*.log")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	tmpFile.Close()
+	defer os.Remove(tmpFile.Name())
+
+	var buf bytes.Buffer
+	err = runAppsLogs(newTestClient(t, server.URL), "view-1", nil, nil, nil, tmpFile.Name(), &buf)
+	if err != nil {
+		t.Fatalf("runAppsLogs error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "written to") {
+		t.Errorf("expected written message, got:\n%s", buf.String())
+	}
+	written, _ := os.ReadFile(tmpFile.Name())
+	if !strings.Contains(string(written), "log file content") {
+		t.Errorf("file content mismatch: %s", written)
+	}
+}
+
 func TestAppsListCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {
