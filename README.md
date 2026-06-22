@@ -626,12 +626,26 @@ kestractl blueprints community get <id>
 # Get the flow source of a community blueprint
 kestractl blueprints community source <id>
 
+# Get the topology graph of a community blueprint
+kestractl blueprints community graph <id> --output json
+
 # Manage internal flow blueprints (Enterprise Edition)
 kestractl blueprints flow list
 kestractl blueprints flow get <id>
-kestractl blueprints flow create --file blueprint.yaml
-kestractl blueprints flow update <id> --file blueprint.yaml
+kestractl blueprints flow get <id> --legacy   # use the legacy /blueprints/flow/{id} endpoint
+kestractl blueprints flow create --title "My Blueprint" --source-file blueprint.yaml --tag etl
+kestractl blueprints flow update <id> --title "My Blueprint" --source-file blueprint.yaml
 kestractl blueprints flow delete <id>
+
+# Generate a flow source from a flow blueprint template
+kestractl blueprints flow use-template <id> --input env=prod --input region=eu
+
+# Manage internal/custom blueprints (Enterprise Edition)
+kestractl blueprints custom get <id>
+kestractl blueprints custom source <id>
+kestractl blueprints custom create --title "My Blueprint" --source-file blueprint.yaml
+kestractl blueprints custom update <id> --title "My Blueprint" --source-file blueprint.yaml
+kestractl blueprints custom delete <id>
 ```
 
 ### Test Suites (Enterprise Edition)
