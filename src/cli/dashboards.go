@@ -25,7 +25,6 @@ Dashboards provide configurable views of execution metrics and flow data. Requir
 	cmd.AddCommand(newDashboardsCreateCommand())
 	cmd.AddCommand(newDashboardsUpdateCommand())
 	cmd.AddCommand(newDashboardsDeleteCommand())
-	cmd.AddCommand(newDashboardsDefaultsCommand())
 	cmd.AddCommand(newDashboardsValidateCommand())
 	cmd.AddCommand(newDashboardsValidateChartCommand())
 	cmd.AddCommand(newDashboardsPreviewChartCommand())
@@ -271,51 +270,6 @@ func runDashboardsDelete(client *Client, id string, skipConfirm bool, in io.Read
 
 	return renderStatus(renderer, fmt.Sprintf("Dashboard '%s' deleted.", id),
 		map[string]any{"id": id, "status": "deleted"})
-}
-
-func newDashboardsDefaultsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "defaults",
-		Short: "Show the tenant's default dashboard settings.",
-		Long:  "Show which dashboards are configured as defaults for the home, flow overview, and namespace overview views.",
-		Example: `  kestractl dashboards defaults
-  kestractl dashboards defaults --output json`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			client, err := newClientFunc()
-			if err != nil {
-				return err
-			}
-			return runDashboardsDefaults(client, renderer)
-		},
-	}
-	return cmd
-}
-
-func runDashboardsDefaults(client *Client, renderer *Renderer) error {
-	settings, err := client.Kestra.Dashboards().DefaultDashboards(client.Ctx, client.Tenant)
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	return renderer.Render(settings, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "VIEW\tDASHBOARD")
-		fmt.Fprintf(w, "Home\t%s\n", orNone(settings.GetDefaultHomeDashboard()))
-		fmt.Fprintf(w, "Flow overview\t%s\n", orNone(settings.GetDefaultFlowOverviewDashboard()))
-		fmt.Fprintf(w, "Namespace overview\t%s\n", orNone(settings.GetDefaultNamespaceOverviewDashboard()))
-		return nil
-	})
-}
-
-func orNone(s string) string {
-	if s == "" {
-		return "(none)"
-	}
-	return s
 }
 
 func newDashboardsValidateCommand() *cobra.Command {

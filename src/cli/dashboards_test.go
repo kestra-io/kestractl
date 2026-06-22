@@ -21,7 +21,7 @@ func TestDashboardsCommand_Structure(t *testing.T) {
 	}
 	for _, want := range []string{
 		"list", "get", "create", "update", "delete",
-		"defaults", "validate", "validate-chart", "preview-chart",
+		"validate", "validate-chart", "preview-chart",
 		"chart-data", "export-chart-csv", "export-chart-data-csv",
 	} {
 		if !subNames[want] {
@@ -245,29 +245,6 @@ func TestRunDashboardsDelete_SkipConfirm(t *testing.T) {
 	}
 	if !hit {
 		t.Error("expected API request when --yes is set")
-	}
-}
-
-func TestRunDashboardsDefaults(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/dashboards/settings/default-dashboards") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"defaultHomeDashboard":"home-1","defaultFlowOverviewDashboard":"flow-1"}`))
-	}))
-	t.Cleanup(server.Close)
-
-	var buf bytes.Buffer
-	err := runDashboardsDefaults(newTestClient(t, server.URL), newTableRenderer(&buf))
-	if err != nil {
-		t.Fatalf("runDashboardsDefaults error: %v", err)
-	}
-	out := buf.String()
-	for _, want := range []string{"home-1", "flow-1", "(none)"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
 	}
 }
 

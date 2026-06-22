@@ -549,9 +549,6 @@ kestractl dashboards update <id> --file my-dashboard.yaml
 # Delete a dashboard (alias: rm)
 kestractl dashboards delete <id>
 
-# Show the tenant's default dashboard settings
-kestractl dashboards defaults
-
 # Validate a dashboard or a single chart definition
 kestractl dashboards validate --file my-dashboard.yaml
 kestractl dashboards validate-chart --file my-chart.yaml
