@@ -1142,11 +1142,20 @@ func runTriggersBackfillBulkByIds(client *Client, ids []kestra.TriggerController
 }
 
 func newTriggersPauseBackfillByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
 	cmd := &cobra.Command{
 		Use:   "pause-backfill-by-query",
 		Short: "Pause backfills for triggers matching query filters.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
 			if err != nil {
 				return err
 			}
@@ -1154,18 +1163,28 @@ func newTriggersPauseBackfillByQueryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runTriggersBackfillBulkByQuery(client, "pause", renderer)
+			return runTriggersBackfillBulkByQuery(client, "pause", filters, renderer)
 		},
 	}
+	addByQueryFilterFlags(cmd, &filterFlags)
 	return cmd
 }
 
 func newTriggersUnpauseBackfillByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
 	cmd := &cobra.Command{
 		Use:   "unpause-backfill-by-query",
 		Short: "Unpause backfills for triggers matching query filters.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
 			if err != nil {
 				return err
 			}
@@ -1173,18 +1192,28 @@ func newTriggersUnpauseBackfillByQueryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runTriggersBackfillBulkByQuery(client, "unpause", renderer)
+			return runTriggersBackfillBulkByQuery(client, "unpause", filters, renderer)
 		},
 	}
+	addByQueryFilterFlags(cmd, &filterFlags)
 	return cmd
 }
 
 func newTriggersDeleteBackfillByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
 	cmd := &cobra.Command{
 		Use:   "delete-backfill-by-query",
 		Short: "Delete backfills for triggers matching query filters.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
 			if err != nil {
 				return err
 			}
@@ -1192,23 +1221,26 @@ func newTriggersDeleteBackfillByQueryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runTriggersBackfillBulkByQuery(client, "delete", renderer)
+			return runTriggersBackfillBulkByQuery(client, "delete", filters, renderer)
 		},
 	}
+	addByQueryFilterFlags(cmd, &filterFlags)
 	return cmd
 }
 
-func runTriggersBackfillBulkByQuery(client *Client, op string, renderer *Renderer) error {
+func runTriggersBackfillBulkByQuery(client *Client, op string, filters []kestra.QueryFilter, renderer *Renderer) error {
+	searchFilters := queryFiltersToSearchFilters(filters)
+
 	var result *kestra.ApiAsyncOperationResponse
 	var err error
 
 	switch op {
 	case "pause":
-		result, err = client.Kestra.Triggers().PauseBackfillByQuery(client.Ctx, client.Tenant, nil)
+		result, err = client.Kestra.Triggers().PauseBackfillByQuery(client.Ctx, client.Tenant, searchFilters)
 	case "unpause":
-		result, err = client.Kestra.Triggers().UnpauseBackfillByQuery(client.Ctx, client.Tenant, nil)
+		result, err = client.Kestra.Triggers().UnpauseBackfillByQuery(client.Ctx, client.Tenant, searchFilters)
 	default: // delete
-		result, err = client.Kestra.Triggers().DeleteBackfillByQuery(client.Ctx, client.Tenant, nil)
+		result, err = client.Kestra.Triggers().DeleteBackfillByQuery(client.Ctx, client.Tenant, searchFilters)
 	}
 	if err != nil {
 		return formatSDKError(err)
