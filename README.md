@@ -543,6 +543,24 @@ kestractl dashboards update <id> --file my-dashboard.yaml
 
 # Delete a dashboard (alias: rm)
 kestractl dashboards delete <id>
+
+# Show the tenant's default dashboard settings
+kestractl dashboards defaults
+
+# Validate a dashboard or a single chart definition
+kestractl dashboards validate --file my-dashboard.yaml
+kestractl dashboards validate-chart --file my-chart.yaml
+
+# Preview a chart's data without saving it
+kestractl dashboards preview-chart --file my-chart.yaml --output json
+
+# Fetch the data for a chart of an existing dashboard
+kestractl dashboards chart-data <dashboard-id> <chart-id>
+kestractl dashboards chart-data <dashboard-id> <chart-id> --file filters.yaml --output json
+
+# Export chart data as CSV (to stdout or --output-file)
+kestractl dashboards export-chart-csv --file my-chart.yaml --output-file chart.csv
+kestractl dashboards export-chart-data-csv <dashboard-id> <chart-id> --output-file chart.csv
 ```
 
 ### Apps (Enterprise Edition)
