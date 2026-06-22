@@ -6,6 +6,7 @@ import (
 	"os"
 	"text/tabwriter"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -22,6 +23,11 @@ Assets are data-catalog entities tracked for lineage and dependency analysis. Re
 	cmd.AddCommand(newAssetsGetCommand())
 	cmd.AddCommand(newAssetsCreateCommand())
 	cmd.AddCommand(newAssetsDeleteCommand())
+	cmd.AddCommand(newAssetsDependenciesCommand())
+	cmd.AddCommand(newAssetsDeleteByIdsCommand())
+	cmd.AddCommand(newAssetsDeleteByQueryCommand())
+	cmd.AddCommand(newAssetsLineageEventsCommand())
+	cmd.AddCommand(newAssetsUsagesCommand())
 
 	return cmd
 }
@@ -211,4 +217,325 @@ func runAssetsDelete(client *Client, id string, skipConfirm bool, in io.Reader, 
 
 	return renderStatus(renderer, fmt.Sprintf("Asset '%s' deleted.", id),
 		map[string]any{"id": id, "status": "deleted"})
+}
+
+func newAssetsDependenciesCommand() *cobra.Command {
+	var (
+		destinationOnly bool
+		expandAll       bool
+	)
+
+	cmd := &cobra.Command{
+		Use:     "dependencies <id>",
+		Short:   "Show the dependency graph of an asset.",
+		Aliases: []string{"deps"},
+		Args:    cobra.ExactArgs(1),
+		Example: `  kestractl assets dependencies <id>
+  kestractl assets dependencies <id> --expand-all --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAssetsDependencies(client, args[0], destinationOnly, expandAll, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&destinationOnly, "destination-only", false, "Only include downstream (destination) dependencies")
+	cmd.Flags().BoolVar(&expandAll, "expand-all", false, "Expand all transitive dependencies")
+	return cmd
+}
+
+func runAssetsDependencies(client *Client, id string, destinationOnly, expandAll bool, renderer *Renderer) error {
+	graph, err := client.Kestra.Assets().AssetDependencies(client.Ctx, id, client.Tenant, &destinationOnly, &expandAll)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(graph, func(w *tabwriter.Writer) error {
+		nodes := graph.GetNodes()
+		edges := graph.GetEdges()
+		fmt.Fprintln(w, "UID\tNAMESPACE\tTYPE")
+		for _, n := range nodes {
+			fmt.Fprintf(w, "%s\t%s\t%v\n", n.GetUid(), n.GetNamespace(), n.GetType())
+		}
+		fmt.Fprintf(w, "\nNodes: %d, Edges: %d\n", len(nodes), len(edges))
+		fmt.Fprintln(w, "Use --output json to see the full graph.")
+		return nil
+	})
+}
+
+func newAssetsDeleteByIdsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "delete-by-ids <id> [<id>...]",
+		Short: "Delete multiple assets by their IDs.",
+		Args:  cobra.MinimumNArgs(1),
+		Example: `  kestractl assets delete-by-ids id1 id2 id3
+  kestractl assets delete-by-ids id1 id2 --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAssetsDeleteByIds(client, args, renderer)
+		},
+	}
+	return cmd
+}
+
+func runAssetsDeleteByIds(client *Client, ids []string, renderer *Renderer) error {
+	resp, err := client.Kestra.Assets().DeleteAssetsByIds(client.Ctx, client.Tenant, ids)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	return renderAssetsBulkResponse(resp, renderer)
+}
+
+func newAssetsDeleteByQueryCommand() *cobra.Command {
+	var (
+		filterFlags byQueryFilterFlags
+		purge       bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "delete-by-query",
+		Short: "Delete assets matching query filters.",
+		Example: `  kestractl assets delete-by-query --namespace my.namespace
+  kestractl assets delete-by-query --filter NAMESPACE:EQUALS:my.namespace --purge`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAssetsDeleteByQuery(client, filters, purge, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	cmd.Flags().BoolVar(&purge, "purge", false, "Permanently purge the matched assets instead of soft-deleting")
+	return cmd
+}
+
+func runAssetsDeleteByQuery(client *Client, filters []kestra.QueryFilter, purge bool, renderer *Renderer) error {
+	resp, err := client.Kestra.Assets().DeleteAssetsByQuery(client.Ctx, client.Tenant, queryFiltersToSearchFilters(filters), &purge)
+	if err != nil {
+		return formatSDKError(err)
+	}
+	return renderAssetsBulkResponse(resp, renderer)
+}
+
+func renderAssetsBulkResponse(resp *kestra.BulkResponse, renderer *Renderer) error {
+	count := resp.GetCount()
+	return renderer.Render(map[string]any{"count": count}, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "%d asset(s) affected.\n", count)
+		return nil
+	})
+}
+
+func newAssetsLineageEventsCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "lineage-events",
+		Short:   "Inspect and manage asset lineage events.",
+		Aliases: []string{"lineage"},
+	}
+	cmd.AddCommand(newAssetsLineageEventsListCommand())
+	cmd.AddCommand(newAssetsLineageEventsDeleteByQueryCommand())
+	return cmd
+}
+
+func newAssetsLineageEventsListCommand() *cobra.Command {
+	var (
+		page int32
+		size int32
+		sort []string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List asset lineage events.",
+		Aliases: []string{"ls"},
+		Example: `  kestractl assets lineage-events list
+  kestractl assets lineage-events list --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAssetsLineageEventsList(client, page, size, sort, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (repeatable)")
+	return cmd
+}
+
+func runAssetsLineageEventsList(client *Client, page, size int32, sort []string, renderer *Renderer) error {
+	pageInt, sizeInt := int(page), int(size)
+
+	resp, err := client.Kestra.Assets().SearchAssetLineageEvents(client.Ctx, client.Tenant, &pageInt, &sizeInt, sort, nil)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "UID\tNAMESPACE\tFLOW\tEXECUTION\tSTATE")
+		for _, e := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				e.GetUid(), e.GetNamespace(), e.GetFlowId(), e.GetExecutionId(), e.GetState())
+		}
+		fmt.Fprintf(w, "\nTotal lineage events: %d\n", resp.GetTotal())
+		return nil
+	})
+}
+
+func newAssetsLineageEventsDeleteByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:     "delete-by-query",
+		Short:   "Delete asset lineage events matching query filters.",
+		Example: `  kestractl assets lineage-events delete-by-query --namespace my.namespace`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			resp, err := client.Kestra.Assets().DeleteAssetLineageEventsByQuery(client.Ctx, client.Tenant, queryFiltersToSearchFilters(filters))
+			if err != nil {
+				return formatSDKError(err)
+			}
+			return renderAssetsBulkResponse(resp, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
+}
+
+func newAssetsUsagesCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "usages",
+		Short:   "Inspect and manage asset usages.",
+		Aliases: []string{"usage"},
+	}
+	cmd.AddCommand(newAssetsUsagesListCommand())
+	cmd.AddCommand(newAssetsUsagesDeleteByQueryCommand())
+	return cmd
+}
+
+func newAssetsUsagesListCommand() *cobra.Command {
+	var (
+		page int32
+		size int32
+		sort []string
+	)
+
+	cmd := &cobra.Command{
+		Use:     "list",
+		Short:   "List asset usages.",
+		Aliases: []string{"ls"},
+		Example: `  kestractl assets usages list
+  kestractl assets usages list --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runAssetsUsagesList(client, page, size, sort, renderer)
+		},
+	}
+
+	cmd.Flags().Int32Var(&page, "page", 1, "Page number")
+	cmd.Flags().Int32Var(&size, "size", 100, "Page size")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (repeatable)")
+	return cmd
+}
+
+func runAssetsUsagesList(client *Client, page, size int32, sort []string, renderer *Renderer) error {
+	pageInt, sizeInt := int(page), int(size)
+
+	resp, err := client.Kestra.Assets().SearchAssetUsages(client.Ctx, client.Tenant, &pageInt, &sizeInt, sort, nil)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	results := resp.GetResults()
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "ASSET ID\tNAMESPACE\tFLOW\tEXECUTION\tTASK")
+		for _, u := range results {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+				u.GetAssetId(), u.GetNamespace(), u.GetFlowId(), u.GetExecutionId(), u.GetTaskId())
+		}
+		fmt.Fprintf(w, "\nTotal usages: %d\n", resp.GetTotal())
+		return nil
+	})
+}
+
+func newAssetsUsagesDeleteByQueryCommand() *cobra.Command {
+	var filterFlags byQueryFilterFlags
+
+	cmd := &cobra.Command{
+		Use:     "delete-by-query",
+		Short:   "Delete asset usages matching query filters.",
+		Example: `  kestractl assets usages delete-by-query --namespace my.namespace`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			filters, err := filterFlags.resolve()
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			resp, err := client.Kestra.Assets().DeleteAssetUsagesByQuery(client.Ctx, client.Tenant, queryFiltersToSearchFilters(filters))
+			if err != nil {
+				return formatSDKError(err)
+			}
+			return renderAssetsBulkResponse(resp, renderer)
+		},
+	}
+
+	addByQueryFilterFlags(cmd, &filterFlags)
+	return cmd
 }
