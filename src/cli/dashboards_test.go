@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -16,7 +19,11 @@ func TestDashboardsCommand_Structure(t *testing.T) {
 	for _, sub := range cmd.Commands() {
 		subNames[sub.Name()] = true
 	}
-	for _, want := range []string{"list", "get", "create", "update", "delete"} {
+	for _, want := range []string{
+		"list", "get", "create", "update", "delete",
+		"defaults", "validate", "validate-chart", "preview-chart",
+		"chart-data", "export-chart-csv", "export-chart-data-csv",
+	} {
 		if !subNames[want] {
 			t.Errorf("expected subcommand %q to exist", want)
 		}
@@ -239,6 +246,208 @@ func TestRunDashboardsDelete_SkipConfirm(t *testing.T) {
 	if !hit {
 		t.Error("expected API request when --yes is set")
 	}
+}
+
+func TestRunDashboardsDefaults(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/dashboards/settings/default-dashboards") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"defaultHomeDashboard":"home-1","defaultFlowOverviewDashboard":"flow-1"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runDashboardsDefaults(newTestClient(t, server.URL), newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runDashboardsDefaults error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"home-1", "flow-1", "(none)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunDashboardsValidate(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/validate") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"","warnings":["watch out"]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f := writeTempFile(t, "title: My Dashboard\ncharts: []")
+	var buf bytes.Buffer
+	err := runDashboardsValidate(newTestClient(t, server.URL), f, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runDashboardsValidate error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"passed", "watch out"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunDashboardsValidateChart(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/validate/chart") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"bad chart"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f := writeTempFile(t, "type: bar")
+	var buf bytes.Buffer
+	err := runDashboardsValidateChart(newTestClient(t, server.URL), f, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runDashboardsValidateChart error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "bad chart") {
+		t.Errorf("expected validation failure, got:\n%s", buf.String())
+	}
+}
+
+func TestRunDashboardsPreviewChart(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/charts/preview") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"x":"a"},{"x":"b"}],"total":2}`))
+	}))
+	t.Cleanup(server.Close)
+
+	f := writeTempFile(t, "id: c1\ntype: bar")
+	var buf bytes.Buffer
+	err := runDashboardsPreviewChart(newTestClient(t, server.URL), f, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runDashboardsPreviewChart error: %v", err)
+	}
+	// The chart field must be sent as a raw string, not a nested object.
+	if got, ok := gotBody["chart"].(string); !ok || !strings.Contains(got, "type: bar") {
+		t.Errorf("expected chart sent as a YAML string, got body: %v", gotBody)
+	}
+	out := buf.String()
+	for _, want := range []string{"Rows", "Total", "2"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunDashboardsChartData(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/my-dashboard/charts/my-chart") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"x":"a"}],"total":1}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runDashboardsChartData(newTestClient(t, server.URL), "my-dashboard", "my-chart", "", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runDashboardsChartData error: %v", err)
+	}
+	// The endpoint requires a body; with no --file we must still send "{}".
+	if strings.TrimSpace(gotBody) != "{}" {
+		t.Errorf("expected empty-object filters body, got: %q", gotBody)
+	}
+	if !strings.Contains(buf.String(), "Rows") {
+		t.Errorf("expected chart data summary, got:\n%s", buf.String())
+	}
+}
+
+func TestRunDashboardsExportChartCSV_Stdout(t *testing.T) {
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/charts/export/to-csv") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte("col1,col2\n1,2\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	f := writeTempFile(t, "id: c1\ntype: bar")
+	var buf bytes.Buffer
+	err := runDashboardsExportChartCSV(newTestClient(t, server.URL), f, "", &buf)
+	if err != nil {
+		t.Fatalf("runDashboardsExportChartCSV error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "col1,col2") {
+		t.Errorf("expected CSV output, got:\n%s", buf.String())
+	}
+	// The chart field must be sent as a raw string, not a nested object.
+	if got, ok := gotBody["chart"].(string); !ok || !strings.Contains(got, "type: bar") {
+		t.Errorf("expected chart sent as a YAML string, got body: %v", gotBody)
+	}
+}
+
+func TestRunDashboardsExportChartDataCSV_File(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/my-dashboard/charts/my-chart/export/to-csv") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.Header().Set("Content-Type", "text/csv")
+		_, _ = w.Write([]byte("a,b\n3,4\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	outPath := filepath.Join(t.TempDir(), "chart.csv")
+	var buf bytes.Buffer
+	err := runDashboardsExportChartDataCSV(newTestClient(t, server.URL), "my-dashboard", "my-chart", "", outPath, &buf)
+	if err != nil {
+		t.Fatalf("runDashboardsExportChartDataCSV error: %v", err)
+	}
+	// The endpoint requires a body; with no --file we must still send "{}".
+	if strings.TrimSpace(gotBody) != "{}" {
+		t.Errorf("expected empty-object global filter body, got: %q", gotBody)
+	}
+	if !strings.Contains(buf.String(), "exported to") {
+		t.Errorf("expected export confirmation, got:\n%s", buf.String())
+	}
+	data, readErr := os.ReadFile(outPath)
+	if readErr != nil {
+		t.Fatalf("read output file: %v", readErr)
+	}
+	if !strings.Contains(string(data), "a,b") {
+		t.Errorf("expected CSV in file, got: %s", string(data))
+	}
+}
+
+func writeTempFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "input.yml")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	return path
 }
 
 func TestDashboardsListCommand_ClientError(t *testing.T) {
