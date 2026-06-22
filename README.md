@@ -629,6 +629,22 @@ kestractl assets create --name my-asset --file asset.csv
 
 # Delete an asset (alias: rm)
 kestractl assets delete <id>
+
+# Show an asset's dependency graph (alias: deps)
+kestractl assets dependencies <id> --expand-all --output json
+
+# Bulk-delete assets by IDs or by query filters
+kestractl assets delete-by-ids id1 id2 id3
+kestractl assets delete-by-query --namespace my.namespace
+kestractl assets delete-by-query --filter NAMESPACE:EQUALS:my.namespace --purge
+
+# Inspect and manage lineage events (alias: lineage)
+kestractl assets lineage-events list --output json
+kestractl assets lineage-events delete-by-query --namespace my.namespace
+
+# Inspect and manage asset usages (alias: usage)
+kestractl assets usages list --output json
+kestractl assets usages delete-by-query --namespace my.namespace
 ```
 
 ### Blueprints
