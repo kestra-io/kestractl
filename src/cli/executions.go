@@ -2221,13 +2221,17 @@ func runExecutionsChangeStatusByIds(client *Client, ids []string, newStatus stri
 }
 
 func newExecutionsTriggerWebhookCommand() *cobra.Command {
-	var method string
+	var (
+		method string
+		path   string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "trigger-webhook <namespace> <flow_id> <key>",
 		Short: "Trigger an execution via a webhook.",
 		Example: `  kestractl executions trigger-webhook my.namespace my-flow my-key
   kestractl executions trigger-webhook my.namespace my-flow my-key --method POST
+  kestractl executions trigger-webhook my.namespace my-flow my-key --method PUT --path extra/segment
   kestractl executions trigger-webhook my.namespace my-flow my-key --output json`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2239,41 +2243,59 @@ func newExecutionsTriggerWebhookCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runExecutionsTriggerWebhook(client, args[0], args[1], args[2], method, renderer)
+			return runExecutionsTriggerWebhook(client, args[0], args[1], args[2], method, path, renderer)
 		},
 	}
 
-	cmd.Flags().StringVar(&method, "method", "GET", "HTTP method to use (GET or POST)")
+	cmd.Flags().StringVar(&method, "method", "GET", "HTTP method to use (GET, POST or PUT)")
+	cmd.Flags().StringVar(&path, "path", "", "Optional path suffix appended to the webhook URL")
 	return cmd
 }
 
-func runExecutionsTriggerWebhook(client *Client, namespace, flowID, key, method string, renderer *Renderer) error {
+func runExecutionsTriggerWebhook(client *Client, namespace, flowID, key, method, path string, renderer *Renderer) error {
+	m := strings.ToUpper(method)
+	if m != "GET" && m != "POST" && m != "PUT" {
+		return fmt.Errorf("unsupported method %q: use GET, POST or PUT", method)
+	}
+
 	var row map[string]any
 
-	switch strings.ToUpper(method) {
-	case "POST":
-		result, err := triggerWebhookPost(client, namespace, flowID, key)
-		if err != nil {
-			return err
+	switch {
+	case path != "":
+		// A path suffix maps to the SDK's *WebhookWithPath variants.
+		var result *kestra.WebhookResponse
+		var err error
+		switch m {
+		case "GET":
+			result, err = client.Kestra.Executions().TriggerExecutionByGetWebhookWithPath(
+				client.Ctx, client.Tenant, namespace, flowID, key, path)
+		case "POST":
+			result, err = client.Kestra.Executions().TriggerExecutionByPostWebhookWithPath(
+				client.Ctx, client.Tenant, namespace, flowID, key, path)
+		default: // PUT
+			result, err = client.Kestra.Executions().TriggerExecutionByPutWebhookWithPath(
+				client.Ctx, client.Tenant, namespace, flowID, key, path)
 		}
-		row = result
-	case "GET":
-		// The SDK's only POST webhook helper appends a path segment, so we issue
-		// POST directly (see triggerWebhookPost); GET has a path-less helper.
+		if err != nil {
+			return formatSDKError(err)
+		}
+		row = webhookResponseRow(result)
+	case m == "GET":
 		result, err := client.Kestra.Executions().TriggerExecutionByGetWebhook(
 			client.Ctx, client.Tenant, namespace, flowID, key)
 		if err != nil {
 			return formatSDKError(err)
 		}
-		if result != nil {
-			row = map[string]any{
-				"id":        result.GetId(),
-				"namespace": result.GetNamespace(),
-				"flowId":    result.GetFlowId(),
-			}
+		row = webhookResponseRow(result)
+	default: // path-less POST or PUT
+		// The SDK only exposes *WebhookWithPath helpers for POST/PUT, which append
+		// a trailing path segment the server rejects with 404 when none is wanted.
+		// So we issue the request directly (see triggerWebhookDirect).
+		result, err := triggerWebhookDirect(client, m, namespace, flowID, key)
+		if err != nil {
+			return err
 		}
-	default:
-		return fmt.Errorf("unsupported method %q: use GET or POST", method)
+		row = result
 	}
 
 	if len(row) == 0 {
@@ -2298,11 +2320,24 @@ func runExecutionsTriggerWebhook(client *Client, namespace, flowID, key, method 
 	})
 }
 
-// triggerWebhookPost issues a POST to the canonical webhook endpoint. The SDK
-// only exposes a POST helper that appends a trailing path segment, which the
-// server rejects with 404, so we build the request directly while reusing the
-// SDK's configured host, default headers, and context-based authentication.
-func triggerWebhookPost(client *Client, namespace, flowID, key string) (map[string]any, error) {
+// webhookResponseRow flattens a WebhookResponse into the fields we render.
+func webhookResponseRow(result *kestra.WebhookResponse) map[string]any {
+	if result == nil {
+		return nil
+	}
+	return map[string]any{
+		"id":        result.GetId(),
+		"namespace": result.GetNamespace(),
+		"flowId":    result.GetFlowId(),
+	}
+}
+
+// triggerWebhookDirect issues a path-less webhook request with the given method.
+// The SDK only exposes *WebhookWithPath helpers for POST/PUT, which append a
+// trailing path segment the server rejects with 404, so we build the request
+// directly while reusing the SDK's configured host, default headers, and
+// context-based authentication.
+func triggerWebhookDirect(client *Client, method, namespace, flowID, key string) (map[string]any, error) {
 	cfg := client.API.GetConfig()
 
 	base := ""
@@ -2322,7 +2357,7 @@ func triggerWebhookPost(client *Client, namespace, flowID, key string) (map[stri
 		url.PathEscape(key),
 	)
 
-	req, err := http.NewRequestWithContext(client.Ctx, http.MethodPost, endpoint, nil)
+	req, err := http.NewRequestWithContext(client.Ctx, method, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}

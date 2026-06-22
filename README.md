@@ -305,8 +305,10 @@ kestractl executions update-status-by-query --namespace my.namespace --new-statu
 # Filter by any field with --filter FIELD:OPERATION:VALUE (e.g. STATE:EQUALS:SUCCESS)
 kestractl executions kill-by-query --filter STATE:EQUALS:RUNNING
 
-# Trigger an execution via webhook
+# Trigger an execution via webhook (--method GET|POST|PUT, --path appends a URL suffix)
 kestractl executions trigger-webhook my.namespace my-flow my-webhook-key
+kestractl executions trigger-webhook my.namespace my-flow my-webhook-key --method POST
+kestractl executions trigger-webhook my.namespace my-flow my-webhook-key --method PUT --path extra/segment
 
 # Flow graph and info
 kestractl executions flow-graph 2TLGqHrXC9k8BczKJe5djX
