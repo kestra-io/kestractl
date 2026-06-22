@@ -1375,6 +1375,85 @@ func TestExecutionsTriggerWebhookCommand_ClientError(t *testing.T) {
 	}
 }
 
+func TestRunExecutionsTriggerWebhook_GetWithPath(t *testing.T) {
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsTriggerWebhook(newTestClient(t, server.URL), "my.ns", "my-flow", "my-key", "GET", "extra/seg", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runExecutionsTriggerWebhook error: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Errorf("expected GET, got %s", gotMethod)
+	}
+	if !strings.HasSuffix(gotPath, "/executions/webhook/my.ns/my-flow/my-key/extra/seg") {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if !strings.Contains(buf.String(), "exec-1") {
+		t.Errorf("expected execution id in output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunExecutionsTriggerWebhook_PutWithPath(t *testing.T) {
+	var gotMethod string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-2","namespace":"my.ns","flowId":"my-flow"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsTriggerWebhook(newTestClient(t, server.URL), "my.ns", "my-flow", "my-key", "PUT", "seg", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runExecutionsTriggerWebhook error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", gotMethod)
+	}
+}
+
+func TestRunExecutionsTriggerWebhook_PutPathless(t *testing.T) {
+	var gotMethod, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-3"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsTriggerWebhook(newTestClient(t, server.URL), "my.ns", "my-flow", "my-key", "PUT", "", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runExecutionsTriggerWebhook error: %v", err)
+	}
+	if gotMethod != http.MethodPut {
+		t.Errorf("expected PUT, got %s", gotMethod)
+	}
+	if !strings.HasSuffix(gotPath, "/executions/webhook/my.ns/my-flow/my-key") {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+}
+
+func TestRunExecutionsTriggerWebhook_BadMethod(t *testing.T) {
+	var buf bytes.Buffer
+	err := runExecutionsTriggerWebhook(newTestClient(t, "http://example.invalid"), "my.ns", "my-flow", "my-key", "DELETE", "", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected error for unsupported method")
+	}
+	if !strings.Contains(err.Error(), "unsupported method") {
+		t.Fatalf("expected unsupported method error, got: %v", err)
+	}
+}
+
 func TestExecutionsWatchCommand_NoArgs(t *testing.T) {
 	cmd := newExecutionsWatchCommand()
 	_, err := executeCommand(cmd)
