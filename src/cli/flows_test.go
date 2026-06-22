@@ -904,6 +904,58 @@ func TestFlowsTaskCommand_NoArgs(t *testing.T) {
 	}
 }
 
+func TestFlowsGraphCommand_NoArgs(t *testing.T) {
+	cmd := newFlowsGenerateGraphCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 2 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunFlowsGenerateGraph(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/flows/my.namespace/my-flow/graph") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodes":[{"uid":"n1","type":"io.kestra.core.tasks.flows.Sequential"}],"edges":[{"source":"n1","target":"n2"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runFlowsGenerateGraph(newTestClient(t, server.URL), "my.namespace", "my-flow", nil, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsGenerateGraph error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"n1", "Sequential", "Edges: 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunFlowsGenerateGraph_Revision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("revision"); got != "3" {
+			t.Errorf("expected revision=3, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodes":[],"edges":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	rev := 3
+	var buf bytes.Buffer
+	err := runFlowsGenerateGraph(newTestClient(t, server.URL), "my.namespace", "my-flow", &rev, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsGenerateGraph error: %v", err)
+	}
+}
+
 func TestFlowsTaskCommand_ClientError(t *testing.T) {
 	original := newClientFunc
 	newClientFunc = func() (*Client, error) {

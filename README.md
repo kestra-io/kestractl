@@ -206,6 +206,9 @@ kestractl flows bulk-update --file flows.yaml
 # Generate the graph topology from a flow source file
 kestractl flows generate-graph-from-source --file flow.yaml
 
+# Show the graph topology of an existing flow (optionally a specific revision)
+kestractl flows graph my.namespace my-flow --revision 3 --output json
+
 # List available expressions for a flow
 kestractl flows expressions --namespace my.namespace --flow my-flow
 

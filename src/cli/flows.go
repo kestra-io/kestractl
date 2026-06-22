@@ -71,6 +71,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsExportByIdsCommand())
 	cmd.AddCommand(newFlowsExportByQueryCommand())
 	cmd.AddCommand(newFlowsGenerateGraphFromSourceCommand())
+	cmd.AddCommand(newFlowsGenerateGraphCommand())
 	cmd.AddCommand(newFlowsTaskCommand())
 	cmd.AddCommand(newFlowsBulkUpdateCommand())
 	cmd.AddCommand(newFlowsListByNamespaceCommand())
@@ -1548,6 +1549,72 @@ func runFlowsGenerateGraphFromSource(client *Client, source string, subflows []s
 	}
 
 	graph, _, err := req.Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if graph == nil {
+		graph = kestra.NewFlowGraphWithDefaults()
+	}
+
+	nodes := graph.GetNodes()
+	edges := graph.GetEdges()
+
+	nodeList := make([]map[string]any, len(nodes))
+	for i, n := range nodes {
+		nodeList[i] = map[string]any{"uid": n.GetUid(), "type": n.GetType()}
+	}
+	edgeList := make([]map[string]any, len(edges))
+	for i, e := range edges {
+		edgeList[i] = map[string]any{"source": e.GetSource(), "target": e.GetTarget()}
+	}
+
+	result := map[string]any{"nodes": nodeList, "edges": edgeList}
+	return renderer.Render(result, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "UID\tTYPE")
+		for _, n := range nodes {
+			fmt.Fprintf(w, "%s\t%s\n", n.GetUid(), n.GetType())
+		}
+		fmt.Fprintf(w, "\nEdges: %d\n", len(edges))
+		return nil
+	})
+}
+
+func newFlowsGenerateGraphCommand() *cobra.Command {
+	var (
+		revision int
+		subflows []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "graph <namespace> <flow-id>",
+		Short: "Show the topology graph of an existing flow.",
+		Args:  cobra.ExactArgs(2),
+		Example: `  kestractl flows graph my.namespace my-flow
+  kestractl flows graph my.namespace my-flow --revision 3 --output json`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			var revPtr *int
+			if cmd.Flags().Changed("revision") {
+				revPtr = &revision
+			}
+			return runFlowsGenerateGraph(client, args[0], args[1], revPtr, subflows, renderer)
+		},
+	}
+
+	cmd.Flags().IntVar(&revision, "revision", 0, "Flow revision to graph (defaults to the latest)")
+	cmd.Flags().StringArrayVar(&subflows, "subflow", nil, "Subflow tasks to expand (repeatable)")
+	return cmd
+}
+
+func runFlowsGenerateGraph(client *Client, namespace, id string, revision *int, subflows []string, renderer *Renderer) error {
+	graph, err := client.Kestra.Flows().GenerateFlowGraph(client.Ctx, namespace, id, client.Tenant, revision, subflows)
 	if err != nil {
 		return formatSDKError(err)
 	}
