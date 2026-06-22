@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestTriggersListCommand_Help(t *testing.T) {
@@ -591,7 +593,7 @@ func TestTriggersPauseBackfillByQueryCommand_ClientError(t *testing.T) {
 	defer func() { newClientFunc = original }()
 
 	cmd := newTriggersPauseBackfillByQueryCommand()
-	_, err := executeCommand(cmd)
+	_, err := executeCommand(cmd, "--namespace", "my.ns")
 	if err == nil {
 		t.Fatal("expected client error")
 	}
@@ -612,7 +614,7 @@ func TestTriggersUnpauseBackfillByQueryCommand_ClientError(t *testing.T) {
 	defer func() { newClientFunc = original }()
 
 	cmd := newTriggersUnpauseBackfillByQueryCommand()
-	_, err := executeCommand(cmd)
+	_, err := executeCommand(cmd, "--namespace", "my.ns")
 	if err == nil {
 		t.Fatal("expected client error")
 	}
@@ -633,12 +635,81 @@ func TestTriggersDeleteBackfillByQueryCommand_ClientError(t *testing.T) {
 	defer func() { newClientFunc = original }()
 
 	cmd := newTriggersDeleteBackfillByQueryCommand()
-	_, err := executeCommand(cmd)
+	_, err := executeCommand(cmd, "--namespace", "my.ns")
 	if err == nil {
 		t.Fatal("expected client error")
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestTriggersBackfillByQueryCommand_NoFilter(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	for _, tc := range []struct {
+		name string
+		cmd  *cobra.Command
+	}{
+		{"pause", newTriggersPauseBackfillByQueryCommand()},
+		{"unpause", newTriggersUnpauseBackfillByQueryCommand()},
+		{"delete", newTriggersDeleteBackfillByQueryCommand()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := executeCommand(tc.cmd)
+			if err == nil {
+				t.Fatal("expected error when no selection filter is given")
+			}
+			if !strings.Contains(err.Error(), "selection filter is required") {
+				t.Fatalf("expected selection-filter error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestRunTriggersBackfillBulkByQuery_SendsFilters(t *testing.T) {
+	for _, tc := range []struct {
+		op   string
+		path string
+	}{
+		{"pause", "/api/v1/main/triggers/backfill/pause/by-query"},
+		{"unpause", "/api/v1/main/triggers/backfill/unpause/by-query"},
+		{"delete", "/api/v1/main/triggers/backfill/delete/by-query"},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			var gotPath, gotQuery string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				gotQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"operationId":"op-123","totalItems":4}`))
+			}))
+			defer server.Close()
+
+			filters, err := parseQueryFilters("my.ns", nil)
+			if err != nil {
+				t.Fatalf("parseQueryFilters: %v", err)
+			}
+
+			var buf bytes.Buffer
+			renderer := newTableRenderer(&buf)
+			if err := runTriggersBackfillBulkByQuery(newTestClient(t, server.URL), tc.op, filters, renderer); err != nil {
+				t.Fatalf("runTriggersBackfillBulkByQuery: %v", err)
+			}
+
+			if gotPath != tc.path {
+				t.Fatalf("expected path %q, got %q", tc.path, gotPath)
+			}
+			// The namespace selection must reach the server as a filter param.
+			if !strings.Contains(gotQuery, "filters%5Bnamespace%5D%5BEQUALS%5D=my.ns") {
+				t.Fatalf("expected namespace filter in query, got %q", gotQuery)
+			}
+			if !strings.Contains(buf.String(), "4 trigger(s) scheduled") {
+				t.Fatalf("expected summary in output, got: %s", buf.String())
+			}
+		})
 	}
 }
 
