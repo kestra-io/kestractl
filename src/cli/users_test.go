@@ -593,6 +593,66 @@ func TestRunUsersPatchSuperAdmin_Revoke(t *testing.T) {
 	}
 }
 
+func TestUsersSetRestrictedCommand_NoArgs(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newUsersSetRestrictedCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected error when no args provided")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg") {
+		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+func TestRunUsersSetRestricted_Apply(t *testing.T) {
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.Method != http.MethodPatch {
+			http.Error(w, "wrong method", http.StatusMethodNotAllowed)
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/restricted") {
+			http.Error(w, "wrong path: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersSetRestricted(newTestClient(t, server.URL), "user-id-123", true, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersSetRestricted error: %v", err)
+	}
+	if !hit {
+		t.Error("expected PATCH request to be made")
+	}
+	if !strings.Contains(buf.String(), "applied") {
+		t.Errorf("expected 'applied' message, got:\n%s", buf.String())
+	}
+}
+
+func TestRunUsersSetRestricted_Lift(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runUsersSetRestricted(newTestClient(t, server.URL), "user-id-123", false, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runUsersSetRestricted error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "lifted") {
+		t.Errorf("expected 'lifted' message, got:\n%s", buf.String())
+	}
+}
+
 func TestUsersDeleteAuthMethodCommand_NoArgs(t *testing.T) {
 	origOutput := globalFlags.Output
 	globalFlags.Output = "table"

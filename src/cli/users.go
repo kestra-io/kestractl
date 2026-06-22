@@ -34,6 +34,7 @@ Users are instance-level resources. Managing users requires Kestra Enterprise Ed
 	cmd.AddCommand(newUsersImpersonateCommand())
 	cmd.AddCommand(newUsersRevokeRefreshTokenCommand())
 	cmd.AddCommand(newUsersPatchSuperAdminCommand())
+	cmd.AddCommand(newUsersSetRestrictedCommand())
 	cmd.AddCommand(newUsersDeleteAuthMethodCommand())
 	cmd.AddCommand(newUsersChangeMyPasswordCommand())
 
@@ -882,6 +883,51 @@ func runUsersPatchSuperAdmin(client *Client, id string, superAdmin bool, rendere
 		map[string]any{"id": id, "superAdmin": superAdmin, "status": status})
 }
 
+func newUsersSetRestrictedCommand() *cobra.Command {
+	var restricted bool
+
+	cmd := &cobra.Command{
+		Use:   "set-restricted <id>",
+		Short: "Mark a user as restricted, or lift the restriction. Superadmin only.",
+		Long: `Set whether a user is restricted via the dedicated restricted endpoint.
+
+This is a targeted PATCH, unlike 'users update --restricted' which performs a
+full-replace of the user. Use this when you only want to toggle the flag.`,
+		Args: cobra.ExactArgs(1),
+		Example: `  kestractl users set-restricted <id> --restricted=true
+  kestractl users set-restricted <id> --restricted=false`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			client, err := newClientFunc()
+			if err != nil {
+				return err
+			}
+			return runUsersSetRestricted(client, args[0], restricted, renderer)
+		},
+	}
+
+	cmd.Flags().BoolVar(&restricted, "restricted", false, "Set restricted status (true or false)")
+	return cmd
+}
+
+func runUsersSetRestricted(client *Client, id string, restricted bool, renderer *Renderer) error {
+	body := kestra.IAMUserControllerApiPatchRestrictedRequest{Restricted: restricted}
+	if err := client.Kestra.Users().PatchUserDemo(client.Ctx, id, body); err != nil {
+		return formatSDKError(err)
+	}
+
+	status := "lifted"
+	if restricted {
+		status = "applied"
+	}
+	return renderStatus(renderer,
+		fmt.Sprintf("Restriction %s for user '%s'.", status, id),
+		map[string]any{"id": id, "restricted": restricted, "status": status})
+}
+
 func newUsersDeleteAuthMethodCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete-auth-method <id> <auth-method>",
@@ -926,9 +972,9 @@ func newUsersChangeMyPasswordCommand() *cobra.Command {
 	var oldPassword, newPassword string
 
 	cmd := &cobra.Command{
-		Use:   "change-my-password",
-		Short: "Change the current user's own password.",
-		Long:  "Update the password for the currently authenticated user using the old and new passwords.",
+		Use:     "change-my-password",
+		Short:   "Change the current user's own password.",
+		Long:    "Update the password for the currently authenticated user using the old and new passwords.",
 		Example: `  kestractl users change-my-password --old-password <current> --new-password <new>`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())

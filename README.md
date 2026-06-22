@@ -760,6 +760,10 @@ kestractl users change-my-password --old-password 'OldPass!' --new-password 'N3w
 kestractl users set-super-admin <user_id> --superadmin
 kestractl users set-super-admin <user_id> --superadmin=false
 
+# Mark a user as restricted, or lift the restriction (targeted PATCH)
+kestractl users set-restricted <user_id> --restricted=true
+kestractl users set-restricted <user_id> --restricted=false
+
 # Delete an auth method for a user
 kestractl users delete-auth-method <user_id> BASIC_AUTH
 
