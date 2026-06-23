@@ -83,7 +83,7 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
 else
   download "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${VERSION}" "$release_json"
 fi
-VERSION="$(awk -F '"' '/"tag_name":/ {print $4; exit}' "$release_json")"
+VERSION="$(awk -F '"' '/"tag_name":/ {print $4; exit}' "$release_json" | sed 's/^v//')"
 
 
 asset_name="${BINARY_NAME}_${VERSION}_${os}_${arch}"
