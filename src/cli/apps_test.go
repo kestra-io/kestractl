@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -515,7 +516,9 @@ func TestRunAppsTags(t *testing.T) {
 }
 
 func TestRunAppsCatalog(t *testing.T) {
+	var gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"results":[
 			{"uid":"cat-1","name":"Reporting","type":"DASHBOARD","tags":["analytics"],"description":"A report app"}
@@ -527,6 +530,9 @@ func TestRunAppsCatalog(t *testing.T) {
 	err := runAppsCatalog(newTestClient(t, server.URL), "report", 1, 100, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runAppsCatalog error: %v", err)
+	}
+	if q, err := url.ParseQuery(gotQuery); err != nil || q.Get("q") != "report" {
+		t.Errorf("expected q=report in query %q", gotQuery)
 	}
 	out := buf.String()
 	for _, want := range []string{"cat-1", "Reporting", "DASHBOARD", "analytics", "Total catalog apps: 1"} {
