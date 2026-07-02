@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -1494,5 +1495,266 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "prod") {
 		t.Errorf("expected namespace in output, got:\n%s", buf.String())
+	}
+}
+
+// --- Array-format labels regression tests (kestra-io/kestractl#83) -----------
+//
+// Kestra returns flow labels as a JSON array ([{"key":..,"value":..}]) which the
+// generated client cannot decode into its object-typed field, failing every
+// flows get/list/deploy against a namespace that has labelled flows. These tests
+// drive the real SDK against a stub server returning array-format labels and
+// assert the commands recover from the raw response body.
+
+// A complete, otherwise-valid flow that fails to decode ONLY because of its
+// array-format labels — faithfully reproducing #83 (see the assertion in
+// TestConfirmArrayLabelsDecodeError).
+const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","revision":2,"description":"labelled flow","disabled":false,"deleted":false,"tasks":[],"source":"id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\n","labels":[{"key":"type","value":"data_extraction"},{"key":"version","value":"v2"}]}`
+
+func TestRunFlowsGet_ArrayLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/flows/my.namespace/my-flow") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(flowWithArrayLabelsJSON))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runFlowsGet(newTestClient(t, server.URL), "my.namespace", "my-flow", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runFlowsGet error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "data_extraction") {
+		t.Errorf("expected flow source in output, got:\n%s", buf.String())
+	}
+}
+
+func TestRunFlowsGet_ArrayLabels_JSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(flowWithArrayLabelsJSON))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsGet(newTestClient(t, server.URL), "my.namespace", "my-flow", newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runFlowsGet error: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if got["id"] != "my-flow" {
+		t.Errorf("expected id my-flow, got %v", got["id"])
+	}
+	if got["revision"] != float64(2) {
+		t.Errorf("expected revision 2, got %v", got["revision"])
+	}
+	if !strings.Contains(got["source"].(string), "data_extraction") {
+		t.Errorf("expected recovered source, got %v", got["source"])
+	}
+}
+
+func TestRunFlowsList_Namespace_ArrayLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/flows/my.namespace") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("[" + flowWithArrayLabelsJSON + `,{"id":"second","namespace":"my.namespace","revision":1,"disabled":false,"deleted":false,"tasks":[],"labels":[{"key":"team","value":"data"}]}]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsList(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runFlowsList error: %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"my-flow", "second", "labelled flow"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestListAllFlows_Search_ArrayLabels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/flows/search") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[` + flowWithArrayLabelsJSON + `],"total":1}`))
+	}))
+	t.Cleanup(server.Close)
+
+	// namespace "" routes through listAllFlows -> SearchFlows.
+	var buf bytes.Buffer
+	if err := runFlowsList(newTestClient(t, server.URL), "", newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runFlowsList (all) error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "my-flow") {
+		t.Errorf("expected flow in output, got:\n%s", buf.String())
+	}
+}
+
+func TestDeployFlow_OverrideWithArrayLabels(t *testing.T) {
+	var putCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			// Exists-check: 200 with array-format labels -> decode fails but flow exists.
+			_, _ = w.Write([]byte(flowWithArrayLabelsJSON))
+		case http.MethodPut:
+			putCalled = true
+			// Update response also carries the array-format labels.
+			_, _ = w.Write([]byte(`{"id":"my-flow","namespace":"my.namespace","revision":3,"disabled":false,"deleted":false,"tasks":[],"labels":[{"key":"type","value":"data_extraction"}]}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "flow-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = tmpFile.WriteString("id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
+	tmpFile.Close()
+
+	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", true)
+	if !result.Success {
+		t.Fatalf("expected deploy success, got error: %s", result.Error)
+	}
+	if !putCalled {
+		t.Error("expected the update PUT to be issued")
+	}
+	if result.Revision != 3 {
+		t.Errorf("expected revision 3, got %d", result.Revision)
+	}
+}
+
+func TestDeployFlow_CreateWithArrayLabels(t *testing.T) {
+	var postCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			// Exists-check: flow does not exist.
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodPost:
+			postCalled = true
+			_, _ = w.Write([]byte(`{"id":"my-flow","namespace":"my.namespace","revision":1,"disabled":false,"deleted":false,"tasks":[],"labels":[{"key":"type","value":"data_extraction"}]}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "flow-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = tmpFile.WriteString("id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
+	tmpFile.Close()
+
+	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", false)
+	if !result.Success {
+		t.Fatalf("expected deploy success, got error: %s", result.Error)
+	}
+	if !postCalled {
+		t.Error("expected the create POST to be issued")
+	}
+	if result.Revision != 1 {
+		t.Errorf("expected revision 1, got %d", result.Revision)
+	}
+}
+
+func TestTryParseFlowFromError(t *testing.T) {
+	t.Run("recovers flow from labelled body", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(flowWithArrayLabelsJSON))
+		f, ok := tryParseFlowFromError(sdkErr)
+		if !ok {
+			t.Fatal("expected recovery to succeed")
+		}
+		if f.ID != "my-flow" || f.Namespace != "my.namespace" || f.Revision != 2 {
+			t.Errorf("unexpected parsed flow: %+v", f)
+		}
+		if !strings.Contains(f.Source, "data_extraction") {
+			t.Errorf("expected source recovered, got %q", f.Source)
+		}
+	})
+
+	t.Run("propagates genuine error body without id", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`{"message":"boom"}`))
+		if _, ok := tryParseFlowFromError(sdkErr); ok {
+			t.Fatal("expected recovery to fail for an error body without an id")
+		}
+	})
+
+	t.Run("ignores non-SDK errors", func(t *testing.T) {
+		if _, ok := tryParseFlowFromError(errors.New("plain error")); ok {
+			t.Fatal("expected recovery to fail for a non-SDK error")
+		}
+	})
+}
+
+func TestTryParseFlowListFromError(t *testing.T) {
+	t.Run("recovers array body", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte("["+flowWithArrayLabelsJSON+"]"))
+		flows, ok := tryParseFlowListFromError(sdkErr)
+		if !ok || len(flows) != 1 || flows[0].ID != "my-flow" {
+			t.Fatalf("unexpected recovery: ok=%v flows=%+v", ok, flows)
+		}
+	})
+
+	t.Run("rejects non-array body", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`{"message":"boom"}`))
+		if _, ok := tryParseFlowListFromError(sdkErr); ok {
+			t.Fatal("expected recovery to fail for a non-array body")
+		}
+	})
+}
+
+func TestTryParseFlowSearchFromError(t *testing.T) {
+	t.Run("recovers paged body", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`{"results":[`+flowWithArrayLabelsJSON+`],"total":7}`))
+		flows, total, ok := tryParseFlowSearchFromError(sdkErr)
+		if !ok || total != 7 || len(flows) != 1 || flows[0].ID != "my-flow" {
+			t.Fatalf("unexpected recovery: ok=%v total=%d flows=%+v", ok, total, flows)
+		}
+	})
+
+	t.Run("rejects body without results", func(t *testing.T) {
+		sdkErr := &kestra.GenericOpenAPIError{}
+		setGenericOpenAPIErrorBody(sdkErr, []byte(`{"message":"boom"}`))
+		if _, _, ok := tryParseFlowSearchFromError(sdkErr); ok {
+			t.Fatal("expected recovery to fail for a body without results")
+		}
+	})
+}
+
+// TestConfirmArrayLabelsDecodeError guards fixture fidelity: it asserts that the
+// shared fixture is a valid flow that the generated client fails to decode
+// *specifically* because of its array-format labels — i.e. the exact condition
+// from #83 that the tryParseFlow* fallbacks exist to recover from. If the SDK is
+// ever regenerated to accept array labels, this test flips and the workaround
+// (and its tests) can be retired.
+func TestConfirmArrayLabelsDecodeError(t *testing.T) {
+	var fws kestra.FlowWithSource
+	err := json.Unmarshal([]byte(flowWithArrayLabelsJSON), &fws)
+	if err == nil {
+		t.Fatal("fixture no longer reproduces #83: decode unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "labels") {
+		t.Fatalf("fixture fails to decode for the wrong reason (want a labels error): %v", err)
 	}
 }
