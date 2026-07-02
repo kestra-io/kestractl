@@ -482,42 +482,6 @@ func TestTriggersEnableCommand_ClientError(t *testing.T) {
 	}
 }
 
-func TestTriggersCreateBackfillCommand_MissingFlags(t *testing.T) {
-	origOutput := globalFlags.Output
-	globalFlags.Output = "table"
-	defer func() { globalFlags.Output = origOutput }()
-
-	cmd := newTriggersCreateBackfillCommand()
-	_, err := executeCommand(cmd)
-	if err == nil {
-		t.Fatal("expected error when required flags missing")
-	}
-	if !strings.Contains(err.Error(), "required") {
-		t.Fatalf("expected required-flags error, got: %v", err)
-	}
-}
-
-func TestTriggersCreateBackfillCommand_ClientError(t *testing.T) {
-	origOutput := globalFlags.Output
-	globalFlags.Output = "table"
-	defer func() { globalFlags.Output = origOutput }()
-
-	original := newClientFunc
-	newClientFunc = func() (*Client, error) {
-		return nil, errors.New("client error")
-	}
-	defer func() { newClientFunc = original }()
-
-	cmd := newTriggersCreateBackfillCommand()
-	_, err := executeCommand(cmd, "--namespace", "my.ns", "--flow-id", "my-flow", "--trigger-id", "my-trigger")
-	if err == nil {
-		t.Fatal("expected client error")
-	}
-	if !strings.Contains(err.Error(), "client error") {
-		t.Fatalf("expected client error, got: %v", err)
-	}
-}
-
 func TestTriggersPauseBackfillByIdsCommand_ClientError(t *testing.T) {
 	origOutput := globalFlags.Output
 	globalFlags.Output = "table"
@@ -684,7 +648,7 @@ func TestRunTriggersBackfillBulkByQuery_SendsFilters(t *testing.T) {
 				gotPath = r.URL.Path
 				gotQuery = r.URL.RawQuery
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = w.Write([]byte(`{"operationId":"op-123","totalItems":4}`))
+				_, _ = w.Write([]byte(`{"count":4}`))
 			}))
 			defer server.Close()
 

@@ -76,7 +76,6 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsBulkUpdateCommand())
 	cmd.AddCommand(newFlowsListByNamespaceCommand())
 	cmd.AddCommand(newFlowsListDeprecatedCommand())
-	cmd.AddCommand(newFlowsExpressionsCommand())
 	cmd.AddCommand(newFlowsNamespaceDependenciesCommand())
 	cmd.AddCommand(newFlowsValidateTaskCommand())
 	cmd.AddCommand(newFlowsValidateTriggerCommand())
@@ -2336,69 +2335,6 @@ func runFlowsListDeprecated(client *Client, namespace string, renderer *Renderer
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d flow(s) with deprecated tasks\n", len(flows))
-		return nil
-	})
-}
-
-func newFlowsExpressionsCommand() *cobra.Command {
-	var filePath, taskID string
-
-	cmd := &cobra.Command{
-		Use:   "expressions",
-		Short: "Get the expression context for a flow.",
-		Example: `  kestractl flows expressions --file my-flow.yaml
-  kestractl flows expressions --file my-flow.yaml --task-id my-task
-  kestractl flows expressions --file my-flow.yaml --output json`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			if filePath == "" {
-				return fmt.Errorf("--file is required")
-			}
-			client, err := newClientFunc()
-			if err != nil {
-				return err
-			}
-			return runFlowsExpressions(client, filePath, taskID, renderer)
-		},
-	}
-
-	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the flow YAML file (required)")
-	cmd.Flags().StringVar(&taskID, "task-id", "", "Optional task ID to scope the expression context")
-	return cmd
-}
-
-func runFlowsExpressions(client *Client, path string, taskID string, renderer *Renderer) error {
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	var taskIDPtr *string
-	if taskID != "" {
-		taskIDPtr = &taskID
-	}
-
-	result, err := client.Kestra.Flows().Expressions(client.Ctx, client.Tenant, string(content), taskIDPtr)
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	// Marshal the complex nested structure for the renderer.
-	data, marshalErr := json.Marshal(result)
-	if marshalErr != nil {
-		return fmt.Errorf("failed to marshal result: %w", marshalErr)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return renderer.Render(m, func(w *tabwriter.Writer) error {
-		pretty, _ := json.MarshalIndent(m, "", "  ")
-		fmt.Fprintln(w, string(pretty))
 		return nil
 	})
 }

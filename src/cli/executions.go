@@ -2208,14 +2208,12 @@ func runExecutionsChangeStatusByIds(client *Client, ids []string, newStatus stri
 	}
 
 	var count int32
-	var opID string
 	if result != nil {
-		count = result.GetTotalItems()
-		opID = result.GetOperationId()
+		count = result.GetCount()
 	}
-	row := map[string]any{"count": count, "operationId": opID, "newStatus": newStatus}
+	row := map[string]any{"count": count, "newStatus": newStatus}
 	return renderer.Render(row, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Bulk change-status to %s: %d execution(s) scheduled (operationId: %s).\n", newStatus, count, opID)
+		fmt.Fprintf(w, "Bulk change-status to %s: %d execution(s) scheduled.\n", newStatus, count)
 		return nil
 	})
 }
