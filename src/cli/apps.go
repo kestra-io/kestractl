@@ -97,7 +97,7 @@ func runAppsList(client *Client, namespace, query, flowID string, tags []string,
 		flowPtr = &flowID
 	}
 
-	resp, err := client.Kestra.Apps().SearchApps(client.Ctx, client.Tenant, &pageInt, &sizeInt, qPtr, nsPtr, flowPtr, sort, tags, nil)
+	resp, err := client.Kestra.Apps().SearchApps(client.Ctx, client.Tenant, &pageInt, &sizeInt, qPtr, nsPtr, flowPtr, sort, tags)
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -677,16 +677,12 @@ func newAppsCatalogCommand() *cobra.Command {
 func runAppsCatalog(client *Client, query string, page, size int32, renderer *Renderer) error {
 	pageInt, sizeInt := int(page), int(size)
 
-	var filters []kestra.SearchFilter
+	var qPtr *string
 	if query != "" {
-		filters = append(filters, kestra.SearchFilter{
-			Field:     kestra.FilterQuery,
-			Operation: kestra.OpEquals,
-			Value:     query,
-		})
+		qPtr = &query
 	}
 
-	resp, err := client.Kestra.Apps().SearchAppsFromCatalog(client.Ctx, client.Tenant, &pageInt, &sizeInt, filters)
+	resp, err := client.Kestra.Apps().SearchAppsFromCatalog(client.Ctx, client.Tenant, &pageInt, &sizeInt, qPtr, nil)
 	if err != nil {
 		return formatSDKError(err)
 	}
