@@ -498,7 +498,7 @@ Returns a table showing flow ID, namespace, description, and revision number.`,
 }
 
 func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
-	var flows []kestra.Flow
+	var flows []parsedFlow
 	if namespace == "" {
 		var err error
 		flows, err = listAllFlows(client)
@@ -506,63 +506,215 @@ func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
 			return err
 		}
 	} else {
-		var err error
-		flows, _, err = client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
+		sdkFlows, _, err := client.API.FlowsAPI.ListFlowsByNamespace(client.Ctx, namespace, client.Tenant).Execute()
 		if err != nil {
-			return formatSDKError(err)
+			// The generated client cannot decode array-format labels (#83);
+			// recover the flows from the raw response body.
+			parsed, ok := tryParseFlowListFromError(err)
+			if !ok {
+				return formatSDKError(err)
+			}
+			flows = parsed
+		} else {
+			flows = make([]parsedFlow, len(sdkFlows))
+			for i, f := range sdkFlows {
+				flows[i] = parsedFlowFromFlow(f)
+			}
 		}
 	}
 
 	result := make([]map[string]any, len(flows))
 	for i, flow := range flows {
 		result[i] = map[string]any{
-			"id":          flow.GetId(),
-			"namespace":   flow.GetNamespace(),
-			"description": flow.GetDescription(),
-			"revision":    flow.GetRevision(),
+			"id":          flow.ID,
+			"namespace":   flow.Namespace,
+			"description": flow.Description,
+			"revision":    flow.Revision,
 		}
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "ID\tNamespace\tDescription\tRevision")
 		for _, flow := range flows {
-			desc := flow.GetDescription()
+			desc := flow.Description
 			if desc == "" {
 				desc = "-"
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%d\n",
-				flow.GetId(),
-				flow.GetNamespace(),
+				flow.ID,
+				flow.Namespace,
 				desc,
-				flow.GetRevision())
+				flow.Revision)
 		}
 		return nil
 	})
 }
 
-func listAllFlows(client *Client) ([]kestra.Flow, error) {
+func listAllFlows(client *Client) ([]parsedFlow, error) {
 	const pageSize int32 = 1000
 	page := int32(1)
-	results := make([]kestra.Flow, 0)
+	results := make([]parsedFlow, 0)
 
 	for {
 		resp, _, err := client.API.FlowsAPI.SearchFlows(client.Ctx, client.Tenant).
 			Page(page).
 			Size(pageSize).
 			Execute()
+
+		var batch []parsedFlow
+		var total int64
 		if err != nil {
-			return nil, formatSDKError(err)
+			// The generated client cannot decode array-format labels (#83);
+			// recover the flows from the raw response body.
+			parsed, parsedTotal, ok := tryParseFlowSearchFromError(err)
+			if !ok {
+				return nil, formatSDKError(err)
+			}
+			batch, total = parsed, parsedTotal
+		} else {
+			for _, f := range resp.GetResults() {
+				batch = append(batch, parsedFlowFromFlow(f))
+			}
+			total = resp.GetTotal()
 		}
-		batch := resp.GetResults()
+
 		results = append(results, batch...)
 
-		if len(batch) == 0 || int64(len(results)) >= resp.GetTotal() {
+		if len(batch) == 0 || int64(len(results)) >= total {
 			break
 		}
 		page++
 	}
 
 	return results, nil
+}
+
+// parsedFlow holds the flow fields kestractl renders, recovered from a raw JSON
+// response body. See the tryParseFlow* helpers below.
+type parsedFlow struct {
+	ID          string
+	Namespace   string
+	Description string
+	Revision    int32
+	Source      string
+}
+
+// parsedFlowFromFlow normalizes a decoded SDK Flow into a parsedFlow.
+func parsedFlowFromFlow(f kestra.Flow) parsedFlow {
+	return parsedFlow{
+		ID:          f.GetId(),
+		Namespace:   f.GetNamespace(),
+		Description: f.GetDescription(),
+		Revision:    f.GetRevision(),
+	}
+}
+
+// parsedFlowFromMap extracts flow fields from a raw JSON object. Labels are
+// intentionally ignored (kestractl does not render them) — that field is
+// exactly what the generated client cannot decode (see tryParseFlowFromError).
+func parsedFlowFromMap(m map[string]any) parsedFlow {
+	f := parsedFlow{}
+	if v, ok := m["id"].(string); ok {
+		f.ID = v
+	}
+	if v, ok := m["namespace"].(string); ok {
+		f.Namespace = v
+	}
+	if v, ok := m["description"].(string); ok {
+		f.Description = v
+	}
+	if v, ok := m["source"].(string); ok {
+		f.Source = v
+	}
+	if v, ok := m["revision"].(float64); ok {
+		f.Revision = int32(v)
+	}
+	return f
+}
+
+// tryParseFlowFromError recovers a single flow from the raw body of a known SDK
+// deserialization failure. Kestra returns flow labels as an array
+// ([{"key":..,"value":..}]) but the generated client types the field as an
+// object, so decoding an otherwise-successful (200) response fails. The SDK
+// preserves the raw body on the returned GenericOpenAPIError, so we parse the
+// fields we need ourselves. See kestra-io/kestractl#83.
+//
+// Returns false when the error is a genuine failure (no JSON body, or a body
+// without an "id"), so the caller propagates it.
+func tryParseFlowFromError(err error) (*parsedFlow, bool) {
+	sdkErr, ok := err.(*kestra.GenericOpenAPIError)
+	if !ok {
+		return nil, false
+	}
+	body := sdkErr.Body()
+	if len(body) == 0 {
+		return nil, false
+	}
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return nil, false
+	}
+	if _, hasID := m["id"]; !hasID {
+		return nil, false
+	}
+	f := parsedFlowFromMap(m)
+	return &f, true
+}
+
+// tryParseFlowListFromError recovers a list of flows from the raw body of the
+// same SDK label-decoding failure, for endpoints that return a top-level JSON
+// array (ListFlowsByNamespace). See tryParseFlowFromError and #83.
+func tryParseFlowListFromError(err error) ([]parsedFlow, bool) {
+	sdkErr, ok := err.(*kestra.GenericOpenAPIError)
+	if !ok {
+		return nil, false
+	}
+	body := sdkErr.Body()
+	if len(body) == 0 {
+		return nil, false
+	}
+	var raw []any
+	if json.Unmarshal(body, &raw) != nil {
+		return nil, false
+	}
+	flows := make([]parsedFlow, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		flows = append(flows, parsedFlowFromMap(m))
+	}
+	return flows, true
+}
+
+// tryParseFlowSearchFromError recovers flows from the raw body of the same SDK
+// label-decoding failure, for the paged SearchFlows endpoint whose body is
+// {"results":[...],"total":N}. See tryParseFlowFromError and #83.
+func tryParseFlowSearchFromError(err error) ([]parsedFlow, int64, bool) {
+	sdkErr, ok := err.(*kestra.GenericOpenAPIError)
+	if !ok {
+		return nil, 0, false
+	}
+	body := sdkErr.Body()
+	if len(body) == 0 {
+		return nil, 0, false
+	}
+	var raw struct {
+		Results []map[string]any `json:"results"`
+		Total   int64            `json:"total"`
+	}
+	if json.Unmarshal(body, &raw) != nil {
+		return nil, 0, false
+	}
+	if raw.Results == nil {
+		return nil, 0, false
+	}
+	flows := make([]parsedFlow, 0, len(raw.Results))
+	for _, m := range raw.Results {
+		flows = append(flows, parsedFlowFromMap(m))
+	}
+	return flows, raw.Total, true
 }
 
 func newFlowsGetCommand() *cobra.Command {
@@ -595,24 +747,35 @@ Use --output json to include metadata alongside the source.`,
 }
 
 func runFlowsGet(client *Client, namespace, flowID string, renderer *Renderer) error {
+	var (
+		id, ns, source string
+		revision       int32
+	)
+
 	flow, _, err := client.API.FlowsAPI.Flow(client.Ctx, namespace, flowID, client.Tenant).
 		Source(true).
 		AllowDeleted(false).
 		Execute()
 	if err != nil {
-		return formatSDKError(err)
+		// The generated client cannot decode array-format labels (#83);
+		// recover the flow from the raw response body.
+		parsed, ok := tryParseFlowFromError(err)
+		if !ok {
+			return formatSDKError(err)
+		}
+		id, ns, revision, source = parsed.ID, parsed.Namespace, parsed.Revision, parsed.Source
+	} else {
+		if flow == nil {
+			return fmt.Errorf("flow not found")
+		}
+		id, ns, revision, source = flow.GetId(), flow.GetNamespace(), flow.GetRevision(), flow.GetSource()
 	}
-	if flow == nil {
-		return fmt.Errorf("flow not found")
-	}
-
-	source := flow.GetSource()
 
 	if renderer.IsJSON() {
 		result := map[string]any{
-			"id":        flow.GetId(),
-			"namespace": flow.GetNamespace(),
-			"revision":  flow.GetRevision(),
+			"id":        id,
+			"namespace": ns,
+			"revision":  revision,
 			"source":    source,
 		}
 		return renderer.RenderJSON(result)
@@ -1149,6 +1312,10 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 		Execute()
 	if checkErr == nil {
 		exists = true
+	} else if _, ok := tryParseFlowFromError(checkErr); ok {
+		// The generated client cannot decode array-format labels (#83), but a
+		// body that parses to a flow means it exists — proceed to the update.
+		exists = true
 	} else if resp != nil && resp.StatusCode != 404 {
 		result.Error = formatSDKError(checkErr).Error()
 		return result
@@ -1165,20 +1332,33 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 			Body(yamlContent).
 			Execute()
 		if err != nil {
-			result.Error = formatSDKError(err).Error()
-			return result
+			// The generated client cannot decode array-format labels (#83), but
+			// the update still succeeded; recover the revision from the raw body.
+			parsed, ok := tryParseFlowFromError(err)
+			if !ok {
+				result.Error = formatSDKError(err).Error()
+				return result
+			}
+			result.Revision = parsed.Revision
+		} else {
+			result.Revision = updateResp.GetRevision()
 		}
-		result.Revision = updateResp.GetRevision()
 	} else {
 		// Create new flow
 		flowResp, _, err := client.API.FlowsAPI.CreateFlow(client.Ctx, client.Tenant).
 			Body(yamlContent).
 			Execute()
 		if err != nil {
-			result.Error = formatSDKError(err).Error()
-			return result
+			// Same array-format labels decode failure as above (#83).
+			parsed, ok := tryParseFlowFromError(err)
+			if !ok {
+				result.Error = formatSDKError(err).Error()
+				return result
+			}
+			result.Revision = parsed.Revision
+		} else {
+			result.Revision = flowResp.GetRevision()
 		}
-		result.Revision = flowResp.GetRevision()
 	}
 
 	result.Success = true
