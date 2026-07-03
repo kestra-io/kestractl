@@ -53,3 +53,7 @@ See `CONTRIBUTING.md` for the full checklist. Key points:
 ## E2E Tests
 
 `e2e_tests/` is a **separate Go module**. It builds the `kestractl` binary, then uses `os/exec` to run real CLI commands against a live Kestra EE instance. Compatible versions are listed in `COMPATIBLE_KESTRA_VERSION.properties`. Docker setup lives in `e2e_tests/docker-setup/`.
+
+## Release
+
+Releases are created by creating a new Git tag. See `.github/workflows/release.yml` for more details. When releasing from `main` branch, be sure that Go SDK version in `go.mod` is a fixed and short one. For example, `github.com/kestra-io/client-sdk/go-sdk v1.1.0` is valid for a release but `github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1` is not valid for a release.
