@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -411,5 +412,147 @@ func TestNamespacesImportPluginDefaultsCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestParseVariableFlags_NoneProvided(t *testing.T) {
+	variables, err := parseVariableFlags(nil, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variables != nil {
+		t.Fatalf("expected nil variables, got: %v", variables)
+	}
+}
+
+func TestParseVariableFlags_Pairs(t *testing.T) {
+	variables, err := parseVariableFlags([]string{"env=prod", "region=eu"}, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variables["env"] != "prod" || variables["region"] != "eu" {
+		t.Fatalf("unexpected variables: %v", variables)
+	}
+}
+
+func TestParseVariableFlags_InvalidPair(t *testing.T) {
+	_, err := parseVariableFlags([]string{"invalid"}, "")
+	if err == nil {
+		t.Fatal("expected error for invalid key=value pair")
+	}
+	if !strings.Contains(err.Error(), "expected format key=value") {
+		t.Fatalf("expected format error, got: %v", err)
+	}
+}
+
+func TestParseVariableFlags_File(t *testing.T) {
+	f, err := os.CreateTemp("", "variables-*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("env: staging\nnested:\n  key: value\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	variables, err := parseVariableFlags(nil, f.Name())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variables["env"] != "staging" {
+		t.Fatalf("unexpected variables: %v", variables)
+	}
+	nested, ok := variables["nested"].(map[string]interface{})
+	if !ok || nested["key"] != "value" {
+		t.Fatalf("expected nested map, got: %v", variables["nested"])
+	}
+}
+
+func TestParseVariableFlags_PairOverridesFile(t *testing.T) {
+	f, err := os.CreateTemp("", "variables-*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString("env: staging\n")
+	f.Close()
+	defer os.Remove(f.Name())
+
+	variables, err := parseVariableFlags([]string{"env=prod"}, f.Name())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if variables["env"] != "prod" {
+		t.Fatalf("expected --variable to override file value, got: %v", variables)
+	}
+}
+
+func TestNamespacesUpdateCommand_InvalidVariable(t *testing.T) {
+	cmd := newNamespacesUpdateCommand()
+	_, err := executeCommand(cmd, "my.namespace", "--variable", "invalid")
+	if err == nil {
+		t.Fatal("expected error for invalid --variable")
+	}
+	if !strings.Contains(err.Error(), "expected format key=value") {
+		t.Fatalf("expected format error, got: %v", err)
+	}
+}
+
+func TestRunNamespacesUpdate_SetsVariables(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesUpdate error: %v", err)
+	}
+
+	vars, ok := gotBody["variables"].(map[string]interface{})
+	if !ok || vars["env"] != "prod" {
+		t.Fatalf("expected variables in request body, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesCreate_SetsVariables(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesCreate(newTestClient(t, server.URL), "my.namespace", "", map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesCreate error: %v", err)
+	}
+
+	vars, ok := gotBody["variables"].(map[string]interface{})
+	if !ok || vars["env"] != "prod" {
+		t.Fatalf("expected variables in request body, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesGet_ShowsVariables(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesGet(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "VARIABLES") || !strings.Contains(out, "env") || !strings.Contains(out, "prod") {
+		t.Fatalf("expected variables in output, got:\n%s", out)
 	}
 }
