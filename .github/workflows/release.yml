@@ -17,11 +17,6 @@ jobs:
         with:
           fetch-depth: 0
 
-#      - name: Ensure tag is on main
-#        run: |
-#          git fetch origin main:refs/remotes/origin/main
-#          git merge-base --is-ancestor "${GITHUB_SHA}" "origin/main"
-
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
