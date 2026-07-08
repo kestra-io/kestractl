@@ -3,10 +3,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 func newNamespacesCommand() *cobra.Command {
@@ -156,6 +158,7 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 		"id":          ns.GetId(),
 		"description": ns.GetDescription(),
 		"deleted":     ns.GetDeleted(),
+		"variables":   ns.GetVariables(),
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
@@ -164,18 +167,59 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
 		}
 		fmt.Fprintf(w, "DELETED\t%v\n", ns.GetDeleted())
+		if vars := ns.GetVariables(); len(vars) > 0 {
+			fmt.Fprintln(w, "\nVARIABLES:")
+			for k, v := range vars {
+				fmt.Fprintf(w, "  %s\t%v\n", k, v)
+			}
+		}
 		return nil
 	})
 }
 
+// parseVariableFlags builds a namespace variables map from repeatable "key=value"
+// pairs and/or a YAML/JSON file. Pairs take precedence over file entries with the
+// same key. Returns nil if neither source was provided.
+func parseVariableFlags(pairs []string, filePath string) (map[string]interface{}, error) {
+	if len(pairs) == 0 && filePath == "" {
+		return nil, nil
+	}
+
+	variables := map[string]interface{}{}
+
+	if filePath != "" {
+		data, err := os.ReadFile(filePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read variables file: %w", err)
+		}
+		if err := yaml.Unmarshal(data, &variables); err != nil {
+			return nil, fmt.Errorf("failed to parse variables file: %w", err)
+		}
+	}
+
+	for _, p := range pairs {
+		key, value, ok := strings.Cut(p, "=")
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid --variable %q: expected format key=value", p)
+		}
+		variables[key] = value
+	}
+
+	return variables, nil
+}
+
 func newNamespacesCreateCommand() *cobra.Command {
 	var description string
+	var variablePairs []string
+	var variablesFile string
 
 	cmd := &cobra.Command{
 		Use:   "create <namespace_id>",
 		Short: "Create a namespace.",
 		Example: `  kestractl namespaces create my.namespace
   kestractl namespaces create my.namespace --description "My team namespace"
+  kestractl namespaces create my.namespace --variable env=prod --variable region=eu
+  kestractl namespaces create my.namespace --variables-file variables.yml
   kestractl namespaces create my.namespace --output json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -183,22 +227,31 @@ func newNamespacesCreateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			variables, err := parseVariableFlags(variablePairs, variablesFile)
+			if err != nil {
+				return err
+			}
 			client, err := newClientFunc()
 			if err != nil {
 				return err
 			}
-			return runNamespacesCreate(client, args[0], description, renderer)
+			return runNamespacesCreate(client, args[0], description, variables, renderer)
 		},
 	}
 
 	cmd.Flags().StringVar(&description, "description", "", "Namespace description")
+	cmd.Flags().StringArrayVar(&variablePairs, "variable", nil, "Namespace variable as key=value (repeatable)")
+	cmd.Flags().StringVar(&variablesFile, "variables-file", "", "Path to a YAML or JSON file defining namespace variables")
 	return cmd
 }
 
-func runNamespacesCreate(client *Client, id, description string, renderer *Renderer) error {
+func runNamespacesCreate(client *Client, id, description string, variables map[string]interface{}, renderer *Renderer) error {
 	ns := kestra.NewNamespace(id, false)
 	if description != "" {
 		ns.SetDescription(description)
+	}
+	if len(variables) > 0 {
+		ns.SetVariables(variables)
 	}
 
 	created, _, err := client.API.NamespacesAPI.
@@ -215,6 +268,7 @@ func runNamespacesCreate(client *Client, id, description string, renderer *Rende
 	result := map[string]any{
 		"id":          created.GetId(),
 		"description": created.GetDescription(),
+		"variables":   created.GetVariables(),
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
@@ -229,8 +283,8 @@ func runNamespacesCreate(client *Client, id, description string, renderer *Rende
 
 func newNamespacesDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete <namespace_id>",
-		Short: "Delete a namespace.",
+		Use:     "delete <namespace_id>",
+		Short:   "Delete a namespace.",
 		Example: `  kestractl namespaces delete my.namespace`,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -263,11 +317,25 @@ func runNamespacesDelete(client *Client, id string, renderer *Renderer) error {
 
 func newNamespacesUpdateCommand() *cobra.Command {
 	var description string
+	var variablePairs []string
+	var variablesFile string
 
 	cmd := &cobra.Command{
 		Use:   "update <namespace_id>",
 		Short: "Update a namespace.",
+		Long: `Update a namespace.
+
+Fields not passed on the command line keep their current value: the
+existing namespace is fetched first, and only the flags provided here are
+applied on top before saving.
+
+--variable and --variables-file set the full list of namespace variables,
+replacing any variables previously set on the namespace. Combine them to
+layer inline overrides on top of a file: --variable entries win on key
+conflicts.`,
 		Example: `  kestractl namespaces update my.namespace --description "Updated description"
+  kestractl namespaces update my.namespace --variable env=prod --variable region=eu
+  kestractl namespaces update my.namespace --variables-file variables.yml
   kestractl namespaces update my.namespace --output json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -275,22 +343,40 @@ func newNamespacesUpdateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			variables, err := parseVariableFlags(variablePairs, variablesFile)
+			if err != nil {
+				return err
+			}
 			client, err := newClientFunc()
 			if err != nil {
 				return err
 			}
-			return runNamespacesUpdate(client, args[0], description, renderer)
+			return runNamespacesUpdate(client, args[0], description, cmd.Flags().Changed("description"), variables, renderer)
 		},
 	}
 
 	cmd.Flags().StringVar(&description, "description", "", "New namespace description")
+	cmd.Flags().StringArrayVar(&variablePairs, "variable", nil, "Namespace variable as key=value (repeatable); replaces existing variables")
+	cmd.Flags().StringVar(&variablesFile, "variables-file", "", "Path to a YAML or JSON file defining namespace variables; replaces existing variables")
 	return cmd
 }
 
-func runNamespacesUpdate(client *Client, id, description string, renderer *Renderer) error {
-	ns := kestra.NewNamespace(id, false)
-	if description != "" {
+func runNamespacesUpdate(client *Client, id, description string, descriptionSet bool, variables map[string]interface{}, renderer *Renderer) error {
+	// UpdateNamespace is a full-replace PUT: start from the current namespace
+	// so fields not passed on this invocation aren't wiped.
+	ns, _, err := client.API.NamespacesAPI.Namespace(client.Ctx, id, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if ns == nil {
+		ns = kestra.NewNamespace(id, false)
+	}
+
+	if descriptionSet {
 		ns.SetDescription(description)
+	}
+	if variables != nil {
+		ns.SetVariables(variables)
 	}
 
 	updated, _, err := client.API.NamespacesAPI.
@@ -307,6 +393,7 @@ func runNamespacesUpdate(client *Client, id, description string, renderer *Rende
 	result := map[string]any{
 		"id":          updated.GetId(),
 		"description": updated.GetDescription(),
+		"variables":   updated.GetVariables(),
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {

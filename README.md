@@ -411,6 +411,11 @@ kestractl namespaces create my.namespace
 kestractl namespaces update my.namespace --description "Production namespace"
 kestractl namespaces delete my.namespace
 
+# Set namespace variables (repeatable --variable, or a YAML/JSON file); replaces
+# the full variable set on that namespace
+kestractl namespaces create my.namespace --variable env=prod --variable region=eu
+kestractl namespaces update my.namespace --variables-file variables.yml
+
 # View inherited secrets and variables
 kestractl namespaces inherited-secrets   my.namespace
 kestractl namespaces inherited-variables my.namespace
