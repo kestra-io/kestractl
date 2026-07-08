@@ -325,6 +325,10 @@ func newNamespacesUpdateCommand() *cobra.Command {
 		Short: "Update a namespace.",
 		Long: `Update a namespace.
 
+Fields not passed on the command line keep their current value: the
+existing namespace is fetched first, and only the flags provided here are
+applied on top before saving.
+
 --variable and --variables-file set the full list of namespace variables,
 replacing any variables previously set on the namespace. Combine them to
 layer inline overrides on top of a file: --variable entries win on key
@@ -347,7 +351,7 @@ conflicts.`,
 			if err != nil {
 				return err
 			}
-			return runNamespacesUpdate(client, args[0], description, variables, renderer)
+			return runNamespacesUpdate(client, args[0], description, cmd.Flags().Changed("description"), variables, renderer)
 		},
 	}
 
@@ -357,9 +361,18 @@ conflicts.`,
 	return cmd
 }
 
-func runNamespacesUpdate(client *Client, id, description string, variables map[string]interface{}, renderer *Renderer) error {
-	ns := kestra.NewNamespace(id, false)
-	if description != "" {
+func runNamespacesUpdate(client *Client, id, description string, descriptionSet bool, variables map[string]interface{}, renderer *Renderer) error {
+	// UpdateNamespace is a full-replace PUT: start from the current namespace
+	// so fields not passed on this invocation aren't wiped.
+	ns, _, err := client.API.NamespacesAPI.Namespace(client.Ctx, id, client.Tenant).Execute()
+	if err != nil {
+		return formatSDKError(err)
+	}
+	if ns == nil {
+		ns = kestra.NewNamespace(id, false)
+	}
+
+	if descriptionSet {
 		ns.SetDescription(description)
 	}
 	if variables != nil {

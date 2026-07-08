@@ -499,14 +499,16 @@ func TestNamespacesUpdateCommand_InvalidVariable(t *testing.T) {
 func TestRunNamespacesUpdate_SetsVariables(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		if r.Method == http.MethodPut {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"}}`))
 	}))
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runNamespacesUpdate error: %v", err)
 	}
@@ -514,6 +516,77 @@ func TestRunNamespacesUpdate_SetsVariables(t *testing.T) {
 	vars, ok := gotBody["variables"].(map[string]interface{})
 	if !ok || vars["env"] != "prod" {
 		t.Fatalf("expected variables in request body, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesUpdate_DescriptionOnlyPreservesVariables(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"description":"old","variables":{"env":"prod","region":"eu"}}`))
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"description":"touched","variables":{"env":"prod","region":"eu"}}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "touched", true, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesUpdate error: %v", err)
+	}
+
+	if gotBody["description"] != "touched" {
+		t.Fatalf("expected description to be updated, got: %v", gotBody)
+	}
+	vars, ok := gotBody["variables"].(map[string]interface{})
+	if !ok || vars["env"] != "prod" || vars["region"] != "eu" {
+		t.Fatalf("expected pre-existing variables to be preserved, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesUpdate_VariablesOnlyPreservesDescription(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"description":"keep me","variables":{"env":"prod"}}`))
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"description":"keep me","variables":{"env":"staging"}}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "staging"}, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesUpdate error: %v", err)
+	}
+
+	if gotBody["description"] != "keep me" {
+		t.Fatalf("expected pre-existing description to be preserved, got: %v", gotBody)
+	}
+	vars, ok := gotBody["variables"].(map[string]interface{})
+	if !ok || vars["env"] != "staging" {
+		t.Fatalf("expected variables to be updated, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesUpdate_GetError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "new desc", true, nil, newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected error when fetching the current namespace fails")
 	}
 }
 
