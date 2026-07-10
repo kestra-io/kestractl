@@ -127,6 +127,7 @@ func newNamespaceFilesUploadCommand() *cobra.Command {
 	var override bool
 	var failFast bool
 	var allowMissingNamespace bool
+	var noRoot bool
 
 	cmd := &cobra.Command{
 		Use:          "upload <namespace> <local-path> <path>",
@@ -137,6 +138,11 @@ func newNamespaceFilesUploadCommand() *cobra.Command {
 When a directory is provided, all files are uploaded recursively.
 Hidden files and directories (starting with .) are skipped.
 
+By default, a directory upload nests the source directory name under the
+destination (./assets to resources yields resources/assets/...). Use --no-root
+to upload the directory's contents directly under the destination
+(resources/...) instead. Subdirectories inside the source are always preserved.
+
 The destination path is required and missing directories are created automatically.
 The namespace must already exist unless --allow-missing-namespace is set.
 By default, uploads fail if a destination file exists. Use --override to replace files.
@@ -145,8 +151,11 @@ When uploading multiple files, failures are collected unless --fail-fast is set.
 		Example: `  # Upload a single file
 	  kestractl nsfiles upload my.namespace ./local.txt workflows/local.txt
 
-	  # Upload a directory (recursive)
+	  # Upload a directory (recursive); files land under resources/assets/
 	  kestractl nsfiles upload my.namespace ./assets resources
+
+	  # Upload a directory's contents directly under resources/ (no source dir)
+	  kestractl nsfiles upload my.namespace ./assets resources --no-root
 
 	  # Override existing files
 	  kestractl nsfiles upload my.namespace ./assets resources --override
@@ -173,13 +182,20 @@ When uploading multiple files, failures are collected unless --fail-fast is set.
 				return err
 			}
 
-			return runNamespaceFilesUpload(client, args[0], args[1], args[2], override, failFast, allowMissingNamespace, renderer)
+			opts := namespaceFilesUploadOptions{
+				Override:              override,
+				FailFast:              failFast,
+				AllowMissingNamespace: allowMissingNamespace,
+				NoRoot:                noRoot,
+			}
+			return runNamespaceFilesUpload(client, args[0], args[1], args[2], opts, renderer)
 		},
 	}
 
 	cmd.Flags().BoolVar(&override, "override", false, "Override destination files if they already exist")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first upload error")
 	cmd.Flags().BoolVar(&allowMissingNamespace, "allow-missing-namespace", false, "Allow uploads when the namespace does not exist")
+	cmd.Flags().BoolVar(&noRoot, "no-root", false, "For directory uploads, place contents directly under the destination instead of nesting the source directory name")
 
 	return cmd
 }
@@ -301,6 +317,14 @@ type namespaceFileUploadResult struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// namespaceFilesUploadOptions holds the behavioral flags for an upload.
+type namespaceFilesUploadOptions struct {
+	Override              bool
+	FailFast              bool
+	AllowMissingNamespace bool
+	NoRoot                bool
+}
+
 type namespaceFileUploadSummary struct {
 	Total   int                         `json:"total"`
 	Success int                         `json:"success"`
@@ -335,13 +359,31 @@ type localNamespaceUploadFile struct {
 	Size     int64
 }
 
-func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, override bool, failFast bool, allowMissingNamespace bool, renderer *Renderer) error {
+// buildNamespaceUploadItems maps local files to namespace destinations.
+// noRoot skips nesting the source directory name under the destination.
+func buildNamespaceUploadItems(files []localNamespaceUploadFile, localPath, normalizedDest string, noRoot bool) []namespaceFileUploadResult {
+	destRoot := normalizedDest
+	if !noRoot {
+		destRoot = joinNamespacePath(normalizedDest, filepath.Base(localPath))
+	}
+	items := make([]namespaceFileUploadResult, 0, len(files))
+	for _, file := range files {
+		items = append(items, namespaceFileUploadResult{
+			Source:      file.Path,
+			Destination: joinNamespacePath(destRoot, filepath.ToSlash(file.Relative)),
+			Size:        file.Size,
+		})
+	}
+	return items
+}
+
+func runNamespaceFilesUpload(client *Client, namespace, localPath, destination string, opts namespaceFilesUploadOptions, renderer *Renderer) error {
 	normalizedDest := normalizeNamespacePath(destination)
 	if normalizedDest == "" {
 		return fmt.Errorf("destination path is required")
 	}
 
-	if !allowMissingNamespace {
+	if !opts.AllowMissingNamespace {
 		exists, err := namespaceExists(client, namespace)
 		if err != nil {
 			return err
@@ -367,16 +409,7 @@ func runNamespaceFilesUpload(client *Client, namespace, localPath, destination s
 		if len(files) == 0 {
 			return fmt.Errorf("no files found in directory '%s'", localPath)
 		}
-		destRoot := joinNamespacePath(normalizedDest, filepath.Base(localPath))
-		items = make([]namespaceFileUploadResult, 0, len(files))
-		for _, file := range files {
-			entry := namespaceFileUploadResult{
-				Source:      file.Path,
-				Destination: joinNamespacePath(destRoot, filepath.ToSlash(file.Relative)),
-				Size:        file.Size,
-			}
-			items = append(items, entry)
-		}
+		items = buildNamespaceUploadItems(files, localPath, normalizedDest, opts.NoRoot)
 	} else {
 		items = []namespaceFileUploadResult{{
 			Source:      localPath,
@@ -387,11 +420,11 @@ func runNamespaceFilesUpload(client *Client, namespace, localPath, destination s
 
 	failed := 0
 	for _, item := range items {
-		result := uploadNamespaceFile(client, namespace, item.Source, item.Destination, item.Size, override)
+		result := uploadNamespaceFile(client, namespace, item.Source, item.Destination, item.Size, opts.Override)
 		uploadTargets = append(uploadTargets, result)
 		if !result.Success {
 			failed++
-			if failFast {
+			if opts.FailFast {
 				break
 			}
 		}
