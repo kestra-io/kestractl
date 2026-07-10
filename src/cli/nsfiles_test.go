@@ -120,11 +120,49 @@ func TestNamespaceFilesGetCommand_Flags(t *testing.T) {
 func TestNamespaceFilesUploadCommand_Flags(t *testing.T) {
 	cmd := newNamespaceFilesUploadCommand()
 
-	flags := []string{"allow-missing-namespace", "override", "fail-fast"}
+	flags := []string{"allow-missing-namespace", "override", "fail-fast", "no-root"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
 		}
+	}
+}
+
+func TestBuildNamespaceUploadItems(t *testing.T) {
+	files := []localNamespaceUploadFile{
+		{Path: "/tmp/scripts/a.py", Relative: "a.py", Size: 9},
+		{Path: "/tmp/scripts/sub/c.py", Relative: "sub/c.py", Size: 12},
+	}
+
+	tests := []struct {
+		name   string
+		noRoot bool
+		want   []string
+	}{
+		{
+			name:   "default nests source directory name",
+			noRoot: false,
+			want:   []string{"resources/scripts/a.py", "resources/scripts/sub/c.py"},
+		},
+		{
+			name:   "no-root uploads contents directly, preserving subdirs",
+			noRoot: true,
+			want:   []string{"resources/a.py", "resources/sub/c.py"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			items := buildNamespaceUploadItems(files, "/tmp/scripts", "resources", tt.noRoot)
+			if len(items) != len(tt.want) {
+				t.Fatalf("expected %d items, got %d", len(tt.want), len(items))
+			}
+			for i, item := range items {
+				if item.Destination != tt.want[i] {
+					t.Errorf("item %d: expected destination %q, got %q", i, tt.want[i], item.Destination)
+				}
+			}
+		})
 	}
 }
 
@@ -188,6 +226,7 @@ func TestNamespaceFilesUploadCommand_Help(t *testing.T) {
 		"--allow-missing-namespace",
 		"--override",
 		"--fail-fast",
+		"--no-root",
 	}
 	for _, s := range expected {
 		if !strings.Contains(output, s) {
