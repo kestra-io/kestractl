@@ -976,3 +976,189 @@ func TestPluginsListCommand_Flags(t *testing.T) {
 		t.Error("expected error when version argument is missing")
 	}
 }
+
+func TestParsePluginGetCoordinate(t *testing.T) {
+	tests := []struct {
+		name       string
+		coordinate string
+		want       pluginArtifact
+		wantErr    bool
+	}{
+		{
+			name:       "valid standard coordinate",
+			coordinate: "io.kestra.plugin:plugin-aws:0.20.0",
+			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "0.20.0"},
+			wantErr:    false,
+		},
+		{
+			name:       "valid coordinate with latest alias",
+			coordinate: "io.kestra.plugin:plugin-aws:latest",
+			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "999.999.999"},
+			wantErr:    false,
+		},
+		{
+			name:       "missing version",
+			coordinate: "io.kestra.plugin:plugin-aws",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "missing artifact",
+			coordinate: "io.kestra.plugin::0.20.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "empty string",
+			coordinate: "",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parsePluginGetCoordinate(tt.coordinate)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected an invalid coordinate error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.GroupID != tt.want.GroupID || got.ArtifactID != tt.want.ArtifactID || got.Version != tt.want.Version {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPluginsGetCommand_Flags(t *testing.T) {
+	cmd := newPluginsGetCommand()
+
+	for _, flag := range []string{"plugins-dir", "force-redownload"} {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected flag --%s to exist", flag)
+		}
+	}
+}
+
+func TestPluginsGetCommand_RequiresArgs(t *testing.T) {
+	cmd := newPluginsGetCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected an invalid coordinate error, got nil")
+	}
+}
+
+func TestRunPluginsGet_HappyPath(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "FAILED") {
+		t.Errorf("did not expect 'FAILED' in output, got:\n%s", output)
+	}
+
+	expectedPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
+		t.Errorf("expected file %s to exist", expectedPath)
+	}
+}
+
+func TestRunPluginsGet_SkipsExistingValidJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "already up to date") {
+		t.Errorf("expected 'already up to date' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "done") {
+		t.Errorf("did not expect 'done' in output when skipped, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_ForceRedownloadsExistingJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' with force-redownload, got:\n%s", output)
+	}
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done' in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_DownloadFailure(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	origMaven := pluginsMavenBase
+	pluginsMavenBase = mavenServer.URL
+	t.Cleanup(func() {
+		pluginsMavenBase = origMaven
+		mavenServer.Close()
+	})
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false)
+
+	if err == nil {
+		t.Fatal("expected error when Maven returns 404, got nil")
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "FAILED") {
+		t.Errorf("expected 'FAILED' in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_InvalidCoordinate(t *testing.T) {
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "invalid-coordinate-format", t.TempDir(), false)
+
+	if err == nil {
+		t.Fatal("expected error for invalid coordinate format, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected groupId:artifactId:version") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
