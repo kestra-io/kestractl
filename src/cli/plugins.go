@@ -57,6 +57,7 @@ func newPluginsCommand() *cobra.Command {
 	}
 	cmd.AddCommand(newPluginsDownloadCommand())
 	cmd.AddCommand(newPluginsListCommand())
+	cmd.AddCommand(newPluginsGetCommand())
 	return cmd
 }
 
@@ -215,6 +216,31 @@ pointing at Kestra's plugin registry to download them.`,
 
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to list: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Derive the required core plugins (storage, secret manager, queue/repository backend) from one or more Kestra configuration files")
+	return cmd
+}
+
+func newPluginsGetCommand() *cobra.Command {
+	var pluginsDir string
+	var forceRedownload bool
+
+	cmd := &cobra.Command{
+		Use:   "get <groupId:artifactId:version>",
+		Short: "downloads a single plugin by Maven coordinates",
+		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
+into --plugins-dir, without downloading the full compatibility set for a version
+This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
+		Example: `  # Download only the Kafka plugin version 1.6.0
+  kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0`,
+		Args: cobra.ExactArgs(1),
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runPluginsGet(cmd.OutOrStdout(), args[0], pluginsDir, forceRedownload)
+		},
+		Annotations: map[string]string{AnnotationOffline: "true"},
+	}
+
+	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
+	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugin if present and checksum-valid")
 	return cmd
 }
 
@@ -412,6 +438,52 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
 	}
+	return nil
+}
+
+func parsePluginGetCoordinate(coordinate string) (pluginArtifact, error) {
+	parts := strings.SplitN(coordinate, ":", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return pluginArtifact{}, fmt.Errorf("invalid maven plugin coordinate %q: expected groupId:artifactId:version", coordinate)
+	}
+	return pluginArtifact{
+		GroupID:    parts[0],
+		ArtifactID: parts[1],
+		Version:    resolveVersion(parts[2]),
+	}, nil
+}
+
+func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRedownload bool) error {
+	p, err := parsePluginGetCoordinate(coordinate)
+	if err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create plugins directory %q: %w", pluginsDir, err)
+	}
+
+	ctx := context.Background()
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(out, format, args...)
+	}
+
+	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
+
+	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, pluginsMavenBase, "", "", nil)
+
+	if errors.Is(err, errRateLimited) {
+		fmt.Fprintf(out, "%s ... FAILED (rate limited by repository)\n", label)
+		return errRateLimited
+	} else if err != nil {
+		fmt.Fprintf(out, "%s ... FAILED (%v)\n", label, err)
+		return fmt.Errorf("download failed: %w", err)
+	} else if skipped {
+		fmt.Fprintf(out, "%s ... already up to date\n", label)
+	} else {
+		fmt.Fprintf(out, "%s ... done (%.1f MB)\n", label, float64(n)/(1024*1024))
+	}
+
 	return nil
 }
 
