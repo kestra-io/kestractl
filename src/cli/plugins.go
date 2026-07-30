@@ -222,6 +222,10 @@ pointing at Kestra's plugin registry to download them.`,
 func newPluginsGetCommand() *cobra.Command {
 	var pluginsDir string
 	var forceRedownload bool
+	var globalTimeout time.Duration
+	var mavenRepository string
+	var mavenUsername string
+	var mavenPassword string
 
 	cmd := &cobra.Command{
 		Use:   "get <groupId:artifactId:version>",
@@ -229,18 +233,23 @@ func newPluginsGetCommand() *cobra.Command {
 		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
 into --plugins-dir, without downloading the full compatibility set for a version
 This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
-		Example: `  # Download only the Kafka plugin version 1.6.0
+		Example: ` # Download only the Kafka plugin version 1.6.0
   kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0`,
 		Args: cobra.ExactArgs(1),
-
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPluginsGet(cmd.OutOrStdout(), args[0], pluginsDir, forceRedownload)
+			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
+			return runPluginsGet(cmd.OutOrStdout(), args[0], pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
 
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugin if present and checksum-valid")
+	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
+	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+
 	return cmd
 }
 
@@ -441,36 +450,35 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	return nil
 }
 
-func parsePluginGetCoordinate(coordinate string) (pluginArtifact, error) {
-	parts := strings.SplitN(coordinate, ":", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return pluginArtifact{}, fmt.Errorf("invalid maven plugin coordinate %q: expected groupId:artifactId:version", coordinate)
-	}
-	return pluginArtifact{
-		GroupID:    parts[0],
-		ArtifactID: parts[1],
-		Version:    resolveVersion(parts[2]),
-	}, nil
-}
-
-func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRedownload bool) error {
-	p, err := parsePluginGetCoordinate(coordinate)
+func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
+	p, err := parsePluginCoordinate(coordinate)
 	if err != nil {
 		return err
+	}
+
+	effectiveMavenBase := pluginsMavenBase
+	if mavenRepository != "" {
+		effectiveMavenBase = mavenRepository
+	}
+
+	parsedHeaders, err := parseHeaders(headers)
+	if err != nil {
+		return fmt.Errorf("invalid --header value: %w", err)
 	}
 
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
 		return fmt.Errorf("cannot create plugins directory %q: %w", pluginsDir, err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
+	defer cancel()
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(out, format, args...)
 	}
 
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
-	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, pluginsMavenBase, "", "", nil)
+	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
 
 	if errors.Is(err, errRateLimited) {
 		fmt.Fprintf(out, "%s ... FAILED (rate limited by repository)\n", label)
@@ -554,6 +562,22 @@ func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, er
 	return plugins, nil
 }
 
+// parsePluginCoordinate parses a single Maven-style plugin coordinate string
+// in the format "groupId:artifactId:version" into a pluginArtifact struct.
+// It returns an error if the coordinate is malformed or missing required parts.
+func parsePluginCoordinate(coord string) (pluginArtifact, error) {
+	parts := strings.SplitN(coord, ":", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+	}
+
+	return pluginArtifact{
+		GroupID:    parts[0],
+		ArtifactID: parts[1],
+		Version:    parts[2],
+	}, nil
+}
+
 // parsePluginCoordinates parses a list of strings — each may be a single
 // "groupId:artifactId:version" coordinate or a space-separated list of them
 // (matching the output of "kestractl plugins list") — into pluginArtifact values.
@@ -561,11 +585,11 @@ func parsePluginCoordinates(values []string) ([]pluginArtifact, error) {
 	var result []pluginArtifact
 	for _, v := range values {
 		for _, coord := range strings.Fields(v) {
-			parts := strings.SplitN(coord, ":", 3)
-			if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-				return nil, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+			artifact, err := parsePluginCoordinate(coord)
+			if err != nil {
+				return nil, err
 			}
-			result = append(result, pluginArtifact{GroupID: parts[0], ArtifactID: parts[1], Version: parts[2]})
+			result = append(result, artifact)
 		}
 	}
 	if len(result) == 0 {

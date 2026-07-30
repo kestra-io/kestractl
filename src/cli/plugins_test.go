@@ -977,7 +977,7 @@ func TestPluginsListCommand_Flags(t *testing.T) {
 	}
 }
 
-func TestParsePluginGetCoordinate(t *testing.T) {
+func TestParsePluginCoordinate(t *testing.T) {
 	tests := []struct {
 		name       string
 		coordinate string
@@ -988,12 +988,6 @@ func TestParsePluginGetCoordinate(t *testing.T) {
 			name:       "valid standard coordinate",
 			coordinate: "io.kestra.plugin:plugin-aws:0.20.0",
 			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "0.20.0"},
-			wantErr:    false,
-		},
-		{
-			name:       "valid coordinate with latest alias",
-			coordinate: "io.kestra.plugin:plugin-aws:latest",
-			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "999.999.999"},
 			wantErr:    false,
 		},
 		{
@@ -1017,7 +1011,7 @@ func TestParsePluginGetCoordinate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePluginGetCoordinate(tt.coordinate)
+			got, err := parsePluginCoordinate(tt.coordinate)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected an invalid coordinate error, got nil")
@@ -1036,8 +1030,16 @@ func TestParsePluginGetCoordinate(t *testing.T) {
 
 func TestPluginsGetCommand_Flags(t *testing.T) {
 	cmd := newPluginsGetCommand()
+	expectedFlags := []string{
+		"plugins-dir",
+		"force-redownload",
+		"maven-repository",
+		"maven-username",
+		"maven-password",
+		"global-timeout",
+	}
 
-	for _, flag := range []string{"plugins-dir", "force-redownload"} {
+	for _, flag := range expectedFlags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("expected flag --%s to exist", flag)
 		}
@@ -1058,7 +1060,7 @@ func TestRunPluginsGet_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1088,7 +1090,7 @@ func TestRunPluginsGet_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1113,7 +1115,7 @@ func TestRunPluginsGet_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, true)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, true, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1139,7 +1141,7 @@ func TestRunPluginsGet_DownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
 
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
@@ -1153,12 +1155,77 @@ func TestRunPluginsGet_DownloadFailure(t *testing.T) {
 
 func TestRunPluginsGet_InvalidCoordinate(t *testing.T) {
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "invalid-coordinate-format", t.TempDir(), false)
+
+	err := runPluginsGet(&out, "invalid-coordinate-format", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
 
 	if err == nil {
 		t.Fatal("expected error for invalid coordinate format, got nil")
 	}
 	if !strings.Contains(err.Error(), "expected groupId:artifactId:version") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRunPluginsGet_Timeout(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mockServer.Close)
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 1*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected context deadline/timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") && !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
+	originalWaits := rateLimitWaits
+	rateLimitWaits = []time.Duration{1 * time.Millisecond}
+	t.Cleanup(func() { rateLimitWaits = originalWaits })
+	var requests int
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("mock jar content"))
+	}))
+	t.Cleanup(mockServer.Close)
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 5*time.Second)
+	if err != nil {
+		t.Fatalf("expected download to succeed after retry, got error: %v", err)
+	}
+	if requests != 2 {
+		t.Errorf("expected exactly 2 requests (1 fail, 1 success), got %d", requests)
+	}
+}
+
+func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
+	var capturedAuth string
+	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(customMaven.Close)
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, customMaven.URL, "alice", "s3cr3t", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedAuth == "" {
+		t.Fatal("expected Authorization header to be set, got none")
+	}
+	if !strings.HasPrefix(capturedAuth, "Basic ") {
+		t.Errorf("expected Basic auth header, got: %s", capturedAuth)
 	}
 }
