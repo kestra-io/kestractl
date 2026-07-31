@@ -562,6 +562,17 @@ func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, er
 	return plugins, nil
 }
 
+// validateCoordinateVersion returns an error if the version is symbollic alias
+// like "latest" or "develop" that cannot be safely resolved to an exact Maven artifact.
+func validateCoordinateVersion(version string) error {
+	switch strings.ToLower(version) {
+	case "latest", "develop":
+		return fmt.Errorf("version %q is not supported — please specify an exact version (e.g. 1.2.3)", version)
+	default:
+		return nil
+	}
+}
+
 // parsePluginCoordinate parses a single Maven-style plugin coordinate string
 // in the format "groupId:artifactId:version" into a pluginArtifact struct.
 // It returns an error if the coordinate is malformed or missing required parts.
@@ -570,7 +581,9 @@ func parsePluginCoordinate(coord string) (pluginArtifact, error) {
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
 	}
-
+	if err := validateCoordinateVersion(parts[2]); err != nil {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %w", coord, err)
+	}
 	return pluginArtifact{
 		GroupID:    parts[0],
 		ArtifactID: parts[1],

@@ -977,6 +977,49 @@ func TestPluginsListCommand_Flags(t *testing.T) {
 	}
 }
 
+func TestValidateCoordinateVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{
+			name:    "valid exact version",
+			version: "1.2.3",
+			wantErr: false,
+		},
+		{
+			name:    "latest is not supported",
+			version: "latest",
+			wantErr: true,
+		},
+		{
+			name:    "latest is not supported (case insensitive)",
+			version: "LATEST",
+			wantErr: true,
+		},
+		{
+			name:    "develop is not supported",
+			version: "develop",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCoordinateVersion(tt.version)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateCoordinateVersion(%q) expected error, got nil", tt.version)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("validateCoordinateVersion(%q) unexpected error: %v", tt.version, err)
+			}
+		})
+	}
+}
+
 func TestParsePluginCoordinate(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1005,6 +1048,18 @@ func TestParsePluginCoordinate(t *testing.T) {
 		{
 			name:       "empty string",
 			coordinate: "",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "unsupported version (latest)",
+			coordinate: "io.kestra.plugin:plugin-aws:latest",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "unsupported version (develop)",
+			coordinate: "io.kestra.plugin:plugin-aws:DEVELOP",
 			want:       pluginArtifact{},
 			wantErr:    true,
 		},
