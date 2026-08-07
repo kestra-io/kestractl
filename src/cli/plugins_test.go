@@ -1054,6 +1054,12 @@ func TestParsePluginCoordinate(t *testing.T) {
 			wantErr:    true,
 		},
 		{
+			name:       "too many parts (extra colon)",
+			coordinate: "io.kestra.plugin:plugin-kafka:1.6.0:extra",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
 			name:       "valid standard coordinate",
 			coordinate: "io.kestra.plugin:plugin-aws:0.20.0",
 			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "0.20.0"},
@@ -1227,10 +1233,13 @@ func TestRunPluginsGet_DownloadFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
 	}
+	if !strings.Contains(err.Error(), "artifact not found") {
+		t.Errorf("expected 'artifact not found' in error, got: %v", err)
+	}
 
 	output := out.String()
-	if !strings.Contains(output, "FAILED") {
-		t.Errorf("expected 'FAILED' in output, got:\n%s", output)
+	if strings.Contains(output, "FAILED") {
+		t.Errorf("did not expect 'FAILED' status line in output, got:\n%s", output)
 	}
 }
 

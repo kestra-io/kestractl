@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 )
 
@@ -228,8 +229,9 @@ func newPluginsGetCommand() *cobra.Command {
 	var mavenPassword string
 
 	cmd := &cobra.Command{
-		Use:   "get <groupId:artifactId:version>",
-		Short: "Download a single plugin by Maven coordinates",
+		Use:          "get <groupId:artifactId:version>",
+		Short:        "Download a single plugin by Maven coordinates",
+		SilenceUsage: true,
 		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
 into --plugins-dir, without downloading the full compatibility set for a version
 This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
@@ -412,7 +414,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 			fmt.Fprintf(out, lineFormat+" %s ... already up to date\n", r.index+1, len(plugins), label)
 			skippedCount++
 		} else {
-			fmt.Fprintf(out, lineFormat+" %s ... done (%.1f MB)\n", r.index+1, len(plugins), label, float64(r.bytes)/(1024*1024))
+			fmt.Fprintf(out, lineFormat+" %s ... done (%s)\n", r.index+1, len(plugins), label, humanize.Bytes(uint64(r.bytes)))
 			downloaded++
 		}
 		outMu.Unlock()
@@ -480,16 +482,13 @@ func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRed
 
 	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
 
-	if errors.Is(err, errRateLimited) {
-		fmt.Fprintf(out, "%s ... FAILED (rate limited by repository)\n", label)
-		return errRateLimited
-	} else if err != nil {
-		fmt.Fprintf(out, "%s ... FAILED (%v)\n", label, err)
-		return fmt.Errorf("download failed: %w", err)
-	} else if skipped {
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", label, err)
+	}
+	if skipped {
 		fmt.Fprintf(out, "%s ... already up to date\n", label)
 	} else {
-		fmt.Fprintf(out, "%s ... done (%.1f MB)\n", label, float64(n)/(1024*1024))
+		fmt.Fprintf(out, "%s ... done (%s)\n", label, humanize.Bytes(uint64(n)))
 	}
 
 	return nil
@@ -577,6 +576,9 @@ func validateCoordinateVersion(version string) error {
 // in the format "groupId:artifactId:version" into a pluginArtifact struct.
 // It returns an error if the coordinate is malformed or missing required parts.
 func parsePluginCoordinate(coord string) (pluginArtifact, error) {
+	if strings.Count(coord, ":") != 2 {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+	}
 	parts := strings.SplitN(coord, ":", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
@@ -669,6 +671,9 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				return 0, false, fmt.Errorf("artifact not found at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", url)
+			}
 			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
 		}
 
@@ -678,6 +683,14 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, false, fmt.Errorf("cannot create temp file: %w", err)
 		}
 		partPath := f.Name()
+		// os.CreateTemp creates files with mode 0600; make the finished JAR
+		// readable by any user/process (e.g. Kestra running as another user).
+		if err := os.Chmod(partPath, 0o644); err != nil {
+			resp.Body.Close()
+			f.Close()
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to set permissions on temp file: %w", err)
+		}
 
 		n, copyErr := io.Copy(f, resp.Body)
 		resp.Body.Close()

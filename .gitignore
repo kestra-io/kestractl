@@ -24,3 +24,6 @@ wheels/
 .idea
 
 .planning/.*
+
+# Downloaded plugin JARs (plugins download / plugins get output)
+/plugins/
