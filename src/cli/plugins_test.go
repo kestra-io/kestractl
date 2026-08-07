@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1028,6 +1030,30 @@ func TestParsePluginCoordinate(t *testing.T) {
 		wantErr    bool
 	}{
 		{
+			name:       "illegal path traversal (reviewer example)",
+			coordinate: "io.kestra:../../../tmp/evil:1.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal forward slash in artifactId",
+			coordinate: "io.kestra.plugin:plugin-kafka/evil:1.6.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal backslash in version",
+			coordinate: "io.kestra.plugin:plugin-kafka:1.6.0\\evil",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal forward slash in groupId",
+			coordinate: "io/kestra/plugin:plugin-kafka:1.6.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
 			name:       "valid standard coordinate",
 			coordinate: "io.kestra.plugin:plugin-aws:0.20.0",
 			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "0.20.0"},
@@ -1282,5 +1308,38 @@ func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
 	}
 	if !strings.HasPrefix(capturedAuth, "Basic ") {
 		t.Errorf("expected Basic auth header, got: %s", capturedAuth)
+	}
+}
+
+func TestRunPluginsGet_AtomicCleanupOnFailure(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("partial data..."))
+		w.(http.Flusher).Flush()
+		time.Sleep(150 * time.Millisecond)
+	}))
+	t.Cleanup(mockServer.Close)
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mockServer.URL, "", "", 10*time.Millisecond)
+
+	if err == nil {
+		t.Fatal("expected download to fail due to timeout, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !os.IsTimeout(err) {
+		t.Errorf("expected timeout-related error, got: %v", err)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read temp dir: %v", err)
+	}
+	if len(entries) > 0 {
+		var files []string
+		for _, e := range entries {
+			files = append(files, e.Name())
+		}
+		t.Errorf("expected temp directory to be completely empty after failure, but found leftover artifacts: %v", files)
 	}
 }

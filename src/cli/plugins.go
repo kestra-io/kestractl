@@ -160,7 +160,7 @@ Authentication:
 
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Directory to write downloaded JARs into")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of parallel downloads")
-	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist and pass checksum verification")
+	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist")
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
@@ -229,7 +229,7 @@ func newPluginsGetCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "get <groupId:artifactId:version>",
-		Short: "downloads a single plugin by Maven coordinates",
+		Short: "Download a single plugin by Maven coordinates",
 		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
 into --plugins-dir, without downloading the full compatibility set for a version
 This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
@@ -244,8 +244,8 @@ This lets users install a single plugin into their plugins/ directory without pu
 	}
 
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
-	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugin if present and checksum-valid")
-	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
+	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download the plugin even if it already exists")
+	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for the download")
 	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
@@ -562,7 +562,7 @@ func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, er
 	return plugins, nil
 }
 
-// validateCoordinateVersion returns an error if the version is symbollic alias
+// validateCoordinateVersion returns an error if the version is symbolic alias
 // like "latest" or "develop" that cannot be safely resolved to an exact Maven artifact.
 func validateCoordinateVersion(version string) error {
 	switch strings.ToLower(version) {
@@ -580,6 +580,11 @@ func parsePluginCoordinate(coord string) (pluginArtifact, error) {
 	parts := strings.SplitN(coord, ":", 3)
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
 		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+	}
+	for _, part := range parts {
+		if strings.Contains(part, "/") || strings.Contains(part, "\\") || strings.Contains(part, "..") {
+			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: contains illegal path characters", coord)
+		}
 	}
 	if err := validateCoordinateVersion(parts[2]); err != nil {
 		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %w", coord, err)
@@ -662,22 +667,34 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			}
 			continue
 		}
-
-		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
 			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
 		}
 
-		f, err := os.Create(destPath)
+		f, err := os.CreateTemp(destDir, filepath.Base(destPath)+".part*")
 		if err != nil {
-			return 0, false, fmt.Errorf("cannot create file: %w", err)
+			resp.Body.Close()
+			return 0, false, fmt.Errorf("cannot create temp file: %w", err)
 		}
-		defer f.Close()
+		partPath := f.Name()
 
-		n, err := io.Copy(f, resp.Body)
-		if err != nil {
-			return 0, false, fmt.Errorf("write failed: %w", err)
+		n, copyErr := io.Copy(f, resp.Body)
+		resp.Body.Close()
+		closeErr := f.Close()
+		if copyErr != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("write failed: %w", copyErr)
 		}
+		if closeErr != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to close file: %w", closeErr)
+		}
+		if err := os.Rename(partPath, destPath); err != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
+		}
+
 		return n, false, nil
 	}
 }
