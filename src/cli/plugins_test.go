@@ -61,6 +61,12 @@ func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mav
 	}))
 
 	mavenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -631,6 +637,12 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -655,8 +667,8 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 	if !strings.Contains(output, "Downloaded 1") {
 		t.Errorf("expected 'Downloaded 1' after retry succeeded, got:\n%s", output)
 	}
-	if attempts.Load() != 3 {
-		t.Errorf("expected 3 Maven attempts, got %d", attempts.Load())
+	if attempts.Load() != 4 {
+		t.Errorf("expected 4s Maven attempts, got %d", attempts.Load())
 	}
 }
 
@@ -724,6 +736,11 @@ func TestRunPluginsInstall_CustomMavenRepository(t *testing.T) {
 	var capturedHost string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHost = r.Host
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -759,6 +776,11 @@ func TestRunPluginsInstall_MavenBasicAuth(t *testing.T) {
 	var capturedAuth string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -931,7 +953,14 @@ func TestRunPluginsInstall_ExplicitPlugins(t *testing.T) {
 	// Capture which paths the maven server was asked for.
 	var requestedPaths []string
 	mavenServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPaths = append(requestedPaths, r.URL.Path)
+		if !strings.HasSuffix(r.URL.Path, ".sha1") {
+			requestedPaths = append(requestedPaths, r.URL.Path)
+		} else {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -1283,6 +1312,11 @@ func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("76e434ca252434fe7f7aa2adb7b4ff7c34aae7ea"))
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("mock jar content"))
 	}))
@@ -1293,7 +1327,7 @@ func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected download to succeed after retry, got error: %v", err)
 	}
-	if requests != 2 {
+	if requests != 3 {
 		t.Errorf("expected exactly 2 requests (1 fail, 1 success), got %d", requests)
 	}
 }
@@ -1302,6 +1336,11 @@ func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
 	var capturedAuth string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -1350,5 +1389,106 @@ func TestRunPluginsGet_AtomicCleanupOnFailure(t *testing.T) {
 			files = append(files, e.Name())
 		}
 		t.Errorf("expected temp directory to be completely empty after failure, but found leftover artifacts: %v", files)
+	}
+}
+
+func TestRunPluginsInstall_RedownloadsIfChecksumMismatches(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte("invalid content"), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing corrupted JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' when checksum mismatches, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' because of checksum mismatch, got:\n%s", output)
+	}
+
+	content, err := os.ReadFile(jarPath)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(content) != mockJARBody {
+		t.Errorf("expected file content to be overwritten with mockJARBody, got %q", string(content))
+	}
+}
+
+func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, strings.Repeat("0", 40))
+			return
+		}
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	
+	origMaven := pluginsMavenBase
+	pluginsMavenBase = mavenServer.URL
+	t.Cleanup(func() {
+		pluginsMavenBase = origMaven
+		mavenServer.Close()
+	})
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+
+	if err == nil {
+		t.Fatal("expected error due to checksum mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("expected 'checksum mismatch' in error, got: %v", err)
+	}
+
+	entries, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("failed to read temp dir: %v", readErr)
+	}
+	if len(entries) > 0 {
+		var files []string
+		for _, e := range entries {
+			files = append(files, e.Name())
+		}
+		t.Errorf("expected temp directory to be empty after checksum failure cleanup, but found: %v", files)
+	}
+}
+
+func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(mavenServer.Close)
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mavenServer.URL, "", "", 5*time.Minute)
+	
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	
+	if !strings.Contains(out.String(), "[warn] no .sha1 published") {
+		t.Errorf("expected warning about missing .sha1, got:\n%s", out.String())
 	}
 }

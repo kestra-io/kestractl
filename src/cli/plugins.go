@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -629,15 +631,25 @@ func pluginFileName(p pluginArtifact) string {
 
 func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
+	url := mavenJARURL(p, mavenBase)
+	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
+	
+	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	if err != nil {
+		return 0, false, fmt.Errorf("failed to fetch expected SHA-1 for %s: %w", label, err)
+	}
 
 	if !forceRedownload {
 		if _, err := os.Stat(destPath); err == nil {
-			return 0, true, nil
+			if expectedSHA1 != "" {
+				if actualSHA1, err := fileSHA1(destPath); err == nil && actualSHA1 == expectedSHA1 {
+					return 0, true, nil
+				}
+			} else {
+				return 0, true, nil
+			}
 		}
 	}
-
-	url := mavenJARURL(p, mavenBase)
-	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -708,8 +720,94 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
 		}
 
+		if expectedSHA1 != "" {
+			actualSHA1, hashErr := fileSHA1(destPath)
+			if hashErr != nil {
+				os.Remove(destPath)
+				return 0, false, fmt.Errorf("failed to compute SHA-1 of downloaded file: %w", hashErr)
+			}
+			if actualSHA1 != expectedSHA1 {
+				os.Remove(destPath)
+				return 0, false, fmt.Errorf("checksum mismatch for %s: expected %s, got %s", label, expectedSHA1, actualSHA1)
+			}
+		}
 		return n, false, nil
 	}
+}
+
+// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the 
+// given path.
+func fileSHA1(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot open file: %w", err)
+	}
+	defer f.Close()
+	hasher := sha1.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", fmt.Errorf("cannot read file: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// fetchExpectedSHA1 retrieves the expected SHA-1 checksum for a given Maven artifact URL.
+// It executes a retriable HTTP request using the provided credentials and headers and limits the 
+// response read to 256 bytes, handles both types of hash files 
+// (just the plain hash, or the hash followed by a filename)
+func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (string, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jarURL+".sha1", nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to build checksum request: %w", err)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if mavenUsername != "" || mavenPassword != "" {
+			req.SetBasicAuth(mavenUsername, mavenPassword)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to reach repository for checksum: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt >= len(rateLimitWaits) {
+				return "", errRateLimited
+			}
+			wait := rateLimitWaits[attempt]
+			logf("  [429] rate limited on %s (SHA-1) — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
+				return "", nil
+			}
+			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
+		}
+	
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to read checksum file: %w", err)
+		}
+
+		fields := strings.Fields(string(body))
+		if len(fields) == 0 {
+			return "", fmt.Errorf("checksum file is empty")
+		}
+
+		return strings.ToLower(fields[0]), nil
+	}	
 }
 
 // mavenJARURL builds the Maven repository download URL for a plugin artifact.
