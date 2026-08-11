@@ -70,7 +70,9 @@ with support for multiple authentication contexts and output formats.`,
 				return err
 			}
 			initializeTelemetry()
-			checkForNewAvailableVersion(cmd.ErrOrStderr())
+			// Non-blocking: any remote lookup runs alongside the command and is
+			// collected by awaitNewVersionCheck once the command is done.
+			startNewVersionCheck(cmd.ErrOrStderr())
 			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
 				if viper.ConfigFileUsed() != "" {
 					fmt.Printf("config location: %s\n", viper.ConfigFileUsed())
@@ -225,6 +227,8 @@ func Execute() error {
 	start := time.Now()
 
 	executedCommand, err := root.ExecuteC()
+
+	awaitNewVersionCheck()
 
 	commandPath := root.CommandPath()
 	if executedCommand != nil {

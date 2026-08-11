@@ -119,7 +119,9 @@ Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 
 ### Update Notifications
 
-The CLI warns on stderr when a newer release is available. The check for the latest release runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so only the first command you run after a full day makes a network call. Failures are silent and never block a command. The check is skipped automatically on CI and for `dev` builds.
+The CLI warns on stderr when a newer release is available. The lookup runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so all but the first command you run after a full day are served from that cache with no network call at all.
+
+The lookup itself is **asynchronous**: it runs in the background alongside your command rather than before it, so it does not add to the time your command takes. If it has not come back by the time the command finishes, the CLI gives up and the notice simply appears on your next run. Failures are silent, and the check is skipped automatically on CI and for `dev` builds.
 
 Set `KESTRACTL_VERSION_CHECK_DISABLED=true` to turn it off entirely.
 

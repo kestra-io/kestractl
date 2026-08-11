@@ -24,6 +24,12 @@ var (
 	newVersionCheckHTTPClient       = &http.Client{Timeout: 2 * time.Second}
 	newVersionCheckNow              = time.Now
 	newVersionCheckCIDetection      = detectCIProvider
+
+	// newVersionCheckGrace bounds how long awaitNewVersionCheck waits for an
+	// in-flight refresh once the command itself is done. Kept short on purpose:
+	// the 24h throttle is already stamped when the refresh starts, so giving up
+	// here costs at most a notice that shows one command later instead.
+	newVersionCheckGrace = 500 * time.Millisecond
 )
 
 // newVersionCheckState is the on-disk cache backing the once-a-day update check.
@@ -34,38 +40,101 @@ type newVersionCheckState struct {
 	LatestVersion string    `json:"latest_version,omitempty"`
 }
 
-// checkForNewAvailableVersion warns on stderr when a newer kestractl release exists.
+// pendingNewVersionCheck tracks a refresh running concurrently with the command.
+type pendingNewVersionCheck struct {
+	out    io.Writer
+	done   chan string // receives the fetched version, or "" on failure
+	warned bool        // a cached notice was already printed, do not repeat it
+}
+
+var activeNewVersionCheck *pendingNewVersionCheck
+
+// startNewVersionCheck warns on stderr when a newer kestractl release exists,
+// without ever making the user wait for the network.
 //
-// The network call happens at most once per newVersionCheckInterval: the
-// result is cached in <state dir>/check_for_new_available_version.json, so
-// only the first command run after a full day pays for it. Every other
-// invocation reads the cached version and costs a single small file read.
-// Any failure is silent — a new-version notice must never get in the way of
-// the command the user actually asked for.
-func checkForNewAvailableVersion(out io.Writer) {
+// The remote lookup happens at most once per newVersionCheckInterval and its
+// result is cached in <state dir>/check_for_new_available_version.json. On a
+// normal run this function only reads that small file, prints the notice if the
+// cached version is newer, and returns — no network at all.
+//
+// When the cache is stale it hands the lookup to a goroutine and returns
+// immediately, so the request overlaps the command the user actually asked for
+// instead of delaying it. awaitNewVersionCheck picks the result up afterwards.
+// Any failure is silent.
+func startNewVersionCheck(out io.Writer) {
+	activeNewVersionCheck = nil
+
 	if newVersionCheckSkipped() {
 		return
 	}
 
 	stateDir := telemetryStateDir()
 	state, fresh := loadNewVersionCheckState(stateDir)
+	warned := warnIfNewerVersion(out, state.LatestVersion)
 
-	if !fresh {
-		latest := fetchLatestVersion()
-		// Stamp the attempt either way so a broken network is retried tomorrow,
-		// not on the very next command.
-		state = newVersionCheckState{LastCheck: newVersionCheckNow(), LatestVersion: latest}
-		saveNewVersionCheckState(stateDir, state)
-	}
-
-	if state.LatestVersion == "" {
+	if fresh {
 		return
 	}
 
-	if compareVersions(state.LatestVersion, version) > 0 {
-		fmt.Fprintf(out, "\nA new version of kestractl is available: %s (you are on v%s)\n", normalizeVersion(state.LatestVersion), strings.TrimPrefix(version, "v"))
-		fmt.Fprintf(out, "Download it from %s\n\n", releasesDownloadURL)
+	// Stamp the attempt up front, carrying the previously known version over.
+	// Doing it here rather than after the response keeps the once-a-day
+	// guarantee even if the process exits before the goroutine finishes.
+	saveNewVersionCheckState(stateDir, newVersionCheckState{
+		LastCheck:     newVersionCheckNow(),
+		LatestVersion: state.LatestVersion,
+	})
+
+	pending := &pendingNewVersionCheck{out: out, done: make(chan string, 1), warned: warned}
+	activeNewVersionCheck = pending
+
+	go func() {
+		latest := fetchLatestVersion()
+		if latest != "" {
+			saveNewVersionCheckState(stateDir, newVersionCheckState{
+				LastCheck:     newVersionCheckNow(),
+				LatestVersion: latest,
+			})
+		}
+		pending.done <- latest
+	}()
+}
+
+// awaitNewVersionCheck collects the result of a refresh started by
+// startNewVersionCheck, waiting at most newVersionCheckGrace for it.
+//
+// By the time this runs the command has already done its work, so the refresh
+// has usually finished and the wait is zero. If it has not, we give up rather
+// than hold the process open: the cache write is best-effort and the notice
+// simply appears on the next run.
+func awaitNewVersionCheck() {
+	pending := activeNewVersionCheck
+	activeNewVersionCheck = nil
+	if pending == nil {
+		return
 	}
+
+	timer := time.NewTimer(newVersionCheckGrace)
+	defer timer.Stop()
+
+	select {
+	case latest := <-pending.done:
+		if !pending.warned {
+			warnIfNewerVersion(pending.out, latest)
+		}
+	case <-timer.C:
+	}
+}
+
+// warnIfNewerVersion prints the upgrade notice when latest is newer than the
+// running build, and reports whether it printed anything.
+func warnIfNewerVersion(out io.Writer, latest string) bool {
+	if latest == "" || compareVersions(latest, version) <= 0 {
+		return false
+	}
+
+	fmt.Fprintf(out, "\nA new version of kestractl is available: %s (you are on v%s)\n", normalizeVersion(latest), strings.TrimPrefix(version, "v"))
+	fmt.Fprintf(out, "Download it from %s\n\n", releasesDownloadURL)
+	return true
 }
 
 // newVersionCheckSkipped reports whether the update check should not run at all.
@@ -132,7 +201,30 @@ func saveNewVersionCheckState(stateDir string, state newVersionCheckState) {
 		return
 	}
 
-	_ = os.WriteFile(filepath.Join(stateDir, newVersionCheckFileName), data, 0o600)
+	// Write through a temp file: the refresh goroutine can still be writing when
+	// the process exits, and a half-written cache would be read back as corrupt.
+	path := filepath.Join(stateDir, newVersionCheckFileName)
+	tmp, err := os.CreateTemp(stateDir, newVersionCheckFileName+".*")
+	if err != nil {
+		return
+	}
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
+		_ = os.Remove(tmp.Name())
+		return
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		_ = os.Remove(tmp.Name())
+	}
 }
 
 type githubReleaseResponse struct {
