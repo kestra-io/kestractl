@@ -13,48 +13,49 @@ import (
 )
 
 const (
-	updateCheckDisabledEnv = "KESTRACTL_UPDATE_CHECK_DISABLED"
-	updateCheckFileName    = "update_check.json"
-	updateCheckInterval    = 24 * time.Hour
-	updateReleasesURL      = "https://github.com/kestra-io/kestractl/releases/latest"
+	newVersionCheckDisabledEnv = "KESTRACTL_VERSION_CHECK_DISABLED"
+	newVersionCheckFileName    = "check_for_new_available_version.json"
+	newVersionCheckInterval    = 24 * time.Hour
+	releasesDownloadURL        = "https://github.com/kestra-io/kestractl/releases/latest"
 )
 
 var (
-	updateCheckLatestURL   = "https://api.github.com/repos/kestra-io/kestractl/releases/latest"
-	updateCheckHTTPClient  = &http.Client{Timeout: 2 * time.Second}
-	updateCheckNow         = time.Now
-	updateCheckCIDetection = detectCIProvider
+	newVersionCheckLatestReleaseURL = "https://api.github.com/repos/kestra-io/kestractl/releases/latest"
+	newVersionCheckHTTPClient       = &http.Client{Timeout: 2 * time.Second}
+	newVersionCheckNow              = time.Now
+	newVersionCheckCIDetection      = detectCIProvider
 )
 
-// updateCheckState is the on-disk cache backing the once-a-day update check.
+// newVersionCheckState is the on-disk cache backing the once-a-day update check.
 // LastCheck is stamped before the network call so a failing call does not make
 // every subsequent command retry.
-type updateCheckState struct {
+type newVersionCheckState struct {
 	LastCheck     time.Time `json:"last_check"`
 	LatestVersion string    `json:"latest_version,omitempty"`
 }
 
-// checkForUpdates warns on stderr when a newer kestractl release exists.
+// checkForNewAvailableVersion warns on stderr when a newer kestractl release exists.
 //
-// The network call happens at most once per updateCheckInterval: the result is
-// cached in <state dir>/update_check.json, so only the first command run after
-// a full day pays for it. Every other invocation reads the cached version and
-// costs a single small file read. Any failure is silent — an update notice must
-// never get in the way of the command the user actually asked for.
-func checkForUpdates(out io.Writer) {
-	if updateCheckSkipped() {
+// The network call happens at most once per newVersionCheckInterval: the
+// result is cached in <state dir>/check_for_new_available_version.json, so
+// only the first command run after a full day pays for it. Every other
+// invocation reads the cached version and costs a single small file read.
+// Any failure is silent — a new-version notice must never get in the way of
+// the command the user actually asked for.
+func checkForNewAvailableVersion(out io.Writer) {
+	if newVersionCheckSkipped() {
 		return
 	}
 
 	stateDir := telemetryStateDir()
-	state, fresh := loadUpdateCheckState(stateDir)
+	state, fresh := loadNewVersionCheckState(stateDir)
 
 	if !fresh {
 		latest := fetchLatestVersion()
 		// Stamp the attempt either way so a broken network is retried tomorrow,
 		// not on the very next command.
-		state = updateCheckState{LastCheck: updateCheckNow(), LatestVersion: latest}
-		saveUpdateCheckState(stateDir, state)
+		state = newVersionCheckState{LastCheck: newVersionCheckNow(), LatestVersion: latest}
+		saveNewVersionCheckState(stateDir, state)
 	}
 
 	if state.LatestVersion == "" {
@@ -63,13 +64,13 @@ func checkForUpdates(out io.Writer) {
 
 	if compareVersions(state.LatestVersion, version) > 0 {
 		fmt.Fprintf(out, "\nA new version of kestractl is available: %s (you are on v%s)\n", normalizeVersion(state.LatestVersion), strings.TrimPrefix(version, "v"))
-		fmt.Fprintf(out, "Download it from %s\n\n", updateReleasesURL)
+		fmt.Fprintf(out, "Download it from %s\n\n", releasesDownloadURL)
 	}
 }
 
-// updateCheckSkipped reports whether the update check should not run at all.
-func updateCheckSkipped() bool {
-	if envEnabled(os.Getenv(updateCheckDisabledEnv)) {
+// newVersionCheckSkipped reports whether the update check should not run at all.
+func newVersionCheckSkipped() bool {
+	if envEnabled(os.Getenv(newVersionCheckDisabledEnv)) {
 		return true
 	}
 
@@ -79,45 +80,45 @@ func updateCheckSkipped() bool {
 	}
 
 	// CI runs are non-interactive and pinned to a version on purpose.
-	if isCI, _ := updateCheckCIDetection(); isCI {
+	if isCI, _ := newVersionCheckCIDetection(); isCI {
 		return true
 	}
 
 	return false
 }
 
-// loadUpdateCheckState reads the cached state and reports whether it is still
-// within updateCheckInterval.
-func loadUpdateCheckState(stateDir string) (updateCheckState, bool) {
+// loadNewVersionCheckState reads the cached state and reports whether it is still
+// within newVersionCheckInterval.
+func loadNewVersionCheckState(stateDir string) (newVersionCheckState, bool) {
 	if strings.TrimSpace(stateDir) == "" {
-		return updateCheckState{}, false
+		return newVersionCheckState{}, false
 	}
 
-	data, err := os.ReadFile(filepath.Join(stateDir, updateCheckFileName))
+	data, err := os.ReadFile(filepath.Join(stateDir, newVersionCheckFileName))
 	if err != nil {
-		return updateCheckState{}, false
+		return newVersionCheckState{}, false
 	}
 
-	var state updateCheckState
+	var state newVersionCheckState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return updateCheckState{}, false
+		return newVersionCheckState{}, false
 	}
 
 	if state.LastCheck.IsZero() {
 		return state, false
 	}
 
-	elapsed := updateCheckNow().Sub(state.LastCheck)
+	elapsed := newVersionCheckNow().Sub(state.LastCheck)
 	// A clock moving backwards (or a state file written in the future) must not
 	// pin the cache as fresh forever.
 	if elapsed < 0 {
 		return state, false
 	}
 
-	return state, elapsed < updateCheckInterval
+	return state, elapsed < newVersionCheckInterval
 }
 
-func saveUpdateCheckState(stateDir string, state updateCheckState) {
+func saveNewVersionCheckState(stateDir string, state newVersionCheckState) {
 	if strings.TrimSpace(stateDir) == "" {
 		return
 	}
@@ -131,7 +132,7 @@ func saveUpdateCheckState(stateDir string, state updateCheckState) {
 		return
 	}
 
-	_ = os.WriteFile(filepath.Join(stateDir, updateCheckFileName), data, 0o600)
+	_ = os.WriteFile(filepath.Join(stateDir, newVersionCheckFileName), data, 0o600)
 }
 
 type githubReleaseResponse struct {
@@ -140,14 +141,14 @@ type githubReleaseResponse struct {
 
 // fetchLatestVersion returns the latest published release tag, or "" on any failure.
 func fetchLatestVersion() string {
-	req, err := http.NewRequest(http.MethodGet, updateCheckLatestURL, nil)
+	req, err := http.NewRequest(http.MethodGet, newVersionCheckLatestReleaseURL, nil)
 	if err != nil {
 		return ""
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "kestractl/"+version)
 
-	res, err := updateCheckHTTPClient.Do(req)
+	res, err := newVersionCheckHTTPClient.Do(req)
 	if err != nil {
 		return ""
 	}

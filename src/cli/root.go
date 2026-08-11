@@ -70,7 +70,7 @@ with support for multiple authentication contexts and output formats.`,
 				return err
 			}
 			initializeTelemetry()
-			checkForUpdates(cmd.ErrOrStderr())
+			checkForNewAvailableVersion(cmd.ErrOrStderr())
 			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
 				if viper.ConfigFileUsed() != "" {
 					fmt.Printf("config location: %s\n", viper.ConfigFileUsed())
