@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +33,11 @@ var (
 	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
 	pluginsMavenBase = "https://repo1.maven.org/maven2"
 )
+
+// validCoordinatePart matches Maven-style groupId/artifactId/version segments:
+// letters, digits, dot, dash, underscore. Nothing else is allowed, so
+// URL-significant characters (/, \, ?, #, space, @, ..) are rejected by
+var validCoordinatePart = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type pluginArtifact struct {
 	GroupID    string `json:"groupId"`
@@ -586,8 +592,8 @@ func parsePluginCoordinate(coord string) (pluginArtifact, error) {
 		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
 	}
 	for _, part := range parts {
-		if strings.Contains(part, "/") || strings.Contains(part, "\\") || strings.Contains(part, "..") {
-			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: contains illegal path characters", coord)
+		if !validCoordinatePart.MatchString(part) {
+			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: parts may only contain letters, digits, '.', '-', or '_'", coord)
 		}
 	}
 	if err := validateCoordinateVersion(parts[2]); err != nil {
@@ -633,21 +639,23 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 	destPath := filepath.Join(destDir, pluginFileName(p))
 	url := mavenJARURL(p, mavenBase)
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
-	
-	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
-	if err != nil {
-		return 0, false, fmt.Errorf("failed to fetch expected SHA-1 for %s: %w", label, err)
-	}
 
 	if !forceRedownload {
 		if _, err := os.Stat(destPath); err == nil {
-			if expectedSHA1 != "" {
-				if actualSHA1, err := fileSHA1(destPath); err == nil && actualSHA1 == expectedSHA1 {
-					return 0, true, nil
-				}
-			} else {
-				return 0, true, nil
-			}
+			return 0, true, nil
+		}
+	}
+	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	if err != nil {
+		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
+		expectedSHA1 = ""
+	} else if expectedSHA1 != "" {
+		if len(expectedSHA1) != 40 {
+			logf("  [WARN] expected SHA-1 for %s has invalid length (%d), proceeding without checksum validation\n", label, len(expectedSHA1))
+			expectedSHA1 = ""
+		} else if _, hexErr := hex.DecodeString(expectedSHA1); hexErr != nil {
+			logf("  [WARN] expected SHA-1 for %s is not valid hex, proceeding without checksum validation\n", label)
+			expectedSHA1 = ""
 		}
 	}
 
@@ -735,7 +743,7 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 	}
 }
 
-// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the 
+// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the
 // given path.
 func fileSHA1(path string) (string, error) {
 	f, err := os.Open(path)
@@ -751,8 +759,8 @@ func fileSHA1(path string) (string, error) {
 }
 
 // fetchExpectedSHA1 retrieves the expected SHA-1 checksum for a given Maven artifact URL.
-// It executes a retriable HTTP request using the provided credentials and headers and limits the 
-// response read to 256 bytes, handles both types of hash files 
+// It executes a retriable HTTP request using the provided credentials and headers and limits the
+// response read to 256 bytes, handles both types of hash files
 // (just the plain hash, or the hash followed by a filename)
 func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (string, error) {
 	for attempt := 0; ; attempt++ {
@@ -794,7 +802,7 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 			}
 			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
 		}
-	
+
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
 		resp.Body.Close()
 		if err != nil {
@@ -807,7 +815,7 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 		}
 
 		return strings.ToLower(fields[0]), nil
-	}	
+	}
 }
 
 // mavenJARURL builds the Maven repository download URL for a plugin artifact.

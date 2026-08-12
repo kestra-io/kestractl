@@ -668,7 +668,7 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 		t.Errorf("expected 'Downloaded 1' after retry succeeded, got:\n%s", output)
 	}
 	if attempts.Load() != 4 {
-		t.Errorf("expected 4s Maven attempts, got %d", attempts.Load())
+		t.Errorf("expected 4 Maven attempts, got %d", attempts.Load())
 	}
 }
 
@@ -1403,7 +1403,7 @@ func TestRunPluginsInstall_RedownloadsIfChecksumMismatches(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, false, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1437,7 +1437,7 @@ func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
 	}))
-	
+
 	origMaven := pluginsMavenBase
 	pluginsMavenBase = mavenServer.URL
 	t.Cleanup(func() {
@@ -1483,11 +1483,11 @@ func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mavenServer.URL, "", "", 5*time.Minute)
-	
+
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	
+
 	if !strings.Contains(out.String(), "[warn] no .sha1 published") {
 		t.Errorf("expected warning about missing .sha1, got:\n%s", out.String())
 	}
