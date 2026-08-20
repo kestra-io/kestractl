@@ -241,10 +241,16 @@ func newPluginsGetCommand() *cobra.Command {
 		Short:        "Download a single plugin by Maven coordinates",
 		SilenceUsage: true,
 		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
-into --plugins-dir, without downloading the full compatibility set for a version
+into --plugins-dir, without downloading the full compatibility set for a version.
 This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
-		Example: ` # Download only the Kafka plugin version 1.6.0
-  kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0`,
+		Example: `  # Download only the Kafka plugin version 1.6.0
+  kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
+
+  # Download an Enterprise Edition (EE) plugin from a custom registry with credentials
+  kestractl plugins get io.kestra.ee:ee-plugin:1.6.0 \
+    --maven-repository https://registry.kestra.io/maven \
+    --maven-username myuser \
+    --maven-password mypassword`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
@@ -647,6 +653,9 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 	}
 	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
 	if err != nil {
+		if errors.Is(err, errRateLimited) {
+			return 0, false, err
+		}
 		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
 		expectedSHA1 = ""
 	} else if expectedSHA1 != "" {
