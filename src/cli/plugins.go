@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,10 +11,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 )
 
@@ -29,6 +33,11 @@ var (
 	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
 	pluginsMavenBase = "https://repo1.maven.org/maven2"
 )
+
+// validCoordinatePart matches Maven-style groupId/artifactId/version segments:
+// letters, digits, dot, dash, underscore. Nothing else is allowed, so
+// URL-significant characters (/, \, ?, #, space, @, ..) are rejected by
+var validCoordinatePart = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 type pluginArtifact struct {
 	GroupID    string `json:"groupId"`
@@ -57,6 +66,7 @@ func newPluginsCommand() *cobra.Command {
 	}
 	cmd.AddCommand(newPluginsDownloadCommand())
 	cmd.AddCommand(newPluginsListCommand())
+	cmd.AddCommand(newPluginsGetCommand())
 	return cmd
 }
 
@@ -159,7 +169,7 @@ Authentication:
 
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Directory to write downloaded JARs into")
 	cmd.Flags().IntVar(&concurrency, "concurrency", 1, "Number of parallel downloads")
-	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist and pass checksum verification")
+	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download plugins even if they already exist")
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
@@ -215,6 +225,47 @@ pointing at Kestra's plugin registry to download them.`,
 
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to list: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Derive the required core plugins (storage, secret manager, queue/repository backend) from one or more Kestra configuration files")
+	return cmd
+}
+
+func newPluginsGetCommand() *cobra.Command {
+	var pluginsDir string
+	var forceRedownload bool
+	var globalTimeout time.Duration
+	var mavenRepository string
+	var mavenUsername string
+	var mavenPassword string
+
+	cmd := &cobra.Command{
+		Use:          "get <groupId:artifactId:version>",
+		Short:        "Download a single plugin by Maven coordinates",
+		SilenceUsage: true,
+		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
+into --plugins-dir, without downloading the full compatibility set for a version.
+This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
+		Example: `  # Download only the Kafka plugin version 1.6.0
+  kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
+
+  # Download an Enterprise Edition (EE) plugin from a custom registry with credentials
+  kestractl plugins get io.kestra.ee:ee-plugin:1.6.0 \
+    --maven-repository https://registry.kestra.io/maven \
+    --maven-username myuser \
+    --maven-password mypassword`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
+			return runPluginsGet(cmd.OutOrStdout(), args[0], pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
+		},
+		Annotations: map[string]string{AnnotationOffline: "true"},
+	}
+
+	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
+	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download the plugin even if it already exists")
+	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for the download")
+	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+
 	return cmd
 }
 
@@ -377,7 +428,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 			fmt.Fprintf(out, lineFormat+" %s ... already up to date\n", r.index+1, len(plugins), label)
 			skippedCount++
 		} else {
-			fmt.Fprintf(out, lineFormat+" %s ... done (%.1f MB)\n", r.index+1, len(plugins), label, float64(r.bytes)/(1024*1024))
+			fmt.Fprintf(out, lineFormat+" %s ... done (%s)\n", r.index+1, len(plugins), label, humanize.Bytes(uint64(r.bytes)))
 			downloaded++
 		}
 		outMu.Unlock()
@@ -412,6 +463,48 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	if failed > 0 {
 		return fmt.Errorf("%d plugin(s) failed to download", failed)
 	}
+	return nil
+}
+
+func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
+	p, err := parsePluginCoordinate(coordinate)
+	if err != nil {
+		return err
+	}
+
+	effectiveMavenBase := pluginsMavenBase
+	if mavenRepository != "" {
+		effectiveMavenBase = mavenRepository
+	}
+
+	parsedHeaders, err := parseHeaders(headers)
+	if err != nil {
+		return fmt.Errorf("invalid --header value: %w", err)
+	}
+
+	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
+		return fmt.Errorf("cannot create plugins directory %q: %w", pluginsDir, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), globalTimeout)
+	defer cancel()
+	logf := func(format string, args ...any) {
+		fmt.Fprintf(out, format, args...)
+	}
+
+	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
+
+	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", label, err)
+	}
+	if skipped {
+		fmt.Fprintf(out, "%s ... already up to date\n", label)
+	} else {
+		fmt.Fprintf(out, "%s ... done (%s)\n", label, humanize.Bytes(uint64(n)))
+	}
+
 	return nil
 }
 
@@ -482,6 +575,43 @@ func fetchPluginList(kestraVersion string, license string) ([]pluginArtifact, er
 	return plugins, nil
 }
 
+// validateCoordinateVersion returns an error if the version is symbolic alias
+// like "latest" or "develop" that cannot be safely resolved to an exact Maven artifact.
+func validateCoordinateVersion(version string) error {
+	switch strings.ToLower(version) {
+	case "latest", "develop":
+		return fmt.Errorf("version %q is not supported — please specify an exact version (e.g. 1.2.3)", version)
+	default:
+		return nil
+	}
+}
+
+// parsePluginCoordinate parses a single Maven-style plugin coordinate string
+// in the format "groupId:artifactId:version" into a pluginArtifact struct.
+// It returns an error if the coordinate is malformed or missing required parts.
+func parsePluginCoordinate(coord string) (pluginArtifact, error) {
+	if strings.Count(coord, ":") != 2 {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+	}
+	parts := strings.SplitN(coord, ":", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+	}
+	for _, part := range parts {
+		if !validCoordinatePart.MatchString(part) {
+			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: parts may only contain letters, digits, '.', '-', or '_'", coord)
+		}
+	}
+	if err := validateCoordinateVersion(parts[2]); err != nil {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %w", coord, err)
+	}
+	return pluginArtifact{
+		GroupID:    parts[0],
+		ArtifactID: parts[1],
+		Version:    parts[2],
+	}, nil
+}
+
 // parsePluginCoordinates parses a list of strings — each may be a single
 // "groupId:artifactId:version" coordinate or a space-separated list of them
 // (matching the output of "kestractl plugins list") — into pluginArtifact values.
@@ -489,11 +619,11 @@ func parsePluginCoordinates(values []string) ([]pluginArtifact, error) {
 	var result []pluginArtifact
 	for _, v := range values {
 		for _, coord := range strings.Fields(v) {
-			parts := strings.SplitN(coord, ":", 3)
-			if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-				return nil, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+			artifact, err := parsePluginCoordinate(coord)
+			if err != nil {
+				return nil, err
 			}
-			result = append(result, pluginArtifact{GroupID: parts[0], ArtifactID: parts[1], Version: parts[2]})
+			result = append(result, artifact)
 		}
 	}
 	if len(result) == 0 {
@@ -513,15 +643,30 @@ func pluginFileName(p pluginArtifact) string {
 
 func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
+	url := mavenJARURL(p, mavenBase)
+	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
 	if !forceRedownload {
 		if _, err := os.Stat(destPath); err == nil {
 			return 0, true, nil
 		}
 	}
-
-	url := mavenJARURL(p, mavenBase)
-	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
+	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	if err != nil {
+		if errors.Is(err, errRateLimited) {
+			return 0, false, err
+		}
+		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
+		expectedSHA1 = ""
+	} else if expectedSHA1 != "" {
+		if len(expectedSHA1) != 40 {
+			logf("  [WARN] expected SHA-1 for %s has invalid length (%d), proceeding without checksum validation\n", label, len(expectedSHA1))
+			expectedSHA1 = ""
+		} else if _, hexErr := hex.DecodeString(expectedSHA1); hexErr != nil {
+			logf("  [WARN] expected SHA-1 for %s is not valid hex, proceeding without checksum validation\n", label)
+			expectedSHA1 = ""
+		}
+	}
 
 	for attempt := 0; ; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -553,23 +698,132 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			}
 			continue
 		}
-
-		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				return 0, false, fmt.Errorf("artifact not found at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", url)
+			}
 			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
 		}
 
-		f, err := os.Create(destPath)
+		f, err := os.CreateTemp(destDir, filepath.Base(destPath)+".part*")
 		if err != nil {
-			return 0, false, fmt.Errorf("cannot create file: %w", err)
+			resp.Body.Close()
+			return 0, false, fmt.Errorf("cannot create temp file: %w", err)
 		}
-		defer f.Close()
+		partPath := f.Name()
+		// os.CreateTemp creates files with mode 0600; make the finished JAR
+		// readable by any user/process (e.g. Kestra running as another user).
+		if err := os.Chmod(partPath, 0o644); err != nil {
+			resp.Body.Close()
+			f.Close()
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to set permissions on temp file: %w", err)
+		}
 
-		n, err := io.Copy(f, resp.Body)
-		if err != nil {
-			return 0, false, fmt.Errorf("write failed: %w", err)
+		n, copyErr := io.Copy(f, resp.Body)
+		resp.Body.Close()
+		closeErr := f.Close()
+		if copyErr != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("write failed: %w", copyErr)
+		}
+		if closeErr != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to close file: %w", closeErr)
+		}
+		if err := os.Rename(partPath, destPath); err != nil {
+			os.Remove(partPath)
+			return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
+		}
+
+		if expectedSHA1 != "" {
+			actualSHA1, hashErr := fileSHA1(destPath)
+			if hashErr != nil {
+				os.Remove(destPath)
+				return 0, false, fmt.Errorf("failed to compute SHA-1 of downloaded file: %w", hashErr)
+			}
+			if actualSHA1 != expectedSHA1 {
+				os.Remove(destPath)
+				return 0, false, fmt.Errorf("checksum mismatch for %s: expected %s, got %s", label, expectedSHA1, actualSHA1)
+			}
 		}
 		return n, false, nil
+	}
+}
+
+// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the
+// given path.
+func fileSHA1(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("cannot open file: %w", err)
+	}
+	defer f.Close()
+	hasher := sha1.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return "", fmt.Errorf("cannot read file: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// fetchExpectedSHA1 retrieves the expected SHA-1 checksum for a given Maven artifact URL.
+// It executes a retriable HTTP request using the provided credentials and headers and limits the
+// response read to 256 bytes, handles both types of hash files
+// (just the plain hash, or the hash followed by a filename)
+func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (string, error) {
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jarURL+".sha1", nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to build checksum request: %w", err)
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		if mavenUsername != "" || mavenPassword != "" {
+			req.SetBasicAuth(mavenUsername, mavenPassword)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to reach repository for checksum: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt >= len(rateLimitWaits) {
+				return "", errRateLimited
+			}
+			wait := rateLimitWaits[attempt]
+			logf("  [429] rate limited on %s (SHA-1) — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
+			select {
+			case <-time.After(wait):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusNotFound {
+				logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
+				return "", nil
+			}
+			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
+		}
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		if err != nil {
+			return "", fmt.Errorf("failed to read checksum file: %w", err)
+		}
+
+		fields := strings.Fields(string(body))
+		if len(fields) == 0 {
+			return "", fmt.Errorf("checksum file is empty")
+		}
+
+		return strings.ToLower(fields[0]), nil
 	}
 }
 

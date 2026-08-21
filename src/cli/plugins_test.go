@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -59,6 +61,12 @@ func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mav
 	}))
 
 	mavenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -629,6 +637,12 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -653,8 +667,8 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 	if !strings.Contains(output, "Downloaded 1") {
 		t.Errorf("expected 'Downloaded 1' after retry succeeded, got:\n%s", output)
 	}
-	if attempts.Load() != 3 {
-		t.Errorf("expected 3 Maven attempts, got %d", attempts.Load())
+	if attempts.Load() != 4 {
+		t.Errorf("expected 4 Maven attempts, got %d", attempts.Load())
 	}
 }
 
@@ -722,6 +736,11 @@ func TestRunPluginsInstall_CustomMavenRepository(t *testing.T) {
 	var capturedHost string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHost = r.Host
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -757,6 +776,11 @@ func TestRunPluginsInstall_MavenBasicAuth(t *testing.T) {
 	var capturedAuth string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -929,7 +953,14 @@ func TestRunPluginsInstall_ExplicitPlugins(t *testing.T) {
 	// Capture which paths the maven server was asked for.
 	var requestedPaths []string
 	mavenServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestedPaths = append(requestedPaths, r.URL.Path)
+		if !strings.HasSuffix(r.URL.Path, ".sha1") {
+			requestedPaths = append(requestedPaths, r.URL.Path)
+		} else {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -974,5 +1005,490 @@ func TestPluginsListCommand_Flags(t *testing.T) {
 	}
 	if _, err := executeCommand(cmd); err == nil {
 		t.Error("expected error when version argument is missing")
+	}
+}
+
+func TestValidateCoordinateVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{
+			name:    "valid exact version",
+			version: "1.2.3",
+			wantErr: false,
+		},
+		{
+			name:    "latest is not supported",
+			version: "latest",
+			wantErr: true,
+		},
+		{
+			name:    "latest is not supported (case insensitive)",
+			version: "LATEST",
+			wantErr: true,
+		},
+		{
+			name:    "develop is not supported",
+			version: "develop",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCoordinateVersion(tt.version)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validateCoordinateVersion(%q) expected error, got nil", tt.version)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("validateCoordinateVersion(%q) unexpected error: %v", tt.version, err)
+			}
+		})
+	}
+}
+
+func TestParsePluginCoordinate(t *testing.T) {
+	tests := []struct {
+		name       string
+		coordinate string
+		want       pluginArtifact
+		wantErr    bool
+	}{
+		{
+			name:       "illegal path traversal (reviewer example)",
+			coordinate: "io.kestra:../../../tmp/evil:1.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal forward slash in artifactId",
+			coordinate: "io.kestra.plugin:plugin-kafka/evil:1.6.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal backslash in version",
+			coordinate: "io.kestra.plugin:plugin-kafka:1.6.0\\evil",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "illegal forward slash in groupId",
+			coordinate: "io/kestra/plugin:plugin-kafka:1.6.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "too many parts (extra colon)",
+			coordinate: "io.kestra.plugin:plugin-kafka:1.6.0:extra",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "valid standard coordinate",
+			coordinate: "io.kestra.plugin:plugin-aws:0.20.0",
+			want:       pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: "plugin-aws", Version: "0.20.0"},
+			wantErr:    false,
+		},
+		{
+			name:       "missing version",
+			coordinate: "io.kestra.plugin:plugin-aws",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "missing artifact",
+			coordinate: "io.kestra.plugin::0.20.0",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "empty string",
+			coordinate: "",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "unsupported version (latest)",
+			coordinate: "io.kestra.plugin:plugin-aws:latest",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+		{
+			name:       "unsupported version (develop)",
+			coordinate: "io.kestra.plugin:plugin-aws:DEVELOP",
+			want:       pluginArtifact{},
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parsePluginCoordinate(tt.coordinate)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected an invalid coordinate error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.GroupID != tt.want.GroupID || got.ArtifactID != tt.want.ArtifactID || got.Version != tt.want.Version {
+				t.Errorf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPluginsGetCommand_Flags(t *testing.T) {
+	cmd := newPluginsGetCommand()
+	expectedFlags := []string{
+		"plugins-dir",
+		"force-redownload",
+		"maven-repository",
+		"maven-username",
+		"maven-password",
+		"global-timeout",
+	}
+
+	for _, flag := range expectedFlags {
+		if cmd.Flags().Lookup(flag) == nil {
+			t.Errorf("expected flag --%s to exist", flag)
+		}
+	}
+}
+
+func TestPluginsGetCommand_RequiresArgs(t *testing.T) {
+	cmd := newPluginsGetCommand()
+	_, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected an invalid coordinate error, got nil")
+	}
+}
+
+func TestRunPluginsGet_HappyPath(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "FAILED") {
+		t.Errorf("did not expect 'FAILED' in output, got:\n%s", output)
+	}
+
+	expectedPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
+		t.Errorf("expected file %s to exist", expectedPath)
+	}
+}
+
+func TestRunPluginsGet_SkipsExistingValidJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if !strings.Contains(output, "already up to date") {
+		t.Errorf("expected 'already up to date' in output, got:\n%s", output)
+	}
+	if strings.Contains(output, "done") {
+		t.Errorf("did not expect 'done' in output when skipped, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_ForceRedownloadsExistingJAR(t *testing.T) {
+	newMockServers(t, http.StatusOK, "[]")
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte(mockJARBody), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, true, nil, "", "", "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' with force-redownload, got:\n%s", output)
+	}
+	if !strings.Contains(output, "done") {
+		t.Errorf("expected 'done' in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_DownloadFailure(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	origMaven := pluginsMavenBase
+	pluginsMavenBase = mavenServer.URL
+	t.Cleanup(func() {
+		pluginsMavenBase = origMaven
+		mavenServer.Close()
+	})
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+
+	if err == nil {
+		t.Fatal("expected error when Maven returns 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "artifact not found") {
+		t.Errorf("expected 'artifact not found' in error, got: %v", err)
+	}
+
+	output := out.String()
+	if strings.Contains(output, "FAILED") {
+		t.Errorf("did not expect 'FAILED' status line in output, got:\n%s", output)
+	}
+}
+
+func TestRunPluginsGet_InvalidCoordinate(t *testing.T) {
+	var out bytes.Buffer
+
+	err := runPluginsGet(&out, "invalid-coordinate-format", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+
+	if err == nil {
+		t.Fatal("expected error for invalid coordinate format, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected groupId:artifactId:version") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRunPluginsGet_Timeout(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(mockServer.Close)
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 1*time.Millisecond)
+	if err == nil {
+		t.Fatal("expected context deadline/timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "context deadline exceeded") && !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
+	originalWaits := rateLimitWaits
+	rateLimitWaits = []time.Duration{1 * time.Millisecond}
+	t.Cleanup(func() { rateLimitWaits = originalWaits })
+	var requests int
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("76e434ca252434fe7f7aa2adb7b4ff7c34aae7ea"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("mock jar content"))
+	}))
+	t.Cleanup(mockServer.Close)
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 5*time.Second)
+	if err != nil {
+		t.Fatalf("expected download to succeed after retry, got error: %v", err)
+	}
+	if requests != 3 {
+		t.Errorf("expected exactly 2 requests (1 fail, 1 success), got %d", requests)
+	}
+}
+
+func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
+	var capturedAuth string
+	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+			return
+		}
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(customMaven.Close)
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, customMaven.URL, "alice", "s3cr3t", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if capturedAuth == "" {
+		t.Fatal("expected Authorization header to be set, got none")
+	}
+	if !strings.HasPrefix(capturedAuth, "Basic ") {
+		t.Errorf("expected Basic auth header, got: %s", capturedAuth)
+	}
+}
+
+func TestRunPluginsGet_AtomicCleanupOnFailure(t *testing.T) {
+	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("partial data..."))
+		w.(http.Flusher).Flush()
+		time.Sleep(150 * time.Millisecond)
+	}))
+	t.Cleanup(mockServer.Close)
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mockServer.URL, "", "", 10*time.Millisecond)
+
+	if err == nil {
+		t.Fatal("expected download to fail due to timeout, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !os.IsTimeout(err) {
+		t.Errorf("expected timeout-related error, got: %v", err)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to read temp dir: %v", err)
+	}
+	if len(entries) > 0 {
+		var files []string
+		for _, e := range entries {
+			files = append(files, e.Name())
+		}
+		t.Errorf("expected temp directory to be completely empty after failure, but found leftover artifacts: %v", files)
+	}
+}
+
+func TestRunPluginsInstall_RedownloadsIfChecksumMismatches(t *testing.T) {
+	newMockServers(t, http.StatusOK, singlePluginPayload)
+
+	tmpDir := t.TempDir()
+	jarPath := filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")
+
+	if err := os.WriteFile(jarPath, []byte("invalid content"), 0o644); err != nil {
+		t.Fatalf("failed to create pre-existing corrupted JAR: %v", err)
+	}
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "1.3.9", tmpDir, 1, true, "", false, 5*time.Minute, "", "", "", nil, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	output := out.String()
+
+	if strings.Contains(output, "already up to date") {
+		t.Errorf("did not expect 'already up to date' when checksum mismatches, got:\n%s", output)
+	}
+	if !strings.Contains(output, "Downloaded 1") {
+		t.Errorf("expected 'Downloaded 1' because of checksum mismatch, got:\n%s", output)
+	}
+
+	content, err := os.ReadFile(jarPath)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+	if string(content) != mockJARBody {
+		t.Errorf("expected file content to be overwritten with mockJARBody, got %q", string(content))
+	}
+}
+
+func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, strings.Repeat("0", 40))
+			return
+		}
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+
+	origMaven := pluginsMavenBase
+	pluginsMavenBase = mavenServer.URL
+	t.Cleanup(func() {
+		pluginsMavenBase = origMaven
+		mavenServer.Close()
+	})
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+
+	if err == nil {
+		t.Fatal("expected error due to checksum mismatch, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch") {
+		t.Errorf("expected 'checksum mismatch' in error, got: %v", err)
+	}
+
+	entries, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("failed to read temp dir: %v", readErr)
+	}
+	if len(entries) > 0 {
+		var files []string
+		for _, e := range entries {
+			files = append(files, e.Name())
+		}
+		t.Errorf("expected temp directory to be empty after checksum failure cleanup, but found: %v", files)
+	}
+}
+
+func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
+	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(mavenServer.Close)
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mavenServer.URL, "", "", 5*time.Minute)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "[warn] no .sha1 published") {
+		t.Errorf("expected warning about missing .sha1, got:\n%s", out.String())
 	}
 }

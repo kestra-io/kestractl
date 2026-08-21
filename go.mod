@@ -1,6 +1,6 @@
 module github.com/kestra-io/kestractl
 
-go 1.25
+go 1.25.0
 
 require (
 	// Pseudo-version of client-sdk/go-sdk@main (tracks Kestra develop). Do not
@@ -15,6 +15,8 @@ require (
 	github.com/spf13/viper v1.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require github.com/dustin/go-humanize v1.0.1
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
@@ -31,7 +33,7 @@ require (
 	github.com/subosito/gotenv v1.6.0 // indirect
 	github.com/tmaxmax/go-sse v0.11.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/sys v0.29.0 // indirect
-	golang.org/x/text v0.28.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	gopkg.in/validator.v2 v2.0.1 // indirect
 )
