@@ -23,6 +23,12 @@ for KESTRA_VERSION in $versions; do
 
   echo "docker KESTRA_VERSION used: $KESTRA_VERSION\n"
 
+  # -slim replaces -no-plugins from 2.0; older minors were only ever published as -no-plugins.
+  case "$KESTRA_VERSION" in
+    v0.*|v1.*) export KESTRA_IMAGE_SUFFIX="no-plugins" ;;
+    *) export KESTRA_IMAGE_SUFFIX="slim" ;;
+  esac
+
   echo "start Kestra container"
   log_and_run docker compose -f docker-compose-ci.yml down
 
