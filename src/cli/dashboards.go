@@ -538,7 +538,8 @@ func runDashboardsExportChartCSV(client *Client, filePath, outputFile string, ou
 		return err
 	}
 
-	data, err := client.Kestra.Dashboards().ExportChartToCsv(client.Ctx, client.Tenant, request)
+	format := "CSV"
+	data, err := client.Kestra.Dashboards().ExportChart(client.Ctx, client.Tenant, request, &format)
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -585,7 +586,8 @@ func runDashboardsExportChartDataCSV(client *Client, dashboardID, chartID, fileP
 		filters = body
 	}
 
-	data, err := client.Kestra.Dashboards().ExportDashboardChartDataToCSV(client.Ctx, dashboardID, chartID, client.Tenant, filters)
+	format := "CSV"
+	data, err := client.Kestra.Dashboards().ExportDashboardChart(client.Ctx, dashboardID, chartID, client.Tenant, filters, &format)
 	if err != nil {
 		return formatSDKError(err)
 	}

@@ -72,8 +72,8 @@ func TestRunServiceAccountsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"results":[
-			{"id":"sa1","name":"ci-bot","superAdmin":false,"tenants":[{"id":"main"}]},
-			{"id":"sa2","name":"ops-bot","superAdmin":true}
+			{"id":"sa1","name":"ci-bot","instanceOwner":false,"tenants":[{"id":"main"}]},
+			{"id":"sa2","name":"ops-bot","instanceOwner":true}
 		],"total":2}`))
 	}))
 	t.Cleanup(server.Close)
@@ -94,7 +94,7 @@ func TestRunServiceAccountsGet(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"sa1","name":"ci-bot","description":"CI pipeline",
-			"superAdmin":false,"tenants":[{"id":"main"},{"id":"dev"}]}`))
+			"instanceOwner":false,"tenants":[{"id":"main"},{"id":"dev"}]}`))
 	}))
 	t.Cleanup(server.Close)
 

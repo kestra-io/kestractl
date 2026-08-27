@@ -113,7 +113,7 @@ func (m userMutation) applyTo(req *kestra.IAMUserControllerApiCreateOrUpdateUser
 		req.Tenants = m.tenants
 	}
 	if m.superAdminSet {
-		req.SuperAdmin = &m.superAdmin
+		req.InstanceOwner = &m.superAdmin
 	}
 	if m.restrictedSet {
 		req.Restricted = &m.restricted
@@ -130,8 +130,8 @@ func userRequestFromExisting(u *kestra.IAMUserControllerApiUser) kestra.IAMUserC
 	if u.LastName != nil {
 		req.LastName = u.LastName
 	}
-	if u.SuperAdmin != nil {
-		req.SuperAdmin = u.SuperAdmin
+	if u.InstanceOwner != nil {
+		req.InstanceOwner = u.InstanceOwner
 	}
 	if u.Restricted != nil {
 		req.Restricted = u.Restricted
@@ -231,7 +231,7 @@ func runUsersList(client *Client, query string, page, size int32, sort []string,
 		fmt.Fprintln(w, "ID\tUSERNAME\tDISPLAY NAME\tSUPERADMIN")
 		for _, u := range results {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%t\n",
-				u.GetId(), u.GetUsername(), u.GetDisplayName(), u.GetSuperAdmin())
+				u.GetId(), u.GetUsername(), u.GetDisplayName(), u.GetInstanceOwner())
 		}
 		fmt.Fprintf(w, "\nTotal users: %d\n", resp.GetTotal())
 		return nil
@@ -278,7 +278,7 @@ func renderUserDetail(user *kestra.IAMUserControllerApiUser, renderer *Renderer)
 		fmt.Fprintf(w, "Email:\t%s\n", user.GetEmail())
 		fmt.Fprintf(w, "First Name:\t%s\n", user.GetFirstName())
 		fmt.Fprintf(w, "Last Name:\t%s\n", user.GetLastName())
-		fmt.Fprintf(w, "Super Admin:\t%t\n", user.GetSuperAdmin())
+		fmt.Fprintf(w, "Super Admin:\t%t\n", user.GetInstanceOwner())
 		fmt.Fprintf(w, "Restricted:\t%t\n", user.GetRestricted())
 
 		if groups := user.GetGroups(); len(groups) > 0 {
@@ -869,8 +869,8 @@ func newUsersPatchSuperAdminCommand() *cobra.Command {
 }
 
 func runUsersPatchSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
-	body := map[string]any{"superAdmin": superAdmin}
-	if err := client.Kestra.Users().PatchUserSuperAdmin(client.Ctx, id, body); err != nil {
+	body := map[string]any{"instanceOwner": superAdmin}
+	if err := client.Kestra.Users().PatchUserInstanceOwner(client.Ctx, id, body); err != nil {
 		return formatSDKError(err)
 	}
 

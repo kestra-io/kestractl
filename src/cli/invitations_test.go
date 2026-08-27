@@ -179,8 +179,8 @@ func TestRunInvitationsCreate_SendsBody(t *testing.T) {
 	if !ok || len(groups) != 1 || groups[0] != "g1" {
 		t.Errorf("expected groups [g1] in body, got %v", gotBody["groups"])
 	}
-	if gotBody["superAdmin"] != true {
-		t.Errorf("expected superAdmin true in body, got %v", gotBody["superAdmin"])
+	if gotBody["instanceOwner"] != true {
+		t.Errorf("expected instanceOwner true in body, got %v", gotBody["instanceOwner"])
 	}
 	if _, present := gotBody["createUserIfNotExist"]; present {
 		t.Errorf("expected createUserIfNotExist omitted, got %v", gotBody["createUserIfNotExist"])

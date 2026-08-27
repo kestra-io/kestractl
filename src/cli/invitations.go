@@ -111,7 +111,7 @@ func runInvitationsList(client *Client, email, status string, page, size int32, 
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\n",
 				inv.GetId(), inv.GetEmail(), inv.GetStatus(),
 				formatOptionalTime(inv.GetSentAt()), formatOptionalTime(inv.GetExpiredAt()),
-				inv.GetSuperAdmin())
+				inv.GetInstanceOwner())
 		}
 		fmt.Fprintf(w, "\nTotal invitations: %d\n", resp.Total)
 		return nil
@@ -155,7 +155,7 @@ func runInvitationsListByEmail(client *Client, email string, renderer *Renderer)
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%t\n",
 				inv.GetId(), inv.GetEmail(), inv.GetStatus(),
 				formatOptionalTime(inv.GetSentAt()), formatOptionalTime(inv.GetExpiredAt()),
-				inv.GetSuperAdmin())
+				inv.GetInstanceOwner())
 		}
 		fmt.Fprintf(w, "\nTotal invitations: %d\n", len(results))
 		return nil
@@ -203,7 +203,7 @@ func renderInvitationDetail(inv *kestra.IAMInvitationControllerApiInvitationDeta
 		fmt.Fprintf(w, "Sent at:\t%s\n", formatOptionalTime(inv.GetSentAt()))
 		fmt.Fprintf(w, "Expired at:\t%s\n", formatOptionalTime(inv.GetExpiredAt()))
 		fmt.Fprintf(w, "Accepted at:\t%s\n", formatOptionalTime(inv.GetAcceptedAt()))
-		fmt.Fprintf(w, "Superadmin:\t%t\n", inv.GetSuperAdmin())
+		fmt.Fprintf(w, "Superadmin:\t%t\n", inv.GetInstanceOwner())
 
 		if roles := inv.GetRoles(); len(roles) > 0 {
 			names := make([]string, 0, len(roles))
@@ -282,7 +282,7 @@ func runInvitationsCreate(client *Client, email string, roles, groups []string, 
 		req.Roles = append(req.Roles, kestra.IAMInvitationControllerApiInvitationRole{Id: roleID})
 	}
 	if superAdmin {
-		req.SuperAdmin = &superAdmin
+		req.InstanceOwner = &superAdmin
 	}
 	if createUserIfNotExist {
 		req.CreateUserIfNotExist = &createUserIfNotExist

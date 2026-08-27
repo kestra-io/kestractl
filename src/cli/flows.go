@@ -2100,24 +2100,22 @@ func runFlowsSearchBySource(client *Client, page, size int32, query, namespace s
 	results := resp.GetResults()
 	jsonResults := make([]map[string]any, len(results))
 	for i, r := range results {
-		m := r.GetModel()
 		jsonResults[i] = map[string]any{
-			"id":        m.GetId(),
-			"namespace": m.GetNamespace(),
-			"revision":  m.GetRevision(),
-			"fragments": r.GetFragments(),
+			"id":        r.GetId(),
+			"namespace": r.GetNamespace(),
+			"editable":  r.GetEditable(),
+			"matches":   r.GetMatches(),
 		}
 	}
 
 	return renderer.Render(jsonResults, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "ID\tNAMESPACE\tREVISION\tFRAGMENTS")
+		fmt.Fprintln(w, "ID\tNAMESPACE\tEDITABLE\tMATCHES")
 		for _, r := range results {
-			m := r.GetModel()
-			fmt.Fprintf(w, "%s\t%s\t%d\t%d match(es)\n",
-				m.GetId(),
-				m.GetNamespace(),
-				m.GetRevision(),
-				len(r.GetFragments()),
+			fmt.Fprintf(w, "%s\t%s\t%t\t%d match(es)\n",
+				r.GetId(),
+				r.GetNamespace(),
+				r.GetEditable(),
+				len(r.GetMatches()),
 			)
 		}
 		fmt.Fprintf(w, "\nShowing %d result(s) (page %d, total %d)\n", len(results), page, resp.GetTotal())

@@ -3,12 +3,15 @@ module github.com/kestra-io/kestractl
 go 1.25.0
 
 require (
-	// Pseudo-version of client-sdk/go-sdk@main (tracks Kestra develop). Do not
-	// `go get -u` this: v1.3.0 is a real tag from releases/v1.3.x (Kestra 1.3.x's
-	// API) and sorts higher than this pseudo-version, so an unguarded upgrade
-	// would silently swap back to the wrong API surface. Re-resolve deliberately
-	// with `go get github.com/kestra-io/client-sdk/go-sdk@main`.
-	github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1
+	// Pseudo-version pinned to the go-sdk/v2.0.0-rc1 tag commit (Kestra 2.0 API).
+	// The upstream go-sdk module path still lacks a /v2 suffix at this tag, so Go
+	// can't resolve "v2.0.0-rc1" as a proper semver import and this had to be
+	// pinned by commit hash instead. Do not `go get -u` this: v1.3.0 is a real
+	// tag from releases/v1.3.x (Kestra 1.3.x's API) and sorts higher than this
+	// pseudo-version, so an unguarded upgrade would silently swap back to the
+	// wrong API surface. Re-resolve deliberately once upstream tags a proper
+	// v2.x release (or adds the /v2 module suffix).
+	github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260827105951-d3f68c23ef0d
 	github.com/posthog/posthog-go v1.10.0
 	github.com/spf13/cobra v1.8.0
 	github.com/spf13/pflag v1.0.10

@@ -733,9 +733,29 @@ to a file instead.`,
 }
 
 func runNamespacesExportPluginDefaults(client *Client, namespace, outputFile string, cmd *cobra.Command) error {
-	data, err := client.Kestra.Namespaces().ExportPluginDefaults(client.Ctx, namespace, client.Tenant)
+	// go-sdk v2 dropped the dedicated export/import plugin-defaults endpoints;
+	// plugin defaults are now just a field on the Namespace object.
+	ns, err := client.Kestra.Namespaces().Namespace(client.Ctx, namespace, client.Tenant)
 	if err != nil {
 		return formatSDKError(err)
+	}
+
+	defaults := ns.GetPluginDefaults()
+	clean := make([]map[string]any, len(defaults))
+	for i, pd := range defaults {
+		entry := map[string]any{"type": pd.GetType()}
+		if pd.HasForced() {
+			entry["forced"] = pd.GetForced()
+		}
+		if len(pd.GetValues()) > 0 {
+			entry["values"] = pd.GetValues()
+		}
+		clean[i] = entry
+	}
+
+	data, err := yaml.Marshal(clean)
+	if err != nil {
+		return fmt.Errorf("failed to marshal plugin defaults: %w", err)
 	}
 
 	if outputFile != "" {
@@ -781,25 +801,45 @@ The file replaces any existing plugin defaults for that namespace.`,
 }
 
 func runNamespacesImportPluginDefaults(client *Client, namespace, filePath string, renderer *Renderer) error {
-	warnings, err := client.Kestra.Namespaces().ImportPluginDefaults(client.Ctx, namespace, client.Tenant, filePath)
+	// go-sdk v2 dropped the dedicated export/import plugin-defaults endpoints;
+	// plugin defaults are now just a field on the Namespace object, so import
+	// becomes a read-modify-write of the namespace's pluginDefaults.
+	fileData, err := os.ReadFile(filePath)
 	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+
+	var parsed []struct {
+		Type   string                 `yaml:"type"`
+		Forced *bool                  `yaml:"forced"`
+		Values map[string]interface{} `yaml:"values"`
+	}
+	if err := yaml.Unmarshal(fileData, &parsed); err != nil {
+		return fmt.Errorf("failed to parse plugin defaults YAML: %w", err)
+	}
+
+	ns, err := client.Kestra.Namespaces().Namespace(client.Ctx, namespace, client.Tenant)
+	if err != nil {
+		return formatSDKError(err)
+	}
+
+	defaults := make([]kestra.PluginDefault, len(parsed))
+	for i, p := range parsed {
+		defaults[i] = kestra.PluginDefault{Type: p.Type, Forced: p.Forced, Values: p.Values}
+	}
+	ns.SetPluginDefaults(defaults)
+
+	if _, err := client.Kestra.Namespaces().UpdateNamespace(client.Ctx, namespace, client.Tenant, *ns); err != nil {
 		return formatSDKError(err)
 	}
 
 	result := map[string]any{
 		"namespace": namespace,
-		"warnings":  warnings,
 		"status":    "imported",
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "Plugin defaults imported for namespace %q.\n", namespace)
-		if len(warnings) > 0 {
-			fmt.Fprintln(w, "\nWarnings:")
-			for _, warn := range warnings {
-				fmt.Fprintf(w, "  - %s\n", warn)
-			}
-		}
 		return nil
 	})
 }

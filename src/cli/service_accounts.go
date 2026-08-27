@@ -120,7 +120,7 @@ func runServiceAccountsList(client *Client, page, size int32, sort []string, ren
 		fmt.Fprintln(w, "ID\tNAME\tSUPERADMIN\tTENANTS")
 		for _, sa := range results {
 			fmt.Fprintf(w, "%s\t%s\t%t\t%s\n",
-				sa.GetId(), sa.GetName(), sa.GetSuperAdmin(), strings.Join(tenantIDs(sa.GetTenants()), ", "))
+				sa.GetId(), sa.GetName(), sa.GetInstanceOwner(), strings.Join(tenantIDs(sa.GetTenants()), ", "))
 		}
 		fmt.Fprintf(w, "\nTotal service accounts: %d\n", resp.GetTotal())
 		return nil
@@ -164,7 +164,7 @@ func renderServiceAccountDetail(sa *kestra.IAMServiceAccountControllerApiService
 		fmt.Fprintf(w, "ID:\t%s\n", sa.GetId())
 		fmt.Fprintf(w, "Name:\t%s\n", sa.GetName())
 		fmt.Fprintf(w, "Description:\t%s\n", sa.GetDescription())
-		fmt.Fprintf(w, "Super Admin:\t%t\n", sa.GetSuperAdmin())
+		fmt.Fprintf(w, "Super Admin:\t%t\n", sa.GetInstanceOwner())
 		if tenants := sa.GetTenants(); len(tenants) > 0 {
 			fmt.Fprintf(w, "Tenants:\t%s\n", strings.Join(tenantIDs(tenants), ", "))
 		}
@@ -225,7 +225,7 @@ func runServiceAccountsCreate(client *Client, m serviceAccountMutation, renderer
 		body.Description = &m.description
 	}
 	if m.superAdminSet {
-		body.SuperAdmin = &m.superAdmin
+		body.InstanceOwner = &m.superAdmin
 	}
 	if m.tenantsSet {
 		body.Tenants = m.tenants
@@ -557,8 +557,8 @@ func newServiceAccountsSetSuperAdminCommand() *cobra.Command {
 }
 
 func runServiceAccountsSetSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
-	body := map[string]any{"superAdmin": superAdmin}
-	if err := client.Kestra.ServiceAccount().PatchServiceAccountSuperAdmin(client.Ctx, id, body); err != nil {
+	body := map[string]any{"instanceOwner": superAdmin}
+	if err := client.Kestra.ServiceAccount().PatchServiceAccountInstanceOwner(client.Ctx, id, body); err != nil {
 		return formatSDKError(err)
 	}
 
