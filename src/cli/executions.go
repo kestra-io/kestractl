@@ -876,14 +876,11 @@ func runExecutionsList(client *Client, namespace, flowID, state string, page, si
 		size = 50
 	}
 
-	req := client.API.ExecutionsAPI.SearchExecutions(client.Ctx, client.Tenant).
-		Page(page).
-		Size(size)
-	if filters := buildExecutionFilters(namespace, flowID, state); len(filters) > 0 {
-		req = req.Filters(filters)
-	}
+	pageInt, sizeInt := int(page), int(size)
+	filters := queryFiltersToSearchFilters(buildExecutionFilters(namespace, flowID, state))
 
-	resp, _, err := req.Execute()
+	resp, err := client.Kestra.Executions().
+		SearchExecutions(client.Ctx, client.Tenant, &pageInt, &sizeInt, nil, filters)
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -1251,13 +1248,10 @@ func runExecutionsSearchByFlow(client *Client, namespace, flowID string, page, s
 		size = 50
 	}
 
-	resp, _, err := client.API.ExecutionsAPI.
-		SearchExecutionsByFlowId(client.Ctx, client.Tenant).
-		Namespace(namespace).
-		FlowId(flowID).
-		Page(page).
-		Size(size).
-		Execute()
+	pageInt, sizeInt := int(page), int(size)
+
+	resp, err := client.Kestra.Executions().
+		SearchExecutionsByFlowId(client.Ctx, client.Tenant, namespace, flowID, &pageInt, &sizeInt)
 	if err != nil {
 		return formatSDKError(err)
 	}
