@@ -323,10 +323,9 @@ func TestNamespacesExportPluginDefaultsCommand_ClientError(t *testing.T) {
 }
 
 func TestRunNamespacesExportPluginDefaults_ToStdout(t *testing.T) {
-	yamlContent := []byte("- type: io.kestra.plugin.core.log.Log\n  values: {}\n")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(yamlContent)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"pluginDefaults":[{"type":"io.kestra.plugin.core.log.Log","values":{}}]}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -344,10 +343,9 @@ func TestRunNamespacesExportPluginDefaults_ToStdout(t *testing.T) {
 }
 
 func TestRunNamespacesExportPluginDefaults_ToFile(t *testing.T) {
-	yamlContent := []byte("- type: io.kestra.plugin.core.log.Log\n")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Write(yamlContent)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"pluginDefaults":[{"type":"io.kestra.plugin.core.log.Log"}]}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -371,8 +369,8 @@ func TestRunNamespacesExportPluginDefaults_ToFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != string(yamlContent) {
-		t.Errorf("file content mismatch: got %q, want %q", data, yamlContent)
+	if !strings.Contains(string(data), "io.kestra.plugin.core.log.Log") {
+		t.Errorf("file content mismatch, got %q", data)
 	}
 	if !strings.Contains(buf.String(), "exported") {
 		t.Errorf("expected confirmation message, got:\n%s", buf.String())

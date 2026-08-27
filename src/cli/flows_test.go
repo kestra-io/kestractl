@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -1742,19 +1742,17 @@ func TestTryParseFlowSearchFromError(t *testing.T) {
 	})
 }
 
-// TestConfirmArrayLabelsDecodeError guards fixture fidelity: it asserts that the
-// shared fixture is a valid flow that the generated client fails to decode
-// *specifically* because of its array-format labels — i.e. the exact condition
-// from #83 that the tryParseFlow* fallbacks exist to recover from. If the SDK is
-// ever regenerated to accept array labels, this test flips and the workaround
-// (and its tests) can be retired.
+// TestConfirmArrayLabelsDecodeError used to guard fixture fidelity for #83: the
+// generated client failed to decode array-format labels, which is what the
+// tryParseFlow* fallbacks exist to recover from. go-sdk v2 fixed this (Labels
+// is now a MapObjectObject that accepts both array and map form), so the
+// fixture now decodes cleanly. The tryParseFlow* fallbacks are kept as a
+// defensive fallback for other SDK type-mismatch-on-error cases (see
+// formatSDKError / AGENTS.md), but are no longer exercised by this fixture.
 func TestConfirmArrayLabelsDecodeError(t *testing.T) {
 	var fws kestra.FlowWithSource
 	err := json.Unmarshal([]byte(flowWithArrayLabelsJSON), &fws)
-	if err == nil {
-		t.Fatal("fixture no longer reproduces #83: decode unexpectedly succeeded")
-	}
-	if !strings.Contains(err.Error(), "labels") {
-		t.Fatalf("fixture fails to decode for the wrong reason (want a labels error): %v", err)
+	if err != nil {
+		t.Fatalf("expected array-format labels to decode cleanly on go-sdk v2, got: %v", err)
 	}
 }

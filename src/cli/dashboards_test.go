@@ -382,8 +382,11 @@ func TestRunDashboardsChartData(t *testing.T) {
 func TestRunDashboardsExportChartCSV_Stdout(t *testing.T) {
 	var gotBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/dashboards/charts/export/to-csv") {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/charts/export") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("format"); got != "CSV" {
+			t.Errorf("expected format=CSV query param, got: %q", got)
 		}
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "text/csv")
@@ -409,8 +412,11 @@ func TestRunDashboardsExportChartCSV_Stdout(t *testing.T) {
 func TestRunDashboardsExportChartDataCSV_File(t *testing.T) {
 	var gotBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/dashboards/my-dashboard/charts/my-chart/export/to-csv") {
+		if !strings.HasSuffix(r.URL.Path, "/dashboards/my-dashboard/charts/my-chart/export") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("format"); got != "CSV" {
+			t.Errorf("expected format=CSV query param, got: %q", got)
 		}
 		b, _ := io.ReadAll(r.Body)
 		gotBody = string(b)

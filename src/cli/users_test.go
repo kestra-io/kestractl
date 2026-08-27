@@ -116,8 +116,8 @@ func TestRunUsersList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"results":[
-			{"id":"u1","username":"alice","displayName":"Alice","superAdmin":true},
-			{"id":"u2","username":"bob","displayName":"Bob","superAdmin":false}
+			{"id":"u1","username":"alice","displayName":"Alice","instanceOwner":true},
+			{"id":"u2","username":"bob","displayName":"Bob","instanceOwner":false}
 		],"total":2}`))
 	}))
 	t.Cleanup(server.Close)
@@ -139,7 +139,7 @@ func TestRunUsersGet(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"u1","username":"alice","email":"alice@example.com",
-			"superAdmin":true,"groups":[{"id":"g1"}],"tenants":[{"id":"main"}]}`))
+			"instanceOwner":true,"groups":[{"id":"g1"}],"tenants":[{"id":"main"}]}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -293,18 +293,18 @@ func TestUsersCreateCommand_NoGlobalPasswordCollision(t *testing.T) {
 
 func TestRunUsersUpdate_PreservesExistingSuperAdmin(t *testing.T) {
 	// The current user (returned by the GET) is a super-admin; the operator
-	// updates only the first name. The full-replace PUT must carry superAdmin
-	// true so the user is not silently demoted.
+	// updates only the first name. The full-replace PUT must carry
+	// instanceOwner true so the user is not silently demoted.
 	server, body := captureBody(t, http.StatusOK,
-		`{"id":"u1","email":"u1@b.com","superAdmin":true}`)
+		`{"id":"u1","email":"u1@b.com","instanceOwner":true}`)
 
 	m := userMutation{firstName: "Renamed", firstNameSet: true}
 	var buf bytes.Buffer
 	if err := runUsersUpdate(newTestClient(t, server.URL), "u1", m, newTableRenderer(&buf)); err != nil {
 		t.Fatalf("runUsersUpdate error: %v", err)
 	}
-	if (*body)["superAdmin"] != true {
-		t.Errorf("update must preserve existing superAdmin=true, body: %v", *body)
+	if (*body)["instanceOwner"] != true {
+		t.Errorf("update must preserve existing instanceOwner=true, body: %v", *body)
 	}
 	if (*body)["firstName"] != "Renamed" {
 		t.Errorf("update must apply the changed firstName, body: %v", *body)
@@ -317,14 +317,14 @@ func TestRunUsersUpdate_PreservesExistingSuperAdmin(t *testing.T) {
 func TestRunUsersUpdate_AppliesExplicitSuperAdminFalse(t *testing.T) {
 	// Existing user is a super-admin, operator explicitly passes --superadmin=false.
 	server, body := captureBody(t, http.StatusOK,
-		`{"id":"u1","email":"u1@b.com","superAdmin":true}`)
+		`{"id":"u1","email":"u1@b.com","instanceOwner":true}`)
 
 	m := userMutation{superAdmin: false, superAdminSet: true}
 	var buf bytes.Buffer
 	if err := runUsersUpdate(newTestClient(t, server.URL), "u1", m, newTableRenderer(&buf)); err != nil {
 		t.Fatalf("runUsersUpdate error: %v", err)
 	}
-	if (*body)["superAdmin"] != false {
+	if (*body)["instanceOwner"] != false {
 		t.Errorf("explicit --superadmin=false must be applied, body: %v", *body)
 	}
 }
