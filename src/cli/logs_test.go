@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 )
 
 func TestLogsListCommand_NoArgs(t *testing.T) {
