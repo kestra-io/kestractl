@@ -46,6 +46,10 @@ checksum:
 release:
   name_template: "{{ .Version }}"
   prerelease: auto
+  # main is the v2 line: never mark its releases as "latest" so the install
+  # script's default (GitHub's latest release) stays on the v1 line.
+  # Flip to "true" when v2 becomes the default install channel.
+  make_latest: "false"
 
 changelog:
   sort: asc
