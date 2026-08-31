@@ -1,4 +1,4 @@
-# Kestra CLI
+# kestractl
 
 A Go-based command-line interface for managing Kestra flows, executions, triggers, namespaces, key-value store, namespace files, apps, dashboards, assets, blueprints, test suites, IAM users, groups, roles, service accounts, bindings, and invitations.
 
@@ -93,7 +93,7 @@ kestractl config use prod
 
 ### Environment Variables
 
-You can also configure the CLI using environment variables, which override config file settings:
+You can also configure kestractl using environment variables, which override config file settings:
 
 ```bash
 export KESTRACTL_HOST=http://localhost:8080
@@ -119,15 +119,15 @@ This allows you to:
 
 ### Telemetry
 
-The CLI sends anonymous telemetry to help the Kestra team understand real usage and improve the product over time, and it never blocks command execution.
+kestractl sends anonymous telemetry to help the Kestra team understand real usage and improve the product over time, and it never blocks command execution.
 
 Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 
 ### Update Notifications
 
-The CLI warns on stderr when a newer release is available. The lookup runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so all but the first command you run after a full day are served from that cache with no network call at all.
+kestractl warns on stderr when a newer release is available. The lookup runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so all but the first command you run after a full day are served from that cache with no network call at all.
 
-The lookup itself is **asynchronous**: it runs in the background alongside your command rather than before it, so it does not add to the time your command takes. If it has not come back by the time the command finishes, the CLI gives up and the notice simply appears on your next run. Failures are silent, and the check is skipped automatically on CI and for `dev` builds.
+The lookup itself is **asynchronous**: it runs in the background alongside your command rather than before it, so it does not add to the time your command takes. If it has not come back by the time the command finishes, kestractl gives up and the notice simply appears on your next run. Failures are silent, and the check is skipped automatically on CI and for `dev` builds.
 
 Set `KESTRACTL_VERSION_CHECK_DISABLED=true` to turn it off entirely.
 
@@ -1005,7 +1005,7 @@ KESTRACTL_TOKEN=YOUR_TOKEN \
 
 ## Architecture
 
-The CLI uses a simple, direct architecture built on [Cobra](https://github.com/spf13/cobra), [Viper](https://github.com/spf13/viper), and the official Kestra Go SDK.
+kestractl uses a simple, direct architecture built on [Cobra](https://github.com/spf13/cobra), [Viper](https://github.com/spf13/viper), and the official Kestra Go SDK.
 
 ```
 main.go → root.go → commands → Client → Kestra SDK → Kestra API
