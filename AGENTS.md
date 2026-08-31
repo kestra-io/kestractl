@@ -70,6 +70,13 @@ In addition to `Common pitfalls` above, check for:
 
 **Known EE gotcha:** a superadmin configured with only `kestra.security.super-admin.username`/`password` never gets a tenant or `ADMIN` role bound, so every API call 403s even though login succeeds. Fix is setting `kestra.security.super-admin.tenant-admin-access: [<tenant-id>]` (e.g. `[main]`) too, which triggers tenant auto-creation and binds the built-in `ADMIN` role on startup. Check for this config before assuming a kestractl auth/permission bug.
 
-## Release
+## Branching & Releases
 
-Releases are created by creating a new Git tag. See `.github/workflows/release.yml` for more details. When releasing from `main` branch, be sure that Go SDK version in `go.mod` is a fixed and short one. For example, `github.com/kestra-io/client-sdk/go-sdk v1.1.0` is valid for a release but `github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1` is not valid for a release.
+Two long-lived branches, two release lines:
+
+- **`main`** — kestractl v2, targeting Kestra 2.x (Go SDK `go-sdk/v2`). Tags: `v2.x.y`.
+- **`releases/v1`** — legacy v1 maintenance, targeting Kestra 1.x (Go SDK v1). Tags: `v1.x.y`. **v1 bugfixes branch from and PR into `releases/v1`, not `main`.**
+
+Releases are created by pushing a Git tag from the matching branch. See `.github/workflows/release.yml` for more details. When releasing, be sure that Go SDK version in `go.mod` is a fixed and short one. For example, `github.com/kestra-io/client-sdk/go-sdk v1.1.0` is valid for a release but `github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1` is not valid for a release.
+
+**"Latest" is pinned per branch, not chronological.** GitHub has one repo-wide "latest" release and the public install script's default resolves it, so `.goreleaser.yml` pins `release.make_latest`: `"true"` on `releases/v1` (v1 stays the default install channel), `"false"` on `main` (v2 is opt-in via `VERSION=2`). Do not change these values as a side effect of another change — flipping main's to `"true"` is the deliberate switch that makes v2 the default install channel.
