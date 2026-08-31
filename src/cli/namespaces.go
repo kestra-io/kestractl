@@ -25,10 +25,7 @@ func newNamespacesCommand() *cobra.Command {
 	cmd.AddCommand(newNamespacesInheritedSecretsCommand())
 	cmd.AddCommand(newNamespacesInheritedVariablesCommand())
 	cmd.AddCommand(newNamespacesSearchCommand())
-	cmd.AddCommand(newNamespacesInheritedPluginDefaultsCommand())
 	cmd.AddCommand(newNamespacesAutocompleteCommand())
-	cmd.AddCommand(newNamespacesExportPluginDefaultsCommand())
-	cmd.AddCommand(newNamespacesImportPluginDefaultsCommand())
 
 	return cmd
 }
@@ -519,54 +516,6 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 	})
 }
 
-func newNamespacesInheritedPluginDefaultsCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "plugin-defaults <namespace>",
-		Short: "List inherited plugin defaults for a namespace.",
-		Example: `  kestractl namespaces plugin-defaults my.namespace
-  kestractl namespaces plugin-defaults my.namespace --output json`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			client, err := newClientFunc()
-			if err != nil {
-				return err
-			}
-			return runNamespacesInheritedPluginDefaults(client, args[0], renderer)
-		},
-	}
-	return cmd
-}
-
-func runNamespacesInheritedPluginDefaults(client *Client, namespace string, renderer *Renderer) error {
-	defaults, _, err := client.API.NamespacesAPI.
-		InheritedPluginDefaults(client.Ctx, namespace, client.Tenant).
-		Execute()
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	result := make([]map[string]any, len(defaults))
-	for i, d := range defaults {
-		result[i] = map[string]any{
-			"type":   d.GetType(),
-			"forced": d.GetForced(),
-		}
-	}
-
-	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "TYPE\tFORCED")
-		for _, d := range defaults {
-			fmt.Fprintf(w, "%s\t%v\n", d.GetType(), d.GetForced())
-		}
-		fmt.Fprintf(w, "\nTotal plugin defaults: %d\n", len(defaults))
-		return nil
-	})
-}
-
 func newNamespacesSearchCommand() *cobra.Command {
 	var page, size int32
 	var query string
@@ -699,147 +648,6 @@ func runNamespacesAutocomplete(client *Client, query string, existingOnly bool, 
 			fmt.Fprintln(w, ns)
 		}
 		fmt.Fprintf(w, "\nShowing %d namespace(s)\n", len(namespaces))
-		return nil
-	})
-}
-
-func newNamespacesExportPluginDefaultsCommand() *cobra.Command {
-	var outputFile string
-
-	cmd := &cobra.Command{
-		Use:   "export-plugin-defaults <namespace>",
-		Short: "Export plugin defaults for a namespace as YAML.",
-		Long: `Download the plugin defaults defined for the given namespace as a YAML file.
-
-The YAML content is written to stdout by default. Use --output-file to save it
-to a file instead.`,
-		Example: `  # Print plugin defaults to stdout
-  kestractl namespaces export-plugin-defaults my.namespace
-
-  # Save to file
-  kestractl namespaces export-plugin-defaults my.namespace --output-file defaults.yml`,
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			client, err := newClientFunc()
-			if err != nil {
-				return err
-			}
-			return runNamespacesExportPluginDefaults(client, args[0], outputFile, cmd)
-		},
-	}
-
-	cmd.Flags().StringVar(&outputFile, "output-file", "", "Write YAML output to this file instead of stdout")
-	return cmd
-}
-
-func runNamespacesExportPluginDefaults(client *Client, namespace, outputFile string, cmd *cobra.Command) error {
-	// go-sdk v2 dropped the dedicated export/import plugin-defaults endpoints;
-	// plugin defaults are now just a field on the Namespace object.
-	ns, err := client.Kestra.Namespaces().Namespace(client.Ctx, namespace, client.Tenant)
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	defaults := ns.GetPluginDefaults()
-	clean := make([]map[string]any, len(defaults))
-	for i, pd := range defaults {
-		entry := map[string]any{"type": pd.GetType()}
-		if pd.HasForced() {
-			entry["forced"] = pd.GetForced()
-		}
-		if len(pd.GetValues()) > 0 {
-			entry["values"] = pd.GetValues()
-		}
-		clean[i] = entry
-	}
-
-	data, err := yaml.Marshal(clean)
-	if err != nil {
-		return fmt.Errorf("failed to marshal plugin defaults: %w", err)
-	}
-
-	if outputFile != "" {
-		if err := os.WriteFile(outputFile, data, 0o644); err != nil {
-			return fmt.Errorf("failed to write file: %w", err)
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "Plugin defaults exported to %s (%d bytes)\n", outputFile, len(data))
-		return nil
-	}
-
-	_, err = cmd.OutOrStdout().Write(data)
-	return err
-}
-
-func newNamespacesImportPluginDefaultsCommand() *cobra.Command {
-	var filePath string
-
-	cmd := &cobra.Command{
-		Use:   "import-plugin-defaults <namespace>",
-		Short: "Import plugin defaults for a namespace from a YAML file.",
-		Long: `Upload a YAML file containing plugin defaults for the given namespace.
-The file replaces any existing plugin defaults for that namespace.`,
-		Example: `  kestractl namespaces import-plugin-defaults my.namespace --file defaults.yml`,
-		Args:    cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if filePath == "" {
-				return fmt.Errorf("--file is required")
-			}
-			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
-			if err != nil {
-				return err
-			}
-			client, err := newClientFunc()
-			if err != nil {
-				return err
-			}
-			return runNamespacesImportPluginDefaults(client, args[0], filePath, renderer)
-		},
-	}
-
-	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to the YAML plugin defaults file (required)")
-	return cmd
-}
-
-func runNamespacesImportPluginDefaults(client *Client, namespace, filePath string, renderer *Renderer) error {
-	// go-sdk v2 dropped the dedicated export/import plugin-defaults endpoints;
-	// plugin defaults are now just a field on the Namespace object, so import
-	// becomes a read-modify-write of the namespace's pluginDefaults.
-	fileData, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("failed to read file: %w", err)
-	}
-
-	var parsed []struct {
-		Type   string                 `yaml:"type"`
-		Forced *bool                  `yaml:"forced"`
-		Values map[string]interface{} `yaml:"values"`
-	}
-	if err := yaml.Unmarshal(fileData, &parsed); err != nil {
-		return fmt.Errorf("failed to parse plugin defaults YAML: %w", err)
-	}
-
-	ns, err := client.Kestra.Namespaces().Namespace(client.Ctx, namespace, client.Tenant)
-	if err != nil {
-		return formatSDKError(err)
-	}
-
-	defaults := make([]kestra.PluginDefault, len(parsed))
-	for i, p := range parsed {
-		defaults[i] = kestra.PluginDefault{Type: p.Type, Forced: p.Forced, Values: p.Values}
-	}
-	ns.SetPluginDefaults(defaults)
-
-	if _, err := client.Kestra.Namespaces().UpdateNamespace(client.Ctx, namespace, client.Tenant, *ns); err != nil {
-		return formatSDKError(err)
-	}
-
-	result := map[string]any{
-		"namespace": namespace,
-		"status":    "imported",
-	}
-
-	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Plugin defaults imported for namespace %q.\n", namespace)
 		return nil
 	})
 }

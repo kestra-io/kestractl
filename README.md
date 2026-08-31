@@ -433,13 +433,6 @@ kestractl namespaces update my.namespace --variables-file variables.yml
 # View inherited secrets and variables
 kestractl namespaces inherited-secrets   my.namespace
 kestractl namespaces inherited-variables my.namespace
-
-# Plugin defaults for a namespace (inherited configuration)
-kestractl namespaces plugin-defaults my.namespace
-
-# Export / import plugin defaults
-kestractl namespaces export-plugin-defaults my.namespace --output-file defaults.yaml
-kestractl namespaces import-plugin-defaults my.namespace defaults.yaml
 ```
 
 ### Key-Value Store (kv)
