@@ -359,7 +359,7 @@ func TestRunNamespacesUpdate_SetsVariables(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "prod"}, nil, nil, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runNamespacesUpdate error: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestRunNamespacesUpdate_DescriptionOnlyPreservesVariables(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "touched", true, nil, newTableRenderer(&buf))
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "touched", true, nil, nil, nil, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runNamespacesUpdate error: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestRunNamespacesUpdate_VariablesOnlyPreservesDescription(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "staging"}, newTableRenderer(&buf))
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, map[string]interface{}{"env": "staging"}, nil, nil, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runNamespacesUpdate error: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestRunNamespacesUpdate_GetError(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "new desc", true, nil, newTableRenderer(&buf))
+	err := runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "new desc", true, nil, nil, nil, newTableRenderer(&buf))
 	if err == nil {
 		t.Fatal("expected error when fetching the current namespace fails")
 	}
@@ -451,7 +451,7 @@ func TestRunNamespacesCreate_SetsVariables(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runNamespacesCreate(newTestClient(t, server.URL), "my.namespace", "", map[string]interface{}{"env": "prod"}, newTableRenderer(&buf))
+	err := runNamespacesCreate(newTestClient(t, server.URL), "my.namespace", "", map[string]interface{}{"env": "prod"}, nil, nil, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runNamespacesCreate error: %v", err)
 	}
@@ -478,5 +478,89 @@ func TestRunNamespacesGet_ShowsVariables(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "VARIABLES") || !strings.Contains(out, "env") || !strings.Contains(out, "prod") {
 		t.Fatalf("expected variables in output, got:\n%s", out)
+	}
+}
+
+func TestRunNamespacesCreate_SendsConcurrencyAndQuotas(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"concurrency":{"limit":10,"behavior":"QUEUE"},"quotas":[{"duration":"PT1H","limit":100,"behavior":"FAIL"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	concurrency, err := parseConcurrencyFlags(10, true, "QUEUE", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quotas, err := parseQuotaFlags([]string{"duration=PT1H,limit=100,behavior=FAIL"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	err = runNamespacesCreate(newTestClient(t, server.URL), "my.namespace", "", nil, concurrency, quotas, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesCreate error: %v", err)
+	}
+
+	sentConcurrency, ok := gotBody["concurrency"].(map[string]interface{})
+	if !ok || sentConcurrency["limit"] != float64(10) || sentConcurrency["behavior"] != "QUEUE" {
+		t.Fatalf("expected concurrency in request body, got: %v", gotBody)
+	}
+	sentQuotas, ok := gotBody["quotas"].([]interface{})
+	if !ok || len(sentQuotas) != 1 {
+		t.Fatalf("expected quotas in request body, got: %v", gotBody)
+	}
+}
+
+func TestRunNamespacesUpdate_ConcurrencyOnlyPreservesVariables(t *testing.T) {
+	var gotBody map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"},"quotas":[{"duration":"PT1H","limit":100,"behavior":"FAIL"}]}`))
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			_, _ = w.Write([]byte(`{"id":"my.namespace","deleted":false,"variables":{"env":"prod"}}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	concurrency, err := parseConcurrencyFlags(20, true, "FAIL", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	err = runNamespacesUpdate(newTestClient(t, server.URL), "my.namespace", "", false, nil, concurrency, nil, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesUpdate error: %v", err)
+	}
+
+	sentConcurrency, ok := gotBody["concurrency"].(map[string]interface{})
+	if !ok || sentConcurrency["limit"] != float64(20) || sentConcurrency["behavior"] != "FAIL" {
+		t.Fatalf("expected concurrency in request body, got: %v", gotBody)
+	}
+	vars, ok := gotBody["variables"].(map[string]interface{})
+	if !ok || vars["env"] != "prod" {
+		t.Fatalf("expected pre-existing variables to be preserved, got: %v", gotBody)
+	}
+	sentQuotas, ok := gotBody["quotas"].([]interface{})
+	if !ok || len(sentQuotas) != 1 {
+		t.Fatalf("expected pre-existing quotas to be preserved, got: %v", gotBody)
+	}
+}
+
+func TestNamespacesCreateCommand_InvalidQuota(t *testing.T) {
+	cmd := newNamespacesCreateCommand()
+	_, err := executeCommand(cmd, "my.namespace", "--quota", "duration=PT1H")
+	if err == nil {
+		t.Fatal("expected error for incomplete --quota")
+	}
+	if !strings.Contains(err.Error(), "duration, limit and behavior are all required") {
+		t.Fatalf("expected missing-key error, got: %v", err)
 	}
 }

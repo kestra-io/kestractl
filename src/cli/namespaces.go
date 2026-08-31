@@ -157,6 +157,12 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 		"deleted":     ns.GetDeleted(),
 		"variables":   ns.GetVariables(),
 	}
+	if c, ok := ns.GetConcurrencyOk(); ok {
+		result["concurrency"] = c
+	}
+	if quotas := ns.GetQuotas(); len(quotas) > 0 {
+		result["quotas"] = quotas
+	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "ID\t%s\n", ns.GetId())
@@ -164,6 +170,7 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
 		}
 		fmt.Fprintf(w, "DELETED\t%v\n", ns.GetDeleted())
+		writeConcurrencyAndQuotas(w, ns.Concurrency, ns.GetQuotas())
 		if vars := ns.GetVariables(); len(vars) > 0 {
 			fmt.Fprintln(w, "\nVARIABLES:")
 			for k, v := range vars {
@@ -209,6 +216,9 @@ func newNamespacesCreateCommand() *cobra.Command {
 	var description string
 	var variablePairs []string
 	var variablesFile string
+	var concurrencyLimit int32
+	var concurrencyBehavior string
+	var quotaSpecs []string
 
 	cmd := &cobra.Command{
 		Use:   "create <namespace_id>",
@@ -217,6 +227,8 @@ func newNamespacesCreateCommand() *cobra.Command {
   kestractl namespaces create my.namespace --description "My team namespace"
   kestractl namespaces create my.namespace --variable env=prod --variable region=eu
   kestractl namespaces create my.namespace --variables-file variables.yml
+  kestractl namespaces create my.namespace --concurrency-limit 10 --concurrency-behavior QUEUE
+  kestractl namespaces create my.namespace --quota duration=PT1H,limit=100,behavior=FAIL
   kestractl namespaces create my.namespace --output json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -228,27 +240,45 @@ func newNamespacesCreateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			concurrency, err := parseConcurrencyFlags(
+				concurrencyLimit, cmd.Flags().Changed("concurrency-limit"),
+				concurrencyBehavior, cmd.Flags().Changed("concurrency-behavior"))
+			if err != nil {
+				return err
+			}
+			quotas, err := parseQuotaFlags(quotaSpecs)
+			if err != nil {
+				return err
+			}
 			client, err := newClientFunc()
 			if err != nil {
 				return err
 			}
-			return runNamespacesCreate(client, args[0], description, variables, renderer)
+			return runNamespacesCreate(client, args[0], description, variables, concurrency, quotas, renderer)
 		},
 	}
 
 	cmd.Flags().StringVar(&description, "description", "", "Namespace description")
 	cmd.Flags().StringArrayVar(&variablePairs, "variable", nil, "Namespace variable as key=value (repeatable)")
 	cmd.Flags().StringVar(&variablesFile, "variables-file", "", "Path to a YAML or JSON file defining namespace variables")
+	addConcurrencyFlags(cmd, &concurrencyLimit, &concurrencyBehavior)
+	addQuotaFlag(cmd, &quotaSpecs, "Execution quota as duration=<ISO-8601>,limit=<n>,behavior=<FAIL|CANCEL> (repeatable)")
 	return cmd
 }
 
-func runNamespacesCreate(client *Client, id, description string, variables map[string]interface{}, renderer *Renderer) error {
+func runNamespacesCreate(client *Client, id, description string, variables map[string]interface{}, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
 	ns := kestra.NewNamespace(id, false)
 	if description != "" {
 		ns.SetDescription(description)
 	}
 	if len(variables) > 0 {
 		ns.SetVariables(variables)
+	}
+	if concurrency != nil {
+		ns.SetConcurrency(*concurrency)
+	}
+	if quotas != nil {
+		ns.SetQuotas(quotas)
 	}
 
 	created, _, err := client.API.NamespacesAPI.
@@ -316,6 +346,9 @@ func newNamespacesUpdateCommand() *cobra.Command {
 	var description string
 	var variablePairs []string
 	var variablesFile string
+	var concurrencyLimit int32
+	var concurrencyBehavior string
+	var quotaSpecs []string
 
 	cmd := &cobra.Command{
 		Use:   "update <namespace_id>",
@@ -329,10 +362,15 @@ applied on top before saving.
 --variable and --variables-file set the full list of namespace variables,
 replacing any variables previously set on the namespace. Combine them to
 layer inline overrides on top of a file: --variable entries win on key
-conflicts.`,
+conflicts.
+
+--quota sets the full list of execution quotas, replacing any quotas
+previously set on the namespace.`,
 		Example: `  kestractl namespaces update my.namespace --description "Updated description"
   kestractl namespaces update my.namespace --variable env=prod --variable region=eu
   kestractl namespaces update my.namespace --variables-file variables.yml
+  kestractl namespaces update my.namespace --concurrency-limit 20 --concurrency-behavior FAIL
+  kestractl namespaces update my.namespace --quota duration=PT1H,limit=100,behavior=FAIL
   kestractl namespaces update my.namespace --output json`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -344,21 +382,33 @@ conflicts.`,
 			if err != nil {
 				return err
 			}
+			concurrency, err := parseConcurrencyFlags(
+				concurrencyLimit, cmd.Flags().Changed("concurrency-limit"),
+				concurrencyBehavior, cmd.Flags().Changed("concurrency-behavior"))
+			if err != nil {
+				return err
+			}
+			quotas, err := parseQuotaFlags(quotaSpecs)
+			if err != nil {
+				return err
+			}
 			client, err := newClientFunc()
 			if err != nil {
 				return err
 			}
-			return runNamespacesUpdate(client, args[0], description, cmd.Flags().Changed("description"), variables, renderer)
+			return runNamespacesUpdate(client, args[0], description, cmd.Flags().Changed("description"), variables, concurrency, quotas, renderer)
 		},
 	}
 
 	cmd.Flags().StringVar(&description, "description", "", "New namespace description")
 	cmd.Flags().StringArrayVar(&variablePairs, "variable", nil, "Namespace variable as key=value (repeatable); replaces existing variables")
 	cmd.Flags().StringVar(&variablesFile, "variables-file", "", "Path to a YAML or JSON file defining namespace variables; replaces existing variables")
+	addConcurrencyFlags(cmd, &concurrencyLimit, &concurrencyBehavior)
+	addQuotaFlag(cmd, &quotaSpecs, "Execution quota as duration=<ISO-8601>,limit=<n>,behavior=<FAIL|CANCEL> (repeatable); replaces existing quotas")
 	return cmd
 }
 
-func runNamespacesUpdate(client *Client, id, description string, descriptionSet bool, variables map[string]interface{}, renderer *Renderer) error {
+func runNamespacesUpdate(client *Client, id, description string, descriptionSet bool, variables map[string]interface{}, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
 	// UpdateNamespace is a full-replace PUT: start from the current namespace
 	// so fields not passed on this invocation aren't wiped.
 	ns, _, err := client.API.NamespacesAPI.Namespace(client.Ctx, id, client.Tenant).Execute()
@@ -374,6 +424,12 @@ func runNamespacesUpdate(client *Client, id, description string, descriptionSet 
 	}
 	if variables != nil {
 		ns.SetVariables(variables)
+	}
+	if concurrency != nil {
+		ns.SetConcurrency(*concurrency)
+	}
+	if quotas != nil {
+		ns.SetQuotas(quotas)
 	}
 
 	updated, _, err := client.API.NamespacesAPI.
