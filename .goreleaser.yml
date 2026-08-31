@@ -46,6 +46,10 @@ checksum:
 release:
   name_template: "{{ .Version }}"
   prerelease: auto
+  # releases/v1 is the default install channel: explicitly claim GitHub's
+  # repo-wide "latest" flag so the install script's default keeps resolving
+  # to v1 even after v2 releases are published from main.
+  make_latest: "true"
 
 changelog:
   sort: asc
