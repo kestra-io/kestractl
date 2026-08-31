@@ -80,6 +80,20 @@ require awk
 release_json="$(mktemp)"
 if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   download "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" "$release_json"
+elif echo "$VERSION" | grep -qE '^v?[0-9]+$'; then
+  # Bare major version (e.g. VERSION=2 or VERSION=v2): resolve to the newest
+  # release of that major line, prereleases included.
+  major="$(echo "$VERSION" | sed 's/^v//')"
+  list_json="$(mktemp)"
+  download "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100" "$list_json"
+  tag="$(awk -F '"' -v m="$major" '
+    $2 == "tag_name" {
+      t = $4; sub(/^v/, "", t); split(t, a, ".");
+      if (a[1] == m) { print $4; exit }
+    }' "$list_json")"
+  rm -f "$list_json"
+  [ -n "$tag" ] || err "No release found for major version v${major}"
+  download "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${tag}" "$release_json"
 else
   download "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${VERSION}" "$release_json"
 fi
