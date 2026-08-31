@@ -9,7 +9,7 @@ A Go-based command-line interface for managing Kestra flows, executions, trigger
 Install the latest kestractl v2 release (prereleases included):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | VERSION=2 bash
+curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install-v2.sh | bash
 ```
 
 Install the latest v1 release (for legacy Kestra v1.x instances):
