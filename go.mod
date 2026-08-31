@@ -12,7 +12,7 @@ require (
 
 require (
 	github.com/dustin/go-humanize v1.0.1
-	github.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc1
+	github.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc2
 )
 
 require (

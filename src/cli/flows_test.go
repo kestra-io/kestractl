@@ -1509,7 +1509,7 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 // A complete, otherwise-valid flow that fails to decode ONLY because of its
 // array-format labels — faithfully reproducing #83 (see the assertion in
 // TestConfirmArrayLabelsDecodeError).
-const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","revision":2,"description":"labelled flow","disabled":false,"deleted":false,"tasks":[],"source":"id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\n","labels":[{"key":"type","value":"data_extraction"},{"key":"version","value":"v2"}]}`
+const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","revision":2,"description":"labelled flow","disabled":false,"draft":false,"deleted":false,"tasks":[],"source":"id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\n","labels":[{"key":"type","value":"data_extraction"},{"key":"version","value":"v2"}]}`
 
 func TestRunFlowsGet_ArrayLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -129,7 +129,7 @@ func runBlueprintsCommunitySearch(client *Client, kind, query string, tags []str
 		qPtr = &query
 	}
 
-	resp, err := client.Kestra.Blueprints().SearchBlueprints(client.Ctx, kind, client.Tenant, qPtr, sort, tags, &pageInt, &sizeInt)
+	resp, err := client.Kestra.Blueprints().SearchBlueprints(client.Ctx, kind, client.Tenant, qPtr, sort, tags, &pageInt, &sizeInt, nil)
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -279,7 +279,7 @@ func runBlueprintsFlowList(client *Client, query string, tags []string, page, si
 		qPtr = &query
 	}
 
-	resp, err := client.Kestra.Blueprints().SearchInternalBlueprints(client.Ctx, client.Tenant, qPtr, sort, tags, &pageInt, &sizeInt, nil)
+	resp, err := client.Kestra.Blueprints().SearchInternalBlueprints(client.Ctx, client.Tenant, qPtr, sort, tags, &pageInt, &sizeInt, nil, nil)
 	if err != nil {
 		return formatSDKError(err)
 	}
