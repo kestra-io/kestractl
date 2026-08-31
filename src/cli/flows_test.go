@@ -1509,7 +1509,7 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 // A complete, otherwise-valid flow that fails to decode ONLY because of its
 // array-format labels — faithfully reproducing #83 (see the assertion in
 // TestConfirmArrayLabelsDecodeError).
-const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","revision":2,"description":"labelled flow","disabled":false,"draft":false,"deleted":false,"tasks":[],"source":"id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\n","labels":[{"key":"type","value":"data_extraction"},{"key":"version","value":"v2"}]}`
+const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","revision":2,"description":"labelled flow","disabled":false,"deleted":false,"tasks":[],"source":"id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\n","labels":[{"key":"type","value":"data_extraction"},{"key":"version","value":"v2"}]}`
 
 func TestRunFlowsGet_ArrayLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1742,17 +1742,21 @@ func TestTryParseFlowSearchFromError(t *testing.T) {
 	})
 }
 
-// TestConfirmArrayLabelsDecodeError used to guard fixture fidelity for #83: the
-// generated client failed to decode array-format labels, which is what the
-// tryParseFlow* fallbacks exist to recover from. go-sdk v2 fixed this (Labels
-// is now a MapObjectObject that accepts both array and map form), so the
-// fixture now decodes cleanly. The tryParseFlow* fallbacks are kept as a
-// defensive fallback for other SDK type-mismatch-on-error cases (see
-// formatSDKError / AGENTS.md), but are no longer exercised by this fixture.
-func TestConfirmArrayLabelsDecodeError(t *testing.T) {
+// TestConfirmFixtureDecodeError guards fixture fidelity: it asserts that the
+// shared fixture is a valid flow that the generated client fails to decode —
+// the condition the tryParseFlow* fallbacks exist to recover from. The v2 SDK
+// accepts array-format labels (the original #83 condition), but its strict
+// decode still rejects the fixture because the required `draft` property is
+// absent, as it is in responses from servers older than 2.0. If the SDK ever
+// decodes the fixture as-is, this test flips and the workaround (and its
+// tests) can be retired.
+func TestConfirmFixtureDecodeError(t *testing.T) {
 	var fws kestra.FlowWithSource
 	err := json.Unmarshal([]byte(flowWithArrayLabelsJSON), &fws)
-	if err != nil {
-		t.Fatalf("expected array-format labels to decode cleanly on go-sdk v2, got: %v", err)
+	if err == nil {
+		t.Fatal("decode unexpectedly succeeded: the tryParseFlow* fallbacks have no condition left to recover from")
+	}
+	if !strings.Contains(err.Error(), "draft") {
+		t.Fatalf("fixture fails to decode for the wrong reason (want a missing-draft error): %v", err)
 	}
 }
