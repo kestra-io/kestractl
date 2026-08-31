@@ -31,11 +31,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Trigger pkg.go.dev indexing
-        run: |
-          curl -sf "https://proxy.golang.org/github.com/kestra-io/kestractl/@v/${{ github.ref_name }}.info" > /dev/null
-          curl -sf "https://pkg.go.dev/github.com/kestra-io/kestractl@${{ github.ref_name }}" > /dev/null
-
       - name: Slack notification
         if: success()
         uses: kestra-io/actions/composite/slack-status@main
