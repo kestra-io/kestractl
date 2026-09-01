@@ -1,0 +1,343 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+)
+
+const usageReportFlowA = `
+id: order-sync
+namespace: prod.orders
+tasks:
+  - id: each
+    type: io.kestra.plugin.core.flow.ForEach
+    tasks:
+      - id: log
+        type: io.kestra.plugin.core.log.Log
+        message: "{{ json(inputs.payload) }}"
+pluginDefaults:
+  - type: io.kestra.plugin.core.log.Log
+    forced: true
+    values:
+      level: INFO
+`
+
+const usageReportFlowB = `
+id: nightly
+namespace: prod.reports
+triggers:
+  - id: schedule
+    type: io.kestra.plugin.core.trigger.Schedule
+    cron: "0 2 * * *"
+    conditions:
+      - type: io.kestra.plugin.core.condition.DayWeekInMonth
+tasks:
+  - id: call
+    type: io.kestra.plugin.core.flow.Subflow
+    namespace: prod.orders
+    flowId: order-sync
+`
+
+// usageReportServer serves the endpoints `flows usage-report` calls. Handlers
+// that are nil answer 500, which is how the degradation cases are built.
+type usageReportServer struct {
+	export     http.HandlerFunc
+	deprecated http.HandlerFunc
+	search     http.HandlerFunc
+	flow       http.HandlerFunc
+}
+
+func newUsageReportServer(t *testing.T, routes usageReportServer) *httptest.Server {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var handler http.HandlerFunc
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/flows/export/by-query"):
+			handler = routes.export
+		case strings.HasSuffix(r.URL.Path, "/flows/deprecated"):
+			handler = routes.deprecated
+		case strings.HasSuffix(r.URL.Path, "/flows/search"):
+			handler = routes.search
+		default:
+			handler = routes.flow
+		}
+		if handler == nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		handler(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func zipHandler(archive []byte) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(archive)
+	}
+}
+
+func jsonHandler(status int, body string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+func TestNewFlowsUsageReportCommand_Structure(t *testing.T) {
+	cmd := newFlowsUsageReportCommand()
+
+	if cmd.Use != "usage-report" {
+		t.Errorf("use: got %q", cmd.Use)
+	}
+	if cmd.Args == nil {
+		t.Error("expected the command to reject positional arguments")
+	}
+
+	namespace := cmd.Flags().Lookup("namespace")
+	if namespace == nil || namespace.Shorthand != "n" {
+		t.Fatalf("unexpected --namespace flag: %+v", namespace)
+	}
+
+	anonymize := cmd.Flags().Lookup("anonymize")
+	if anonymize == nil {
+		t.Fatal("missing the --anonymize flag")
+	}
+	if anonymize.DefValue != "true" {
+		t.Errorf("--anonymize default: got %q, want \"true\"", anonymize.DefValue)
+	}
+}
+
+func TestFlowsUsageReportCommandIsRegistered(t *testing.T) {
+	for _, cmd := range newFlowsCommand().Commands() {
+		if cmd.Name() == "usage-report" {
+			return
+		}
+	}
+	t.Fatal("usage-report is not registered under the flows command")
+}
+
+func TestBuildUsageReportSearchFilters(t *testing.T) {
+	if filters := buildUsageReportSearchFilters(""); len(filters) != 0 {
+		t.Errorf("expected no filter without a namespace, got %+v", filters)
+	}
+
+	filters := buildUsageReportSearchFilters("prod.orders")
+	if len(filters) != 1 {
+		t.Fatalf("filters: got %d, want 1", len(filters))
+	}
+	if filters[0].Field != kestra.FilterNamespace || filters[0].Operation != kestra.OpEquals || filters[0].Value != "prod.orders" {
+		t.Errorf("unexpected filter: %+v", filters[0])
+	}
+}
+
+func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{
+		"prod.orders/order-sync.yml": usageReportFlowA,
+		"prod.reports/nightly.yml":   usageReportFlowB,
+	})
+	server := newUsageReportServer(t, usageReportServer{
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[{"namespace":"prod.orders","flowId":"order-sync","revision":2,"deprecatedTasks":[{"taskId":"each","taskType":"io.kestra.plugin.core.flow.ForEach","replacement":"io.kestra.plugin.core.flow.ForEachItem"}]}]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newTableRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	markdown := out.String()
+	for _, want := range []string{
+		"# Kestra usage report",
+		"| Task ForEach | 1 | 1 |",
+		"| Trigger conditions/preconditions | 1 | 1 |",
+		"| Flows | 2 |",
+		"Server-reported deprecations",
+		"io.kestra.plugin.core.flow.Subflow",
+		"## Deprecated task types (server-reported)",
+		"| `io.kestra.plugin.core.flow.ForEach` | `io.kestra.plugin.core.flow.ForEachItem` | 1 |",
+	} {
+		if !strings.Contains(markdown, want) {
+			t.Errorf("markdown is missing %q", want)
+		}
+	}
+	// The server also returns the task id; it is a user identifier and is
+	// dropped on the way into the report.
+	if strings.Contains(markdown, "each") && strings.Contains(markdown, "taskId") {
+		t.Error("the report must not carry task ids")
+	}
+	if strings.Contains(markdown, "prod.orders") {
+		t.Error("the anonymized report leaked a namespace name")
+	}
+}
+
+func TestRunFlowsUsageReport_JSONAndAnonymizeOff(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: false}, newJSONRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Anonymized {
+		t.Error("expected the report to be flagged as not anonymized")
+	}
+	if report.Scope != usageReportScope || report.Totals.Count != 1 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if len(report.Tenants) != 1 || report.Tenants[0].Tenant != "main" {
+		t.Fatalf("unexpected tenant breakdown: %+v", report.Tenants)
+	}
+	if report.Tenants[0].Namespaces[0].Namespace != "prod.orders" {
+		t.Errorf("expected the real namespace with --anonymize=false, got %q", report.Tenants[0].Namespaces[0].Namespace)
+	}
+	if report.Signals.PluginDefaults.Entries != 1 || report.Signals.PluginDefaults.ForcedEntries != 1 {
+		t.Errorf("unexpected plugin defaults signal: %+v", report.Signals.PluginDefaults)
+	}
+	if report.Signals.PebbleJsonFunction.Occurrences != 1 {
+		t.Errorf("unexpected pebble signal: %+v", report.Signals.PebbleJsonFunction)
+	}
+}
+
+func TestRunFlowsUsageReport_ExportForbiddenFallsBack(t *testing.T) {
+	server := newUsageReportServer(t, usageReportServer{
+		export:     jsonHandler(http.StatusForbidden, `{"message":"insufficient permissions"}`),
+		search:     jsonHandler(http.StatusOK, `{"results":[{"id":"order-sync","namespace":"prod.orders"}],"total":1}`),
+		flow:       jsonHandler(http.StatusOK, `{"id":"order-sync","namespace":"prod.orders","revision":1,"source":`+mustJSONString(t, usageReportFlowA)+`}`),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newJSONRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Totals.Count != 1 {
+		t.Fatalf("expected the fallback to recover 1 flow, got %d", report.Totals.Count)
+	}
+	if report.Signals.RemovedTasks["ForEach"].Occurrences != 1 {
+		t.Error("expected the fallback sources to be analyzed")
+	}
+	if !strings.Contains(strings.Join(report.Notes, "\n"), "fell back to fetching flow sources one by one") {
+		t.Errorf("expected a fallback note, got %v", report.Notes)
+	}
+}
+
+func TestRunFlowsUsageReport_AllSourcesUnavailable(t *testing.T) {
+	server := newUsageReportServer(t, usageReportServer{
+		export: jsonHandler(http.StatusForbidden, `{"message":"insufficient permissions"}`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newTableRenderer(&out))
+	if err == nil {
+		t.Fatal("expected an error when no flow source could be collected")
+	}
+	if !strings.Contains(err.Error(), "failed to collect flow sources") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestRunFlowsUsageReport_UnparsableFlowIsNoted(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{
+		"prod.orders/order-sync.yml": usageReportFlowA,
+		"prod.broken/broken.yml":     "id: broken\n\tmessage: \"{{ json(x) }}\"\n",
+	})
+	server := newUsageReportServer(t, usageReportServer{
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newJSONRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Totals.Count != 1 {
+		t.Errorf("only the parsable flow should be inventoried, got %d", report.Totals.Count)
+	}
+	if report.Tenants[0].ParseFails != 1 {
+		t.Errorf("parse fails: got %d, want 1", report.Tenants[0].ParseFails)
+	}
+	if !strings.Contains(strings.Join(report.Notes, "\n"), "could not be parsed as YAML") {
+		t.Errorf("expected a parse-failure note, got %v", report.Notes)
+	}
+	// The text heuristic runs even on sources that failed to parse.
+	if report.Signals.PebbleJsonFunction.Occurrences != 2 {
+		t.Errorf("pebble json occurrences: got %d, want 2", report.Signals.PebbleJsonFunction.Occurrences)
+	}
+}
+
+func TestRunFlowsUsageReport_DeprecationEndpointUnavailable(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusNotFound, `{"message":"not found"}`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newJSONRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Signals.ServerDeprecationsAvailable {
+		t.Error("expected the server deprecation cross-check to be unavailable")
+	}
+	if !strings.Contains(strings.Join(report.Notes, "\n"), "deprecation check is unavailable") {
+		t.Errorf("expected a deprecation note, got %v", report.Notes)
+	}
+}
+
+func TestUsageReportTenants_SingleTenantOnV1(t *testing.T) {
+	tenants, note := usageReportTenants(&Client{Tenant: "acme"})
+
+	if len(tenants) != 1 || tenants[0] != "acme" {
+		t.Errorf("unexpected tenants: %v", tenants)
+	}
+	if note != "" {
+		t.Errorf("unexpected note: %q", note)
+	}
+}
+
+func mustJSONString(t *testing.T, value string) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("failed to encode %q: %v", value, err)
+	}
+	return string(encoded)
+}
