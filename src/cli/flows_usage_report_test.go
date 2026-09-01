@@ -118,6 +118,14 @@ func TestNewFlowsUsageReportCommand_Structure(t *testing.T) {
 	if anonymize.DefValue != "true" {
 		t.Errorf("--anonymize default: got %q, want \"true\"", anonymize.DefValue)
 	}
+
+	detailed := cmd.Flags().Lookup("detailed")
+	if detailed == nil {
+		t.Fatal("missing the --detailed flag")
+	}
+	if detailed.DefValue != "false" {
+		t.Errorf("--detailed default: got %q, want \"false\"", detailed.DefValue)
+	}
 }
 
 func TestFlowsUsageReportCommandIsRegistered(t *testing.T) {
@@ -155,7 +163,7 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newTableRenderer(&out))
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true, Detailed: true}, newTableRenderer(&out))
 	if err != nil {
 		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
 	}
@@ -163,6 +171,8 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 	markdown := out.String()
 	for _, want := range []string{
 		"# Kestra usage report",
+		"### Flows per namespace",
+		"## Affected flows",
 		"| Task ForEach | 1 | 1 |",
 		"| Trigger conditions/preconditions | 1 | 1 |",
 		"| Flows | 2 |",
@@ -224,6 +234,14 @@ func TestRunFlowsUsageReport_JSONAndAnonymizeOff(t *testing.T) {
 	}
 	if report.Signals.PebbleJsonFunction.Occurrences != 1 {
 		t.Errorf("unexpected pebble signal: %+v", report.Signals.PebbleJsonFunction)
+	}
+
+	// The JSON dump is complete regardless of --detailed.
+	if len(report.Signals.RemovedTasks["ForEach"].FlowRefs) != 1 {
+		t.Errorf("expected flow refs in the JSON output, got %+v", report.Signals.RemovedTasks["ForEach"])
+	}
+	if len(report.Tenants[0].Namespaces) != 1 {
+		t.Errorf("expected the per-namespace breakdown in the JSON output, got %+v", report.Tenants[0].Namespaces)
 	}
 }
 
@@ -328,6 +346,35 @@ func TestRunFlowsUsageReport_DeprecationEndpointUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.Notes, "\n"), "deprecation check is unavailable") {
 		t.Errorf("expected a deprecation note, got %v", report.Notes)
+	}
+}
+
+func TestRunFlowsUsageReport_SummaryOmitsDetailedBlocks(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:    jsonHandler(http.StatusOK, `{"version":"1.3.2"}`),
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newTableRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	markdown := out.String()
+	for _, unwanted := range []string{"### Flows per namespace", "## Affected flows"} {
+		if strings.Contains(markdown, unwanted) {
+			t.Errorf("the default report must not contain %q", unwanted)
+		}
+	}
+	if !strings.Contains(markdown, "_Run with --detailed to list the affected flows._") {
+		t.Error("expected the default report to point at --detailed")
+	}
+	// The signal counts are unaffected by the flag.
+	if !strings.Contains(markdown, "| Task ForEach | 1 | 1 |") || !strings.Contains(markdown, "| Namespaces | 1 |") {
+		t.Error("the default report lost data that --detailed must not gate")
 	}
 }
 

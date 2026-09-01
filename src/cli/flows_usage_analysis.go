@@ -779,7 +779,11 @@ func sortedCounts(counts map[string]int64) []countEntry {
 
 // renderUsageReportMarkdown writes the report as plain GitHub-flavoured
 // markdown, meant to be copy-pasted into an issue or a migration document.
-func renderUsageReportMarkdown(report *usageReport, w io.Writer) error {
+//
+// detailed adds the two long-form blocks — the per-namespace table and the
+// per-signal affected-flow lists. It is a rendering choice only: the report
+// itself always carries the full data, which `--output json` dumps verbatim.
+func renderUsageReportMarkdown(report *usageReport, w io.Writer, detailed bool) error {
 	out := &markdownWriter{w: w}
 
 	out.printf("# Kestra usage report\n\n")
@@ -803,8 +807,8 @@ func renderUsageReportMarkdown(report *usageReport, w io.Writer) error {
 	renderSignalsSection(out, report)
 	renderPluginDefaultsSection(out, report)
 	renderDeprecatedTaskTypesSection(out, report)
-	renderAffectedFlowsSection(out, report)
-	renderInventorySection(out, report)
+	renderAffectedFlowsSection(out, report, detailed)
+	renderInventorySection(out, report, detailed)
 	renderNotesSection(out, report)
 
 	return out.err
@@ -886,7 +890,12 @@ func renderDeprecatedTaskTypesSection(out *markdownWriter, report *usageReport) 
 	out.printf("\n")
 }
 
-func renderAffectedFlowsSection(out *markdownWriter, report *usageReport) {
+func renderAffectedFlowsSection(out *markdownWriter, report *usageReport, detailed bool) {
+	if !detailed {
+		out.printf("_Run with --detailed to list the affected flows._\n\n")
+		return
+	}
+
 	out.printf("## Affected flows\n\n")
 
 	rendered := false
@@ -928,7 +937,7 @@ func renderAffectedFlowsSection(out *markdownWriter, report *usageReport) {
 	}
 }
 
-func renderInventorySection(out *markdownWriter, report *usageReport) {
+func renderInventorySection(out *markdownWriter, report *usageReport, detailed bool) {
 	totals := report.Totals
 
 	out.printf("## Inventory\n\n")
@@ -943,15 +952,17 @@ func renderInventorySection(out *markdownWriter, report *usageReport) {
 	out.printf("| Flows calling a subflow | %d |\n", totals.FlowsUsingSubflow)
 	out.printf("\n")
 
-	out.printf("### Flows per namespace\n\n")
-	out.printf("| Tenant | Namespace | Flows | Disabled | With triggers |\n| --- | --- | ---: | ---: | ---: |\n")
-	for _, tenant := range report.Tenants {
-		for _, ns := range tenant.Namespaces {
-			out.printf("| `%s` | `%s` | %d | %d | %d |\n",
-				tenant.Tenant, ns.Namespace, ns.FlowCount, ns.DisabledFlows, ns.FlowsWithTriggers)
+	if detailed {
+		out.printf("### Flows per namespace\n\n")
+		out.printf("| Tenant | Namespace | Flows | Disabled | With triggers |\n| --- | --- | ---: | ---: | ---: |\n")
+		for _, tenant := range report.Tenants {
+			for _, ns := range tenant.Namespaces {
+				out.printf("| `%s` | `%s` | %d | %d | %d |\n",
+					tenant.Tenant, ns.Namespace, ns.FlowCount, ns.DisabledFlows, ns.FlowsWithTriggers)
+			}
 		}
+		out.printf("\n")
 	}
-	out.printf("\n")
 
 	renderCountTable(out, "Task types", "Task type", totals.TaskTypeCount, totals.TaskTypeFlowCount)
 	renderCountTable(out, "Trigger types", "Trigger type", totals.TriggerTypeCount, totals.TriggerTypeFlowCount)

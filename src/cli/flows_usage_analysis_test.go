@@ -660,7 +660,7 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
 
 	var buf bytes.Buffer
-	if err := renderUsageReportMarkdown(report, &buf); err != nil {
+	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
 	out := buf.String()
@@ -713,7 +713,7 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 	report := testReport(t, true, []tenantScan{scan})
 
 	var buf bytes.Buffer
-	if err := renderUsageReportMarkdown(report, &buf); err != nil {
+	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
 	out := buf.String()
@@ -734,6 +734,46 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 	// Task ids are user identifiers and must never be rendered.
 	if strings.Contains(out, "taskId") {
 		t.Error("the report must not carry task ids")
+	}
+}
+
+func TestRenderUsageReportMarkdown_DetailedGating(t *testing.T) {
+	analysis := mustAnalyze(t, nestedFlowSource)
+	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
+
+	render := func(detailed bool) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := renderUsageReportMarkdown(report, &buf, detailed); err != nil {
+			t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+		}
+		return buf.String()
+	}
+
+	summary := render(false)
+	for _, unwanted := range []string{"### Flows per namespace", "## Affected flows"} {
+		if strings.Contains(summary, unwanted) {
+			t.Errorf("the summary report must not contain %q", unwanted)
+		}
+	}
+	if !strings.Contains(summary, "_Run with --detailed to list the affected flows._") {
+		t.Error("expected the summary report to point at --detailed")
+	}
+	// Everything else is unchanged by the flag.
+	for _, want := range []string{"## Migration signals", "| Task ForEachItem | 1 | 1 |", "| Namespaces | 1 |", "### Task types"} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("the summary report is missing %q", want)
+		}
+	}
+
+	detailed := render(true)
+	for _, want := range []string{"### Flows per namespace", "## Affected flows"} {
+		if !strings.Contains(detailed, want) {
+			t.Errorf("the detailed report is missing %q", want)
+		}
+	}
+	if strings.Contains(detailed, "_Run with --detailed") {
+		t.Error("the detailed report must not point at --detailed")
 	}
 }
 
@@ -804,7 +844,7 @@ func TestUsageReport_DoesNotLeakFlowValues(t *testing.T) {
 			report := testReport(t, anonymize, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
 
 			var markdown bytes.Buffer
-			if err := renderUsageReportMarkdown(report, &markdown); err != nil {
+			if err := renderUsageReportMarkdown(report, &markdown, true); err != nil {
 				t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 			}
 			data, err := json.Marshal(report)

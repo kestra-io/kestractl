@@ -18,6 +18,7 @@ const usageReportScope = "single-tenant"
 type usageReportOptions struct {
 	Namespace string
 	Anonymize bool
+	Detailed  bool
 }
 
 func newFlowsUsageReportCommand() *cobra.Command {
@@ -36,7 +37,11 @@ Pebble 'json()' function and 'fs.local.Delete'.
 
 Only flow sources are read — no execution, log or database data. Tenant,
 namespace and flow names are replaced by stable hashes unless --anonymize=false
-is given, so the report can be shared as-is.`,
+is given, so the report can be shared as-is.
+
+The markdown report is a summary; --detailed adds the per-namespace table and
+the affected-flow list of every signal. '--output json' always contains the
+full data, whether or not --detailed is given.`,
 		Example: `  # Markdown report for the active tenant
 	  kestractl flows usage-report
 
@@ -44,7 +49,10 @@ is given, so the report can be shared as-is.`,
 	  kestractl flows usage-report --output json
 
 	  # Restrict to one namespace and keep the real names
-	  kestractl flows usage-report --namespace my.namespace --anonymize=false`,
+	  kestractl flows usage-report --namespace my.namespace --anonymize=false
+
+	  # Add the per-namespace table and the affected-flow lists
+	  kestractl flows usage-report --detailed`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
@@ -62,6 +70,7 @@ is given, so the report can be shared as-is.`,
 
 	cmd.Flags().StringVarP(&opts.Namespace, "namespace", "n", "", "Only report on flows in this namespace")
 	cmd.Flags().BoolVar(&opts.Anonymize, "anonymize", true, "Replace tenant, namespace and flow names with stable hashes")
+	cmd.Flags().BoolVar(&opts.Detailed, "detailed", false, "Add the per-namespace table and the affected-flow lists to the markdown report (JSON output always contains them)")
 
 	return cmd
 }
@@ -102,7 +111,7 @@ func runFlowsUsageReport(client *Client, opts usageReportOptions, renderer *Rend
 	if renderer.IsJSON() {
 		return renderer.RenderJSON(report)
 	}
-	return renderUsageReportMarkdown(report, renderer.Writer())
+	return renderUsageReportMarkdown(report, renderer.Writer(), opts.Detailed)
 }
 
 // usageReportTenants resolves the tenants to scan. It is the single
