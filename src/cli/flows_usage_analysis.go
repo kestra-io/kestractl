@@ -9,8 +9,10 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 )
@@ -824,33 +826,35 @@ func renderSignalsSection(out *markdownWriter, report *usageReport) {
 	signals := report.Signals
 
 	out.printf("## Migration signals\n\n")
-	out.printf("| Signal | Occurrences | Flows | Kestra 2.0 impact |\n")
-	out.printf("| --- | ---: | ---: | --- |\n")
-	out.printf("| pluginDefaults | %d | %d | Removed in 2.0 — move defaults into each task |\n",
-		signals.PluginDefaults.Entries, signals.PluginDefaults.Flows)
+	table := newMarkdownTable(
+		[]string{"Signal", "Occurrences", "Flows", "Kestra 2.0 impact"},
+		[]bool{false, true, true, false},
+	)
+	table.row("pluginDefaults", count(signals.PluginDefaults.Entries), count(signals.PluginDefaults.Flows),
+		"Removed in 2.0 — move defaults into each task")
 	for _, class := range removedTaskClasses {
 		signal := signals.RemovedTasks[class]
-		out.printf("| Task %s | %d | %d | Removed or reworked in 2.0 |\n", class, signal.Occurrences, signal.Flows)
+		table.row("Task "+class, count(signal.Occurrences), count(signal.Flows), "Removed or reworked in 2.0")
 	}
-	out.printf("| Trigger conditions/preconditions | %d | %d | Replaced by `when` |\n",
-		signals.TriggerConditions.Occurrences, signals.TriggerConditions.Flows)
-	out.printf("| `condition` property | %d | %d | Replaced by `when` |\n",
-		signals.ConditionProperty.Occurrences, signals.ConditionProperty.Flows)
-	out.printf("| Pebble `json()` | %d | %d | Removed — use `fromJson()`/`toJson()` (text heuristic) |\n",
-		signals.PebbleJsonFunction.Occurrences, signals.PebbleJsonFunction.Flows)
-	out.printf("| `fs.local.Delete` | %d | %d | `recursive` default changed in 2.0 |\n",
-		signals.FsLocalDelete.Occurrences, signals.FsLocalDelete.Flows)
+	table.row("Trigger conditions/preconditions", count(signals.TriggerConditions.Occurrences),
+		count(signals.TriggerConditions.Flows), "Replaced by `when`")
+	table.row("`condition` property", count(signals.ConditionProperty.Occurrences),
+		count(signals.ConditionProperty.Flows), "Replaced by `when`")
+	table.row("Pebble `json()`", count(signals.PebbleJsonFunction.Occurrences),
+		count(signals.PebbleJsonFunction.Flows), "Removed — use `fromJson()`/`toJson()` (text heuristic)")
+	table.row("`fs.local.Delete`", count(signals.FsLocalDelete.Occurrences),
+		count(signals.FsLocalDelete.Flows), "`recursive` default changed in 2.0")
 	if signals.ServerDeprecationsAvailable {
 		deprecatedTasks := int64(0)
 		for _, dep := range signals.ServerDeprecations {
 			deprecatedTasks += int64(dep.DeprecatedTasks)
 		}
-		out.printf("| Server-reported deprecations | %d | %d | Reported by the Kestra instance itself |\n",
-			deprecatedTasks, len(signals.ServerDeprecations))
+		table.row("Server-reported deprecations", count(deprecatedTasks), count(len(signals.ServerDeprecations)),
+			"Reported by the Kestra instance itself")
 	} else {
-		out.printf("| Server-reported deprecations | n/a | n/a | The deprecation endpoint could not be read |\n")
+		table.row("Server-reported deprecations", "n/a", "n/a", "The deprecation endpoint could not be read")
 	}
-	out.printf("\n")
+	table.render(out)
 }
 
 func renderPluginDefaultsSection(out *markdownWriter, report *usageReport) {
@@ -864,11 +868,11 @@ func renderPluginDefaultsSection(out *markdownWriter, report *usageReport) {
 		return
 	}
 
-	out.printf("| Default type | Entries |\n| --- | ---: |\n")
+	table := newMarkdownTable([]string{"Default type", "Entries"}, []bool{false, true})
 	for _, entry := range sortedCounts(defaults.TypeCount) {
-		out.printf("| `%s` | %d |\n", entry.Name, entry.Count)
+		table.row(code(entry.Name), count(entry.Count))
 	}
-	out.printf("\n")
+	table.render(out)
 }
 
 // renderDeprecatedTaskTypesSection lists the deprecations the instance itself
@@ -885,15 +889,15 @@ func renderDeprecatedTaskTypesSection(out *markdownWriter, report *usageReport) 
 		return
 	}
 
-	out.printf("| Task type | Replacement | Count |\n| --- | --- | ---: |\n")
+	table := newMarkdownTable([]string{"Task type", "Replacement", "Count"}, []bool{false, false, true})
 	for _, entry := range report.Signals.DeprecatedTaskTypes {
 		replacement := "-"
 		if entry.Replacement != "" {
-			replacement = "`" + entry.Replacement + "`"
+			replacement = code(entry.Replacement)
 		}
-		out.printf("| `%s` | %s | %d |\n", entry.TaskType, replacement, entry.Count)
+		table.row(code(entry.TaskType), replacement, count(entry.Count))
 	}
-	out.printf("\n")
+	table.render(out)
 }
 
 func renderAffectedFlowsSection(out *markdownWriter, report *usageReport, detailed bool) {
@@ -947,27 +951,30 @@ func renderInventorySection(out *markdownWriter, report *usageReport, detailed b
 	totals := report.Totals
 
 	out.printf("## Inventory\n\n")
-	out.printf("| Metric | Value |\n| --- | ---: |\n")
-	out.printf("| Tenants scanned | %d |\n", totals.TenantsScanned)
-	out.printf("| Flows | %d |\n", totals.Count)
-	out.printf("| Namespaces | %d |\n", totals.NamespacesCount)
-	out.printf("| Disabled flows | %d |\n", totals.DisabledFlows)
-	out.printf("| Flows with inputs | %d |\n", totals.FlowsWithInputs)
-	out.printf("| Flows with triggers | %d |\n", totals.FlowsWithTriggers)
-	out.printf("| Subflow tasks | %d |\n", totals.SubflowTaskCount)
-	out.printf("| Flows calling a subflow | %d |\n", totals.FlowsUsingSubflow)
-	out.printf("\n")
+	overview := newMarkdownTable([]string{"Metric", "Value"}, []bool{false, true})
+	overview.row("Tenants scanned", count(totals.TenantsScanned))
+	overview.row("Flows", count(totals.Count))
+	overview.row("Namespaces", count(totals.NamespacesCount))
+	overview.row("Disabled flows", count(totals.DisabledFlows))
+	overview.row("Flows with inputs", count(totals.FlowsWithInputs))
+	overview.row("Flows with triggers", count(totals.FlowsWithTriggers))
+	overview.row("Subflow tasks", count(totals.SubflowTaskCount))
+	overview.row("Flows calling a subflow", count(totals.FlowsUsingSubflow))
+	overview.render(out)
 
 	if detailed {
 		out.printf("### Flows per namespace\n\n")
-		out.printf("| Tenant | Namespace | Flows | Disabled | With triggers |\n| --- | --- | ---: | ---: | ---: |\n")
+		table := newMarkdownTable(
+			[]string{"Tenant", "Namespace", "Flows", "Disabled", "With triggers"},
+			[]bool{false, false, true, true, true},
+		)
 		for _, tenant := range report.Tenants {
 			for _, ns := range tenant.Namespaces {
-				out.printf("| `%s` | `%s` | %d | %d | %d |\n",
-					tenant.Tenant, ns.Namespace, ns.FlowCount, ns.DisabledFlows, ns.FlowsWithTriggers)
+				table.row(code(tenant.Tenant), code(ns.Namespace), count(ns.FlowCount),
+					count(ns.DisabledFlows), count(ns.FlowsWithTriggers))
 			}
 		}
-		out.printf("\n")
+		table.render(out)
 	}
 }
 
@@ -987,11 +994,11 @@ func renderPluginFamiliesSection(out *markdownWriter, report *usageReport) {
 		return
 	}
 
-	out.printf("| Plugin family | Uses |\n| --- | ---: |\n")
+	table := newMarkdownTable([]string{"Plugin family", "Uses"}, []bool{false, true})
 	for _, entry := range sortedCounts(families) {
-		out.printf("| `%s` | %d |\n", entry.Name, entry.Count)
+		table.row(code(entry.Name), count(entry.Count))
 	}
-	out.printf("\n")
+	table.render(out)
 }
 
 // renderTaskTypesSection closes the report with the task-type inventory. It
@@ -1010,11 +1017,11 @@ func renderCountTable(out *markdownWriter, level, title, column string, counts, 
 		return
 	}
 
-	out.printf("| %s | Uses | Flows |\n| --- | ---: | ---: |\n", column)
+	table := newMarkdownTable([]string{column, "Uses", "Flows"}, []bool{false, true, true})
 	for _, entry := range sortedCounts(counts) {
-		out.printf("| `%s` | %d | %d |\n", entry.Name, entry.Count, flowCounts[entry.Name])
+		table.row(code(entry.Name), count(entry.Count), count(flowCounts[entry.Name]))
 	}
-	out.printf("\n")
+	table.render(out)
 }
 
 func renderNotesSection(out *markdownWriter, report *usageReport) {
@@ -1027,6 +1034,101 @@ func renderNotesSection(out *markdownWriter, report *usageReport) {
 	}
 	out.printf("- Namespace-level plugin defaults are stored outside flow sources and are not covered by this report.\n")
 	out.printf("- The Pebble `json()` count is a text heuristic over the flow source.\n")
+}
+
+// markdownTable builds a column-aligned pipe table. The padding is
+// insignificant whitespace in GitHub-flavoured markdown, so the rendered table
+// is unchanged while the raw report stays readable in a terminal.
+type markdownTable struct {
+	header []string
+	right  []bool
+	rows   [][]string
+}
+
+// newMarkdownTable starts a table; right marks the columns to right-align,
+// which is where the counts go.
+func newMarkdownTable(header []string, right []bool) *markdownTable {
+	return &markdownTable{header: header, right: right}
+}
+
+func (t *markdownTable) row(cells ...string) {
+	t.rows = append(t.rows, cells)
+}
+
+// render writes the table with every column padded to its widest cell.
+func (t *markdownTable) render(out *markdownWriter) {
+	widths := make([]int, len(t.header))
+	for i, cell := range t.header {
+		widths[i] = cellWidth(cell)
+	}
+	for _, row := range t.rows {
+		for i, cell := range row {
+			if i < len(widths) && cellWidth(cell) > widths[i] {
+				widths[i] = cellWidth(cell)
+			}
+		}
+	}
+	// A separator needs three dashes at least, plus room for the colon that
+	// carries the alignment.
+	for i := range widths {
+		minimum := 3
+		if t.right[i] {
+			minimum = 4
+		}
+		if widths[i] < minimum {
+			widths[i] = minimum
+		}
+	}
+
+	separators := make([]string, len(widths))
+	for i, width := range widths {
+		if t.right[i] {
+			separators[i] = strings.Repeat("-", width-1) + ":"
+		} else {
+			separators[i] = strings.Repeat("-", width)
+		}
+	}
+
+	out.printf("%s\n", t.line(t.header, widths))
+	out.printf("| %s |\n", strings.Join(separators, " | "))
+	for _, row := range t.rows {
+		out.printf("%s\n", t.line(row, widths))
+	}
+	out.printf("\n")
+}
+
+// line pads one row of cells to the given column widths.
+func (t *markdownTable) line(cells []string, widths []int) string {
+	padded := make([]string, len(widths))
+	for i, width := range widths {
+		cell := ""
+		if i < len(cells) {
+			cell = cells[i]
+		}
+		padding := strings.Repeat(" ", width-cellWidth(cell))
+		if t.right[i] {
+			padded[i] = padding + cell
+		} else {
+			padded[i] = cell + padding
+		}
+	}
+	return "| " + strings.Join(padded, " | ") + " |"
+}
+
+// cellWidth counts the visible characters of a cell; the report has no ANSI
+// escapes, which would break markdown validity.
+func cellWidth(cell string) int {
+	return utf8.RuneCountInString(cell)
+}
+
+// code wraps a value in markdown backticks.
+func code(value string) string {
+	return "`" + value + "`"
+}
+
+// count renders a counter as a table cell.
+func count[T int | int64](value T) string {
+	return strconv.FormatInt(int64(value), 10)
 }
 
 // markdownWriter accumulates the first write error so the renderer does not

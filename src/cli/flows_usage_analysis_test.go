@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -663,7 +664,7 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
-	out := buf.String()
+	out := collapseSpaces(buf.String())
 
 	for _, want := range []string{
 		"# Kestra usage report",
@@ -717,7 +718,7 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
-	out := buf.String()
+	out := collapseSpaces(buf.String())
 
 	// Occurrences is the deprecated-task total, Flows the number of flows.
 	if !strings.Contains(out, "| Server-reported deprecations | 3 | 2 |") {
@@ -736,6 +737,99 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 	if strings.Contains(out, "taskId") {
 		t.Error("the report must not carry task ids")
 	}
+}
+
+// spaceRuns matches the column padding of the aligned tables.
+var spaceRuns = regexp.MustCompile(` {2,}`)
+
+// collapseSpaces squeezes the alignment padding out of a rendered report so
+// assertions can be written about table content rather than column widths.
+func collapseSpaces(markdown string) string {
+	return spaceRuns.ReplaceAllString(markdown, " ")
+}
+
+// tableLines returns the pipe-table rows that follow the given heading.
+func tableLines(t *testing.T, markdown, heading string) []string {
+	t.Helper()
+
+	index := strings.Index(markdown, heading)
+	if index < 0 {
+		t.Fatalf("the report is missing %q", heading)
+	}
+
+	var rows []string
+	for _, line := range strings.Split(markdown[index:], "\n") {
+		if strings.HasPrefix(line, "|") {
+			rows = append(rows, line)
+			continue
+		}
+		if len(rows) > 0 {
+			break
+		}
+	}
+	if len(rows) < 3 {
+		t.Fatalf("expected a table under %q, got %d row(s)", heading, len(rows))
+	}
+	return rows
+}
+
+func TestRenderUsageReportMarkdown_TablesAreColumnAligned(t *testing.T) {
+	analysis := mustAnalyze(t, nestedFlowSource)
+	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
+
+	var buf bytes.Buffer
+	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
+		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+	}
+	out := buf.String()
+
+	// The task-type table is pure ASCII, so byte length equals column width.
+	rows := tableLines(t, out, "## Task types")
+	width := len(rows[0])
+	pipes := pipeColumns(rows[0])
+	for _, row := range rows[1:] {
+		if len(row) != width {
+			t.Errorf("row %q is %d bytes wide, want %d", row, len(row), width)
+		}
+		if got := pipeColumns(row); !equalInts(got, pipes) {
+			t.Errorf("row %q has pipes at %v, want %v", row, got, pipes)
+		}
+	}
+
+	// The separator keeps its alignment colon and at least three dashes.
+	if !strings.Contains(rows[1], "-:") || !strings.Contains(rows[1], "---") {
+		t.Errorf("unexpected separator row %q", rows[1])
+	}
+	// Counts are padded on the left.
+	if !regexp.MustCompile(`\|\s{2,}1 \|`).MatchString(out) {
+		t.Error("expected right-aligned counts to be padded on the left")
+	}
+	// Alignment must never be done with ANSI escapes.
+	if strings.Contains(out, "\x1b[") {
+		t.Error("the report must not contain ANSI escape sequences")
+	}
+}
+
+func pipeColumns(row string) []int {
+	var columns []int
+	for i, char := range row {
+		if char == '|' {
+			columns = append(columns, i)
+		}
+	}
+	return columns
+}
+
+func equalInts(left, right []int) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
@@ -800,7 +894,7 @@ func TestRenderUsageReportMarkdown_EmptyReportKeepsTrailingSections(t *testing.T
 	if err := renderUsageReportMarkdown(report, &buf, false); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
-	out := buf.String()
+	out := collapseSpaces(buf.String())
 
 	for _, want := range []string{
 		"## Plugin families",
@@ -824,7 +918,7 @@ func TestRenderUsageReportMarkdown_DetailedGating(t *testing.T) {
 		if err := renderUsageReportMarkdown(report, &buf, detailed); err != nil {
 			t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 		}
-		return buf.String()
+		return collapseSpaces(buf.String())
 	}
 
 	summary := render(false)

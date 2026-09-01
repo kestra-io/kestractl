@@ -168,7 +168,7 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
 	}
 
-	markdown := out.String()
+	markdown := collapseSpaces(out.String())
 	for _, want := range []string{
 		"# Kestra usage report",
 		"### Flows per namespace",
@@ -363,7 +363,7 @@ func TestRunFlowsUsageReport_SummaryOmitsDetailedBlocks(t *testing.T) {
 		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
 	}
 
-	markdown := out.String()
+	markdown := collapseSpaces(out.String())
 	for _, unwanted := range []string{"### Flows per namespace", "## Affected flows"} {
 		if strings.Contains(markdown, unwanted) {
 			t.Errorf("the default report must not contain %q", unwanted)
@@ -392,7 +392,7 @@ func TestRunFlowsUsageReport_ServerVersionUnavailable(t *testing.T) {
 		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
 	}
 
-	markdown := out.String()
+	markdown := collapseSpaces(out.String())
 	if !strings.Contains(markdown, "- Kestra version: unknown") {
 		t.Error("expected the Kestra version to render as unknown")
 	}
