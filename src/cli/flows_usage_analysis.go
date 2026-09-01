@@ -57,8 +57,13 @@ type usageTotals struct {
 	TriggerTypeCount     map[string]int64 `json:"trigger_type_count"`
 	TriggerTypeFlowCount map[string]int64 `json:"trigger_type_flow_count"`
 	PluginFamilyCount    map[string]int64 `json:"plugin_family_count"`
-	SubflowTaskCount     int64            `json:"subflow_task_count"`
-	FlowsUsingSubflow    int              `json:"flows_using_subflow"`
+	// Pebble function usage, extracted from the expression blocks of the flow
+	// sources. Unrecognized calls are counted without their names.
+	PebbleFunctionCount        map[string]int64 `json:"pebble_function_count"`
+	PebbleFunctionFlowCount    map[string]int64 `json:"pebble_function_flow_count"`
+	PebbleUnknownFunctionCount int64            `json:"pebble_unknown_function_count"`
+	SubflowTaskCount           int64            `json:"subflow_task_count"`
+	FlowsUsingSubflow          int              `json:"flows_using_subflow"`
 }
 
 // signalCount is one migration signal: how often it occurs, in how many flows,
@@ -179,6 +184,11 @@ type flowAnalysis struct {
 	ConditionProperty int64
 	PebbleJSON        int64
 	FsLocalDelete     int64
+
+	// PebbleFunctions only ever holds allowlisted function names; everything
+	// else a flow calls is counted anonymously in PebbleUnknownFunctions.
+	PebbleFunctions        map[string]int64
+	PebbleUnknownFunctions int64
 }
 
 // taskContainerKeys are the flow-level keys walked in task context. inputs,
@@ -205,6 +215,82 @@ const fsLocalDeleteType = "io.kestra.plugin.fs.local.Delete"
 // flows that mention `json (` in prose.
 var pebbleJSONPattern = regexp.MustCompile(`(^|[^\w.])json\s*\(`)
 
+// pebbleFunctionNames is the function reference of the Kestra docs. Only these
+// names are ever recorded: anything else a flow calls could be a customer
+// macro, and is counted anonymously instead.
+var pebbleFunctionNames = []string{
+	"render", "renderOnce", "fetchContext", "printContext", "block", "parent", "macro", "i18n",
+	"secret", "credential", "read", "fileURI", "kv", "encrypt", "decrypt",
+	"fromJson", "fromIon", "yaml", "json",
+	"errorLogs", "currentEachOutput", "tasksWithState", "iterationOutput", "parentOutput", "appLink",
+	"now", "max", "min", "range", "uuid", "id", "ksuid", "nanoId", "randomInt", "randomPort",
+	"http", "fileSize", "fileExists", "isFileEmpty",
+	"isWeekend", "isPublicHoliday", "isDayWeekInMonth",
+	"dayOfWeek", "dayOfMonth", "monthOfYear", "hourOfDay",
+}
+
+// pebbleFunctions indexes the allowlist by lowercase name — Pebble resolves
+// function names case-insensitively.
+var pebbleFunctions = newPebbleFunctionIndex(pebbleFunctionNames)
+
+func newPebbleFunctionIndex(names []string) map[string]string {
+	index := make(map[string]string, len(names))
+	for _, name := range names {
+		index[strings.ToLower(name)] = name
+	}
+	return index
+}
+
+// pebbleExpressionPatterns match the two kinds of Pebble block, across lines.
+var pebbleExpressionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?s)\{\{(.*?)\}\}`),
+	regexp.MustCompile(`(?s)\{%(.*?)%\}`),
+}
+
+// pebbleCallPattern matches an identifier used as a function call. The
+// preceding character is checked separately: Go's regexp has no lookbehind,
+// and consuming the boundary would hide the inner call of render(kv('K')).
+var pebbleCallPattern = regexp.MustCompile(`([A-Za-z_]\w*)\s*\(`)
+
+// collectPebbleFunctions counts the function calls of every expression block in
+// the raw source. Like the `json(` heuristic it works on text, so it still
+// reports something for a flow whose YAML does not parse.
+func (a *flowAnalysis) collectPebbleFunctions(raw string) {
+	for _, pattern := range pebbleExpressionPatterns {
+		for _, block := range pattern.FindAllStringSubmatch(raw, -1) {
+			a.countPebbleCalls(block[1])
+		}
+	}
+}
+
+func (a *flowAnalysis) countPebbleCalls(block string) {
+	for _, match := range pebbleCallPattern.FindAllStringSubmatchIndex(block, -1) {
+		start, end := match[2], match[3]
+		if start > 0 {
+			// A call is only a call when it does not continue a word and is
+			// not a method access (`payload.json(...)`).
+			if previous := block[start-1]; previous == '.' || isWordByte(previous) {
+				continue
+			}
+		}
+
+		if canonical, ok := pebbleFunctions[strings.ToLower(block[start:end])]; ok {
+			a.PebbleFunctions[canonical]++
+			continue
+		}
+		// An unrecognized identifier is never recorded by name: it may be a
+		// customer macro, and the report must stay shareable.
+		a.PebbleUnknownFunctions++
+	}
+}
+
+func isWordByte(char byte) bool {
+	return char == '_' ||
+		(char >= '0' && char <= '9') ||
+		(char >= 'a' && char <= 'z') ||
+		(char >= 'A' && char <= 'Z')
+}
+
 // analyzeFlowSource walks one flow's YAML source and returns the signals it
 // carries. On a YAML parse failure it still returns a usable analysis with
 // ParseFailed set and the raw-text signals filled in, alongside the error.
@@ -214,10 +300,12 @@ func analyzeFlowSource(raw string) (flowAnalysis, error) {
 		TriggerTypes:        map[string]int64{},
 		PluginDefaultsTypes: map[string]int64{},
 		RemovedTasks:        map[string]int64{},
+		PebbleFunctions:     map[string]int64{},
 	}
 
 	// Raw-text signals first: they must survive a YAML parse failure.
 	analysis.PebbleJSON = int64(len(pebbleJSONPattern.FindAllStringIndex(raw, -1)))
+	analysis.collectPebbleFunctions(raw)
 
 	var root map[string]any
 	if err := yaml.Unmarshal([]byte(raw), &root); err != nil {
@@ -625,6 +713,17 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 				}
 				acc.add(count, ref)
 			}
+			// The Pebble extraction is text-based, so it also covers flows
+			// whose YAML did not parse; only the per-flow tally needs an
+			// identified flow.
+			for name, occurrences := range flow.PebbleFunctions {
+				tenant.Totals.PebbleFunctionCount[name] += occurrences
+				if ref != "" {
+					tenant.Totals.PebbleFunctionFlowCount[name]++
+				}
+			}
+			tenant.Totals.PebbleUnknownFunctionCount += flow.PebbleUnknownFunctions
+
 			triggerConditions.add(flow.TriggerConditions, ref)
 			conditionProperty.add(flow.ConditionProperty, ref)
 			pebbleJSON.add(flow.PebbleJSON, ref)
@@ -712,11 +811,13 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 
 func newUsageTotals() usageTotals {
 	return usageTotals{
-		TaskTypeCount:        map[string]int64{},
-		TaskTypeFlowCount:    map[string]int64{},
-		TriggerTypeCount:     map[string]int64{},
-		TriggerTypeFlowCount: map[string]int64{},
-		PluginFamilyCount:    map[string]int64{},
+		TaskTypeCount:           map[string]int64{},
+		TaskTypeFlowCount:       map[string]int64{},
+		TriggerTypeCount:        map[string]int64{},
+		TriggerTypeFlowCount:    map[string]int64{},
+		PluginFamilyCount:       map[string]int64{},
+		PebbleFunctionCount:     map[string]int64{},
+		PebbleFunctionFlowCount: map[string]int64{},
 	}
 }
 
@@ -735,6 +836,9 @@ func mergeTotals(into *usageTotals, from usageTotals) {
 	mergeCounts(into.TriggerTypeCount, from.TriggerTypeCount)
 	mergeCounts(into.TriggerTypeFlowCount, from.TriggerTypeFlowCount)
 	mergeCounts(into.PluginFamilyCount, from.PluginFamilyCount)
+	mergeCounts(into.PebbleFunctionCount, from.PebbleFunctionCount)
+	mergeCounts(into.PebbleFunctionFlowCount, from.PebbleFunctionFlowCount)
+	into.PebbleUnknownFunctionCount += from.PebbleUnknownFunctionCount
 }
 
 func mergeCounts(into, from map[string]int64) {
@@ -816,6 +920,7 @@ func renderUsageReportMarkdown(report *usageReport, w io.Writer, detailed bool) 
 	renderAffectedFlowsSection(out, report, detailed)
 	renderTriggerTypesSection(out, report)
 	renderPluginFamiliesSection(out, report)
+	renderPebbleFunctionsSection(out, report)
 	renderNotesSection(out, report)
 	renderTaskTypesSection(out, report)
 
@@ -1024,6 +1129,28 @@ func renderCountTable(out *markdownWriter, level, title, column string, counts, 
 	table.render(out)
 }
 
+// renderPebbleFunctionsSection lists the Pebble functions the flows call.
+// Calls that are not part of the documented function set are reported as a
+// single count, never by name.
+func renderPebbleFunctionsSection(out *markdownWriter, report *usageReport) {
+	totals := report.Totals
+
+	out.printf("## Pebble functions\n\n")
+	if len(totals.PebbleFunctionCount) == 0 && totals.PebbleUnknownFunctionCount == 0 {
+		out.printf("None found.\n\n")
+		return
+	}
+
+	table := newMarkdownTable([]string{"Function", "Uses", "Flows"}, []bool{false, true, true})
+	for _, entry := range sortedCounts(totals.PebbleFunctionCount) {
+		table.row(code(entry.Name), count(entry.Count), count(totals.PebbleFunctionFlowCount[entry.Name]))
+	}
+	if totals.PebbleUnknownFunctionCount > 0 {
+		table.row("(unrecognized function-like calls)", count(totals.PebbleUnknownFunctionCount), "-")
+	}
+	table.render(out)
+}
+
 func renderNotesSection(out *markdownWriter, report *usageReport) {
 	out.printf("## Scan notes\n\n")
 	if len(report.Notes) == 0 {
@@ -1034,6 +1161,9 @@ func renderNotesSection(out *markdownWriter, report *usageReport) {
 	}
 	out.printf("- Namespace-level plugin defaults are stored outside flow sources and are not covered by this report.\n")
 	out.printf("- The Pebble `json()` count is a text heuristic over the flow source.\n")
+	out.printf("- Pebble functions are extracted from the `{{ }}` and `{%% %%}` expression blocks of the sources, also a text heuristic; calls that are not documented Kestra functions are counted without their names.\n")
+	// The next section follows straight after: markdown needs the blank line.
+	out.printf("\n")
 }
 
 // markdownTable builds a column-aligned pipe table. The padding is

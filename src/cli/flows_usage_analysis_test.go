@@ -407,6 +407,107 @@ triggers:
 	}
 }
 
+func TestAnalyzeFlowSource_PebbleFunctions(t *testing.T) {
+	cases := []struct {
+		name    string
+		source  string
+		want    map[string]int64
+		unknown int64
+	}{
+		{
+			name: "nested calls in one block",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ render(kv('K')) }}"
+`,
+			want: map[string]int64{"render": 1, "kv": 1},
+		},
+		{
+			name: "functions inside a tag block",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{% if now() %}{{ uuid() }}{% endif %}"
+`,
+			want: map[string]int64{"now": 1, "uuid": 1},
+		},
+		{
+			name:   "multiline expression",
+			source: "id: f\nnamespace: ns\ntasks:\n  - id: log\n    type: io.kestra.plugin.core.log.Log\n    message: |\n      {{ secret(\n        'MY_KEY'\n      ) }}\n",
+			want:   map[string]int64{"secret": 1},
+		},
+		{
+			name: "function names are case-insensitive",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ fromjson(inputs.raw) }} {{ FROMJSON(inputs.other) }}"
+`,
+			want: map[string]int64{"fromJson": 2},
+		},
+		{
+			name: "method calls and text outside expression blocks are ignored",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: query
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    sql: SELECT COUNT(*) FROM orders
+    message: myfunc(1)
+    other: "{{ payload.json(x) }}"
+`,
+			want: map[string]int64{},
+		},
+		{
+			name: "unknown identifiers are counted without their name",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ mycompanyhelper(now()) }}"
+`,
+			want:    map[string]int64{"now": 1},
+			unknown: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			analysis := mustAnalyze(t, tc.source)
+
+			if len(analysis.PebbleFunctions) != len(tc.want) {
+				t.Fatalf("pebble functions: got %v, want %v", analysis.PebbleFunctions, tc.want)
+			}
+			for name, want := range tc.want {
+				if got := analysis.PebbleFunctions[name]; got != want {
+					t.Errorf("function %s: got %d, want %d", name, got, want)
+				}
+			}
+			if analysis.PebbleUnknownFunctions != tc.unknown {
+				t.Errorf("unknown functions: got %d, want %d", analysis.PebbleUnknownFunctions, tc.unknown)
+			}
+			for name := range analysis.PebbleFunctions {
+				if _, ok := pebbleFunctions[strings.ToLower(name)]; !ok {
+					t.Errorf("%q is not an allowlisted function name", name)
+				}
+			}
+		})
+	}
+}
+
 func TestAnalyzeFlowSource_ParseFailureKeepsTextSignals(t *testing.T) {
 	analysis, err := analyzeFlowSource("id: broken\n\ttabs: are: not: yaml\n{{ json(x) }}")
 	if err == nil {
@@ -417,6 +518,9 @@ func TestAnalyzeFlowSource_ParseFailureKeepsTextSignals(t *testing.T) {
 	}
 	if analysis.PebbleJSON != 1 {
 		t.Errorf("pebble json: got %d, want 1", analysis.PebbleJSON)
+	}
+	if analysis.PebbleFunctions["json"] != 1 {
+		t.Errorf("pebble functions: got %v, want one json call", analysis.PebbleFunctions)
 	}
 }
 
@@ -859,6 +963,7 @@ func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
 		"## Affected flows",
 		"## Trigger types",
 		"## Plugin families",
+		"## Pebble functions",
 		"## Scan notes",
 		"## Task types",
 	}
@@ -905,6 +1010,50 @@ func TestRenderUsageReportMarkdown_EmptyReportKeepsTrailingSections(t *testing.T
 		if !strings.Contains(out, want) {
 			t.Errorf("the empty report is missing %q", want)
 		}
+	}
+}
+
+func TestRenderUsageReportMarkdown_PebbleFunctionsSection(t *testing.T) {
+	source := `
+id: pebble-flow
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ render(kv('K')) }} {{ mycompanyhelper(x) }}"
+`
+	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{mustAnalyze(t, source)}}})
+
+	var buf bytes.Buffer
+	if err := renderUsageReportMarkdown(report, &buf, false); err != nil {
+		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+	}
+	out := collapseSpaces(buf.String())
+
+	for _, want := range []string{
+		"## Pebble functions",
+		"| Function | Uses | Flows |",
+		"| `kv` | 1 | 1 |",
+		"| `render` | 1 | 1 |",
+		"| (unrecognized function-like calls) | 1 | - |",
+		"Pebble functions are extracted from the `{{ }}` and `{% %}` expression blocks",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report is missing %q", want)
+		}
+	}
+	if strings.Contains(out, "mycompanyhelper") {
+		t.Error("the report must not name an unrecognized function")
+	}
+
+	// A report without any expression renders the empty case.
+	empty := testReport(t, true, []tenantScan{{Tenant: "main"}})
+	buf.Reset()
+	if err := renderUsageReportMarkdown(empty, &buf, false); err != nil {
+		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+	}
+	if !strings.Contains(collapseSpaces(buf.String()), "## Pebble functions\n\nNone found.") {
+		t.Error("expected the empty Pebble functions case")
 	}
 }
 
@@ -972,6 +1121,15 @@ func TestUsageReportJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("failed to unmarshal into a map: %v", err)
 	}
+	totals, ok := raw["totals"].(map[string]any)
+	if !ok {
+		t.Fatal("the totals object is missing from the JSON report")
+	}
+	for _, key := range []string{"pebble_function_count", "pebble_function_flow_count", "pebble_unknown_function_count"} {
+		if _, ok := totals[key]; !ok {
+			t.Errorf("missing JSON totals key %q", key)
+		}
+	}
 	for _, key := range []string{"generated_at", "kestractl_version", "anonymized", "scope", "totals", "signals", "tenants"} {
 		if _, ok := raw[key]; !ok {
 			t.Errorf("missing JSON key %q", key)
@@ -999,7 +1157,7 @@ tasks:
     tasks:
       - id: log
         type: io.kestra.plugin.core.log.Log
-        message: SENTINEL-SECRET-VALUE
+        message: "SENTINEL-SECRET-VALUE {{ sentinelSecretMacro(now()) }}"
 pluginDefaults:
   - type: io.kestra.plugin.core.log.Log
     values:
@@ -1028,6 +1186,19 @@ func TestUsageReport_DoesNotLeakFlowValues(t *testing.T) {
 			}
 			if strings.Contains(string(data), sentinel) {
 				t.Error("the JSON report leaked a flow property value")
+			}
+
+			// An undocumented function name may be a customer macro: it is
+			// counted, never named.
+			const macro = "sentinelSecretMacro"
+			if strings.Contains(markdown.String(), macro) || strings.Contains(string(data), macro) {
+				t.Error("the report leaked an unrecognized Pebble function name")
+			}
+			if report.Totals.PebbleUnknownFunctionCount != 1 {
+				t.Errorf("unknown pebble functions: got %d, want 1", report.Totals.PebbleUnknownFunctionCount)
+			}
+			if report.Totals.PebbleFunctionCount["now"] != 1 {
+				t.Errorf("expected the documented call to be counted, got %v", report.Totals.PebbleFunctionCount)
 			}
 
 			// Sanity check: the signal itself is still reported.
