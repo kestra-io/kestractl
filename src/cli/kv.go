@@ -516,6 +516,12 @@ func tryParseKVTypedValueFromError(err error) *kvTypedValue {
 		return nil
 	}
 
+	// A 2.0 problem document also carries a "type", and reading that as the
+	// value's type would turn a 404 into a rendered record and a zero exit.
+	if isProblemDocument(rawResp) {
+		return nil
+	}
+
 	result := &kvTypedValue{}
 	if typ, ok := rawResp["type"].(string); ok {
 		result.Type = typ

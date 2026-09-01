@@ -201,6 +201,9 @@ func formatErrorBody(body []byte, errMsg string) error {
 			if msg, ok := jsonErr["error"].(string); ok && msg != "" {
 				return fmt.Errorf("API error: %s", msg)
 			}
+			if msg := problemMessage(jsonErr); msg != "" {
+				return fmt.Errorf("API error: %s", msg)
+			}
 		}
 	}
 
@@ -220,6 +223,42 @@ func formatErrorBody(body []byte, errMsg string) error {
 	}
 
 	return fmt.Errorf("API error: unknown error")
+}
+
+// Kestra 2.0 answers errors with an RFC 7807 problem document
+// ({"type","title","status","detail"}) instead of the pre-2.0
+// {"message": ...} shape. isProblemDocument recognises one so the
+// tryParse*FromError fallbacks below don't mistake it for a payload: a
+// problem document carries a "type" key, which those helpers would
+// otherwise read as the resource's own type and report success on a 404.
+func isProblemDocument(m map[string]any) bool {
+	if _, ok := m["status"].(float64); !ok {
+		return false
+	}
+	if _, ok := m["title"].(string); ok {
+		return true
+	}
+	_, ok := m["detail"].(string)
+	return ok
+}
+
+// problemMessage renders an RFC 7807 problem document as a single line,
+// preferring the title and detail together since the title alone is generic
+// ("Resource not found") and the detail alone omits the category.
+func problemMessage(m map[string]any) string {
+	if !isProblemDocument(m) {
+		return ""
+	}
+	title, _ := m["title"].(string)
+	detail, _ := m["detail"].(string)
+	switch {
+	case title != "" && detail != "" && title != detail:
+		return title + ": " + detail
+	case detail != "":
+		return detail
+	default:
+		return title
+	}
 }
 
 // tryParseExecutionFromError handles known SDK type mismatch bugs.
