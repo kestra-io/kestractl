@@ -409,10 +409,12 @@ triggers:
 
 func TestAnalyzeFlowSource_PebbleFunctions(t *testing.T) {
 	cases := []struct {
-		name    string
-		source  string
-		want    map[string]int64
-		unknown int64
+		name          string
+		source        string
+		want          map[string]int64
+		unknown       int64
+		wantFilters   map[string]int64
+		unknownFilter int64
 	}{
 		{
 			name: "nested calls in one block",
@@ -482,6 +484,97 @@ tasks:
 			want:    map[string]int64{"now": 1},
 			unknown: 1,
 		},
+		{
+			name: "filters with arguments are filters, not unknown functions",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ now() | date('yyyy-MM-dd') }}"
+`,
+			want:        map[string]int64{"now": 1},
+			wantFilters: map[string]int64{"date": 1},
+		},
+		{
+			name: "bare and chained filters are counted",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ inputs.name | trim | lower }}"
+`,
+			want:        map[string]int64{},
+			wantFilters: map[string]int64{"trim": 1, "lower": 1},
+		},
+		{
+			name: "a parenthesized filter is counted exactly once",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ items | join(',') }}"
+`,
+			want:        map[string]int64{},
+			wantFilters: map[string]int64{"join": 1},
+		},
+		{
+			name: "filter names are case-insensitive",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ x | DATE('x') }} {{ y | Upper }}"
+`,
+			want:        map[string]int64{},
+			wantFilters: map[string]int64{"date": 1, "upper": 1},
+		},
+		{
+			name: "a boolean or is not a filter",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ a || b(1) }}"
+`,
+			want:    map[string]int64{},
+			unknown: 1,
+		},
+		{
+			name: "unknown filters go to their own anonymous bucket",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ y | customFilter(2) }}"
+`,
+			want:          map[string]int64{},
+			unknownFilter: 1,
+		},
+		{
+			name: "foreign templating stays in the unknown function bucket",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: query
+    type: io.kestra.plugin.jdbc.postgresql.Query
+    sql: "SELECT * FROM {{ ref('my_model') }}"
+`,
+			want:    map[string]int64{},
+			unknown: 1,
+		},
 	}
 
 	for _, tc := range cases {
@@ -499,9 +592,25 @@ tasks:
 			if analysis.PebbleUnknownFunctions != tc.unknown {
 				t.Errorf("unknown functions: got %d, want %d", analysis.PebbleUnknownFunctions, tc.unknown)
 			}
+			if len(analysis.PebbleFilters) != len(tc.wantFilters) {
+				t.Fatalf("pebble filters: got %v, want %v", analysis.PebbleFilters, tc.wantFilters)
+			}
+			for name, want := range tc.wantFilters {
+				if got := analysis.PebbleFilters[name]; got != want {
+					t.Errorf("filter %s: got %d, want %d", name, got, want)
+				}
+			}
+			if analysis.PebbleUnknownFilters != tc.unknownFilter {
+				t.Errorf("unknown filters: got %d, want %d", analysis.PebbleUnknownFilters, tc.unknownFilter)
+			}
 			for name := range analysis.PebbleFunctions {
 				if _, ok := pebbleFunctions[strings.ToLower(name)]; !ok {
 					t.Errorf("%q is not an allowlisted function name", name)
+				}
+			}
+			for name := range analysis.PebbleFilters {
+				if _, ok := pebbleFilters[strings.ToLower(name)]; !ok {
+					t.Errorf("%q is not an allowlisted filter name", name)
 				}
 			}
 		})
@@ -963,7 +1072,7 @@ func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
 		"## Affected flows",
 		"## Trigger types",
 		"## Plugin families",
-		"## Pebble functions",
+		"## Pebble functions and filters",
 		"## Scan notes",
 		"## Task types",
 	}
@@ -1020,7 +1129,7 @@ namespace: ns
 tasks:
   - id: log
     type: io.kestra.plugin.core.log.Log
-    message: "{{ render(kv('K')) }} {{ mycompanyhelper(x) }}"
+    message: "{{ render(kv('K')) }} {{ mycompanyhelper(x) }} {{ y | date('yyyy') | trim }} {{ z | customFilter(1) }}"
 `
 	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{mustAnalyze(t, source)}}})
 
@@ -1031,19 +1140,27 @@ tasks:
 	out := collapseSpaces(buf.String())
 
 	for _, want := range []string{
-		"## Pebble functions",
+		"## Pebble functions and filters",
+		"### Functions",
 		"| Function | Uses | Flows |",
 		"| `kv` | 1 | 1 |",
 		"| `render` | 1 | 1 |",
 		"| (unrecognized function-like calls) | 1 | - |",
-		"Pebble functions are extracted from the `{{ }}` and `{% %}` expression blocks",
+		"### Filters",
+		"| Filter | Uses | Flows |",
+		"| `date` | 1 | 1 |",
+		"| `trim` | 1 | 1 |",
+		"| (unrecognized filters) | 1 | - |",
+		"Pebble functions and filters are extracted from the `{{ }}` and `{% %}` expression blocks",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the report is missing %q", want)
 		}
 	}
-	if strings.Contains(out, "mycompanyhelper") {
-		t.Error("the report must not name an unrecognized function")
+	for _, unwanted := range []string{"mycompanyhelper", "customFilter"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("the report must not name %q", unwanted)
+		}
 	}
 
 	// A report without any expression renders the empty case.
@@ -1052,8 +1169,9 @@ tasks:
 	if err := renderUsageReportMarkdown(empty, &buf, false); err != nil {
 		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
 	}
-	if !strings.Contains(collapseSpaces(buf.String()), "## Pebble functions\n\nNone found.") {
-		t.Error("expected the empty Pebble functions case")
+	empty2 := collapseSpaces(buf.String())
+	if !strings.Contains(empty2, "### Functions\n\nNone found.") || !strings.Contains(empty2, "### Filters\n\nNone found.") {
+		t.Error("expected the empty Pebble functions and filters case")
 	}
 }
 
@@ -1125,7 +1243,10 @@ func TestUsageReportJSONRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("the totals object is missing from the JSON report")
 	}
-	for _, key := range []string{"pebble_function_count", "pebble_function_flow_count", "pebble_unknown_function_count"} {
+	for _, key := range []string{
+		"pebble_function_count", "pebble_function_flow_count", "pebble_unknown_function_count",
+		"pebble_filter_count", "pebble_filter_flow_count", "pebble_unknown_filter_count",
+	} {
 		if _, ok := totals[key]; !ok {
 			t.Errorf("missing JSON totals key %q", key)
 		}
@@ -1157,7 +1278,7 @@ tasks:
     tasks:
       - id: log
         type: io.kestra.plugin.core.log.Log
-        message: "SENTINEL-SECRET-VALUE {{ sentinelSecretMacro(now()) }}"
+        message: "SENTINEL-SECRET-VALUE {{ sentinelSecretMacro(now()) }} {{ x | sentinelSecretFilter('y') }}"
 pluginDefaults:
   - type: io.kestra.plugin.core.log.Log
     values:
@@ -1190,9 +1311,13 @@ func TestUsageReport_DoesNotLeakFlowValues(t *testing.T) {
 
 			// An undocumented function name may be a customer macro: it is
 			// counted, never named.
-			const macro = "sentinelSecretMacro"
-			if strings.Contains(markdown.String(), macro) || strings.Contains(string(data), macro) {
-				t.Error("the report leaked an unrecognized Pebble function name")
+			for _, name := range []string{"sentinelSecretMacro", "sentinelSecretFilter"} {
+				if strings.Contains(markdown.String(), name) || strings.Contains(string(data), name) {
+					t.Errorf("the report leaked the unrecognized Pebble name %q", name)
+				}
+			}
+			if report.Totals.PebbleUnknownFilterCount != 1 {
+				t.Errorf("unknown pebble filters: got %d, want 1", report.Totals.PebbleUnknownFilterCount)
 			}
 			if report.Totals.PebbleUnknownFunctionCount != 1 {
 				t.Errorf("unknown pebble functions: got %d, want 1", report.Totals.PebbleUnknownFunctionCount)

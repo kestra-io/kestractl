@@ -62,6 +62,9 @@ type usageTotals struct {
 	PebbleFunctionCount        map[string]int64 `json:"pebble_function_count"`
 	PebbleFunctionFlowCount    map[string]int64 `json:"pebble_function_flow_count"`
 	PebbleUnknownFunctionCount int64            `json:"pebble_unknown_function_count"`
+	PebbleFilterCount          map[string]int64 `json:"pebble_filter_count"`
+	PebbleFilterFlowCount      map[string]int64 `json:"pebble_filter_flow_count"`
+	PebbleUnknownFilterCount   int64            `json:"pebble_unknown_filter_count"`
 	SubflowTaskCount           int64            `json:"subflow_task_count"`
 	FlowsUsingSubflow          int              `json:"flows_using_subflow"`
 }
@@ -189,6 +192,8 @@ type flowAnalysis struct {
 	// else a flow calls is counted anonymously in PebbleUnknownFunctions.
 	PebbleFunctions        map[string]int64
 	PebbleUnknownFunctions int64
+	PebbleFilters          map[string]int64
+	PebbleUnknownFilters   int64
 }
 
 // taskContainerKeys are the flow-level keys walked in task context. inputs,
@@ -229,6 +234,25 @@ var pebbleFunctionNames = []string{
 	"dayOfWeek", "dayOfMonth", "monthOfYear", "hourOfDay",
 }
 
+// pebbleFilterNames is the filter reference of the Kestra docs. Filters are
+// allowlisted separately from functions: they are invoked in a different
+// position and a name can legitimately exist in both sets (yaml, toJson).
+var pebbleFilterNames = []string{
+	"toJson", "toIon", "jq", "abs", "number", "className", "numberFormat",
+	"first", "last", "length", "join", "split", "sort", "rsort", "reverse", "chunk", "distinct",
+	"slice", "merge", "flatten", "keys", "values",
+	"lower", "upper", "title", "capitalize", "trim", "abbreviate", "replace",
+	"substringBefore", "substringAfter", "substringBeforeLast", "substringAfterLast", "slugify",
+	"default", "startsWith", "endsWith",
+	"base64encode", "base64decode", "urlencode", "urldecode", "sha1", "sha512", "md5",
+	"string", "escapeChar",
+	"date", "dateAdd", "timestamp", "timestampMilli", "timestampMicro", "timestampNano",
+	"yaml", "indent", "nindent",
+}
+
+// pebbleFilters indexes the filter allowlist by lowercase name.
+var pebbleFilters = newPebbleFunctionIndex(pebbleFilterNames)
+
 // pebbleFunctions indexes the allowlist by lowercase name — Pebble resolves
 // function names case-insensitively.
 var pebbleFunctions = newPebbleFunctionIndex(pebbleFunctionNames)
@@ -252,6 +276,10 @@ var pebbleExpressionPatterns = []*regexp.Regexp{
 // and consuming the boundary would hide the inner call of render(kv('K')).
 var pebbleCallPattern = regexp.MustCompile(`([A-Za-z_]\w*)\s*\(`)
 
+// pebbleBareFilterPattern catches the filters used without arguments, such as
+// `| upper` or `| trim`, which the call pattern cannot see.
+var pebbleBareFilterPattern = regexp.MustCompile(`\|\s*([A-Za-z_]\w*)`)
+
 // collectPebbleFunctions counts the function calls of every expression block in
 // the raw source. Like the `json(` heuristic it works on text, so it still
 // reports something for a flow whose YAML does not parse.
@@ -264,6 +292,10 @@ func (a *flowAnalysis) collectPebbleFunctions(raw string) {
 }
 
 func (a *flowAnalysis) countPebbleCalls(block string) {
+	// Identifier offsets already counted, so a filter written with arguments
+	// is not counted twice by the bare-filter scan below.
+	counted := map[int]bool{}
+
 	for _, match := range pebbleCallPattern.FindAllStringSubmatchIndex(block, -1) {
 		start, end := match[2], match[3]
 		if start > 0 {
@@ -274,14 +306,51 @@ func (a *flowAnalysis) countPebbleCalls(block string) {
 			}
 		}
 
-		if canonical, ok := pebbleFunctions[strings.ToLower(block[start:end])]; ok {
-			a.PebbleFunctions[canonical]++
+		counted[start] = true
+		if isFilterPosition(block, start) {
+			a.recordPebbleName(block[start:end], pebbleFilters, &a.PebbleFilters, &a.PebbleUnknownFilters)
+		} else {
+			a.recordPebbleName(block[start:end], pebbleFunctions, &a.PebbleFunctions, &a.PebbleUnknownFunctions)
+		}
+	}
+
+	for _, match := range pebbleBareFilterPattern.FindAllStringSubmatchIndex(block, -1) {
+		pipe, start, end := match[0], match[2], match[3]
+		if counted[start] {
 			continue
 		}
-		// An unrecognized identifier is never recorded by name: it may be a
-		// customer macro, and the report must stay shareable.
-		a.PebbleUnknownFunctions++
+		// `a || b` is a boolean or, not a filter.
+		if pipe > 0 && block[pipe-1] == '|' {
+			continue
+		}
+		a.recordPebbleName(block[start:end], pebbleFilters, &a.PebbleFilters, &a.PebbleUnknownFilters)
 	}
+}
+
+// isFilterPosition reports whether the identifier at start is applied as a
+// filter, i.e. the first non-space character before it is a single `|`.
+func isFilterPosition(block string, start int) bool {
+	index := start - 1
+	for index >= 0 && (block[index] == ' ' || block[index] == '\t' || block[index] == '\n' || block[index] == '\r') {
+		index--
+	}
+	if index < 0 || block[index] != '|' {
+		return false
+	}
+	// `a || b(x)` is a boolean or followed by a plain call.
+	return index == 0 || block[index-1] != '|'
+}
+
+// recordPebbleName counts one name against its allowlist, falling back to the
+// anonymous bucket. An unrecognized name is never stored: it may be a customer
+// macro, a custom filter, or another templating engine entirely (dbt's
+// `{{ ref('...') }}` inside a SQL string, for one).
+func (a *flowAnalysis) recordPebbleName(name string, allowlist map[string]string, known *map[string]int64, unknown *int64) {
+	if canonical, ok := allowlist[strings.ToLower(name)]; ok {
+		(*known)[canonical]++
+		return
+	}
+	*unknown++
 }
 
 func isWordByte(char byte) bool {
@@ -301,6 +370,7 @@ func analyzeFlowSource(raw string) (flowAnalysis, error) {
 		PluginDefaultsTypes: map[string]int64{},
 		RemovedTasks:        map[string]int64{},
 		PebbleFunctions:     map[string]int64{},
+		PebbleFilters:       map[string]int64{},
 	}
 
 	// Raw-text signals first: they must survive a YAML parse failure.
@@ -723,6 +793,13 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 				}
 			}
 			tenant.Totals.PebbleUnknownFunctionCount += flow.PebbleUnknownFunctions
+			for name, occurrences := range flow.PebbleFilters {
+				tenant.Totals.PebbleFilterCount[name] += occurrences
+				if ref != "" {
+					tenant.Totals.PebbleFilterFlowCount[name]++
+				}
+			}
+			tenant.Totals.PebbleUnknownFilterCount += flow.PebbleUnknownFilters
 
 			triggerConditions.add(flow.TriggerConditions, ref)
 			conditionProperty.add(flow.ConditionProperty, ref)
@@ -818,6 +895,8 @@ func newUsageTotals() usageTotals {
 		PluginFamilyCount:       map[string]int64{},
 		PebbleFunctionCount:     map[string]int64{},
 		PebbleFunctionFlowCount: map[string]int64{},
+		PebbleFilterCount:       map[string]int64{},
+		PebbleFilterFlowCount:   map[string]int64{},
 	}
 }
 
@@ -839,6 +918,9 @@ func mergeTotals(into *usageTotals, from usageTotals) {
 	mergeCounts(into.PebbleFunctionCount, from.PebbleFunctionCount)
 	mergeCounts(into.PebbleFunctionFlowCount, from.PebbleFunctionFlowCount)
 	into.PebbleUnknownFunctionCount += from.PebbleUnknownFunctionCount
+	mergeCounts(into.PebbleFilterCount, from.PebbleFilterCount)
+	mergeCounts(into.PebbleFilterFlowCount, from.PebbleFilterFlowCount)
+	into.PebbleUnknownFilterCount += from.PebbleUnknownFilterCount
 }
 
 func mergeCounts(into, from map[string]int64) {
@@ -1129,24 +1211,34 @@ func renderCountTable(out *markdownWriter, level, title, column string, counts, 
 	table.render(out)
 }
 
-// renderPebbleFunctionsSection lists the Pebble functions the flows call.
-// Calls that are not part of the documented function set are reported as a
-// single count, never by name.
+// renderPebbleFunctionsSection lists the Pebble functions and filters the
+// flows use. Names outside the documented sets are reported as a single count,
+// never by name.
 func renderPebbleFunctionsSection(out *markdownWriter, report *usageReport) {
 	totals := report.Totals
 
-	out.printf("## Pebble functions\n\n")
-	if len(totals.PebbleFunctionCount) == 0 && totals.PebbleUnknownFunctionCount == 0 {
+	out.printf("## Pebble functions and filters\n\n")
+	renderPebbleUsageTable(out, "Functions", "Function", totals.PebbleFunctionCount,
+		totals.PebbleFunctionFlowCount, totals.PebbleUnknownFunctionCount, "(unrecognized function-like calls)")
+	renderPebbleUsageTable(out, "Filters", "Filter", totals.PebbleFilterCount,
+		totals.PebbleFilterFlowCount, totals.PebbleUnknownFilterCount, "(unrecognized filters)")
+}
+
+// renderPebbleUsageTable renders one "name → uses / flows" table plus the
+// anonymous bucket, when it is not empty.
+func renderPebbleUsageTable(out *markdownWriter, title, column string, counts, flowCounts map[string]int64, unknown int64, unknownLabel string) {
+	out.printf("### %s\n\n", title)
+	if len(counts) == 0 && unknown == 0 {
 		out.printf("None found.\n\n")
 		return
 	}
 
-	table := newMarkdownTable([]string{"Function", "Uses", "Flows"}, []bool{false, true, true})
-	for _, entry := range sortedCounts(totals.PebbleFunctionCount) {
-		table.row(code(entry.Name), count(entry.Count), count(totals.PebbleFunctionFlowCount[entry.Name]))
+	table := newMarkdownTable([]string{column, "Uses", "Flows"}, []bool{false, true, true})
+	for _, entry := range sortedCounts(counts) {
+		table.row(code(entry.Name), count(entry.Count), count(flowCounts[entry.Name]))
 	}
-	if totals.PebbleUnknownFunctionCount > 0 {
-		table.row("(unrecognized function-like calls)", count(totals.PebbleUnknownFunctionCount), "-")
+	if unknown > 0 {
+		table.row(unknownLabel, count(unknown), "-")
 	}
 	table.render(out)
 }
@@ -1161,7 +1253,7 @@ func renderNotesSection(out *markdownWriter, report *usageReport) {
 	}
 	out.printf("- Namespace-level plugin defaults are stored outside flow sources and are not covered by this report.\n")
 	out.printf("- The Pebble `json()` count is a text heuristic over the flow source.\n")
-	out.printf("- Pebble functions are extracted from the `{{ }}` and `{%% %%}` expression blocks of the sources, also a text heuristic; calls that are not documented Kestra functions are counted without their names.\n")
+	out.printf("- Pebble functions and filters are extracted from the `{{ }}` and `{%% %%}` expression blocks of the sources, also a text heuristic: a name after a `|` is read as a filter, anything else as a function. Names outside the documented Kestra sets — a custom macro, or another templating engine embedded in a property — are counted without their names.\n")
 	// The next section follows straight after: markdown needs the blank line.
 	out.printf("\n")
 }
