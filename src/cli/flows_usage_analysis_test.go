@@ -740,7 +740,15 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 
 func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
 	analysis := mustAnalyze(t, nestedFlowSource)
-	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
+	report := testReport(t, true, []tenantScan{{
+		Tenant:              "main",
+		Flows:               []flowAnalysis{analysis},
+		DeprecatedAvailable: true,
+		Deprecated: []deprecatedFlow{{
+			Namespace: "prod.team.data", FlowID: "nested-flow", TaskCount: 1,
+			Tasks: []deprecatedTask{{TaskType: "io.kestra.core.tasks.flows.EachSequential"}},
+		}},
+	}})
 
 	var buf bytes.Buffer
 	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
@@ -753,7 +761,10 @@ func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
 		"## Inventory",
 		"## Migration signals",
 		"## pluginDefaults detail",
+		"## Deprecated task types (server-reported)",
 		"## Affected flows",
+		"## Trigger types",
+		"## Plugin families",
 		"## Scan notes",
 		"## Task types",
 	}
@@ -769,12 +780,37 @@ func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
 		previous = index
 	}
 
-	// Trigger types and plugin families stay inside the inventory section.
-	if strings.Index(out, "### Trigger types") > strings.Index(out, "## Migration signals") {
-		t.Error("### Trigger types must stay inside ## Inventory")
+	// Only the per-namespace table is left nested under ## Inventory.
+	if index := strings.Index(out, "### Flows per namespace"); index < 0 || index > strings.Index(out, "## Migration signals") {
+		t.Error("### Flows per namespace must stay inside ## Inventory")
 	}
-	if strings.Index(out, "### Plugin families") > strings.Index(out, "## Migration signals") {
-		t.Error("### Plugin families must stay inside ## Inventory")
+	for _, unwanted := range []string{"### Trigger types", "### Plugin families", "### Task types"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("%q must be a top-level section now", unwanted)
+		}
+	}
+}
+
+// A report with nothing in it must still render every trailing section: the
+// empty plugin-families case returns early from its own renderer only.
+func TestRenderUsageReportMarkdown_EmptyReportKeepsTrailingSections(t *testing.T) {
+	report := testReport(t, true, []tenantScan{{Tenant: "main"}})
+
+	var buf bytes.Buffer
+	if err := renderUsageReportMarkdown(report, &buf, false); err != nil {
+		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"## Plugin families",
+		"No plugin usage found.",
+		"## Scan notes",
+		"## Task types",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the empty report is missing %q", want)
+		}
 	}
 }
 

@@ -812,6 +812,8 @@ func renderUsageReportMarkdown(report *usageReport, w io.Writer, detailed bool) 
 	renderPluginDefaultsSection(out, report)
 	renderDeprecatedTaskTypesSection(out, report)
 	renderAffectedFlowsSection(out, report, detailed)
+	renderTriggerTypesSection(out, report)
+	renderPluginFamiliesSection(out, report)
 	renderNotesSection(out, report)
 	renderTaskTypesSection(out, report)
 
@@ -967,16 +969,26 @@ func renderInventorySection(out *markdownWriter, report *usageReport, detailed b
 		}
 		out.printf("\n")
 	}
+}
 
-	renderCountTable(out, "###", "Trigger types", "Trigger type", totals.TriggerTypeCount, totals.TriggerTypeFlowCount)
+// renderTriggerTypesSection renders the trigger-type inventory. Like the task
+// types, it is a standalone section rather than part of ## Inventory.
+func renderTriggerTypesSection(out *markdownWriter, report *usageReport) {
+	renderCountTable(out, "##", "Trigger types", "Trigger type", report.Totals.TriggerTypeCount, report.Totals.TriggerTypeFlowCount)
+}
 
-	out.printf("### Plugin families\n\n")
-	if len(totals.PluginFamilyCount) == 0 {
+// renderPluginFamiliesSection renders the plugin-family roll-up.
+func renderPluginFamiliesSection(out *markdownWriter, report *usageReport) {
+	families := report.Totals.PluginFamilyCount
+
+	out.printf("## Plugin families\n\n")
+	if len(families) == 0 {
 		out.printf("No plugin usage found.\n\n")
 		return
 	}
+
 	out.printf("| Plugin family | Uses |\n| --- | ---: |\n")
-	for _, entry := range sortedCounts(totals.PluginFamilyCount) {
+	for _, entry := range sortedCounts(families) {
 		out.printf("| `%s` | %d |\n", entry.Name, entry.Count)
 	}
 	out.printf("\n")
