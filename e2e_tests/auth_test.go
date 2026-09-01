@@ -15,7 +15,10 @@ func TestSimpleCmd_WrongServer(t *testing.T) {
 }
 func TestSimpleCmd_WronglyAuthenticated(t *testing.T) {
 	_, stderr, _ := RunCliCmd(t, "namespaces", "list", "company", "--host", "http://localhost:9801", "--username", "wrongusername", "--password", "wrongpassword")
-	require.Contains(t, stderr, "Error: API error: Unauthorized")
+	// Pre-2.0 servers answer {"message":"Unauthorized"}; 2.0 answers an RFC 7807
+	// problem document whose title is "Authentication required". Both must surface
+	// as a formatted API error rather than a raw status line.
+	require.Regexp(t, `Error: API error: (Unauthorized|Authentication required)`, stderr)
 }
 
 func TestSimpleCmd_Authenticated(t *testing.T) {

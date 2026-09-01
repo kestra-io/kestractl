@@ -356,3 +356,27 @@ func TestKVListInheritedCommand_ClientError(t *testing.T) {
 		t.Fatalf("expected client error, got: %v", err)
 	}
 }
+
+func TestTryParseKVTypedValueFromError_RejectsProblemDocument(t *testing.T) {
+	// Kestra 2.0 answers a missing key with an RFC 7807 problem document. Its
+	// "type" is a problem-category URL, not a KV value type: reading it as one
+	// turned a 404 into a rendered record and a zero exit code.
+	body := []byte(`{"type":"https://kestra.io/docs/api-reference/problems/not-found","title":"Resource not found","status":404,"detail":"No value found for key 'k' in namespace 'system'"}`)
+	err := &kestra.GenericOpenAPIError{}
+	setGenericOpenAPIErrorBody(err, body)
+
+	if got := tryParseKVTypedValueFromError(err); got != nil {
+		t.Fatalf("expected a problem document to be rejected, got %#v", got)
+	}
+}
+
+func TestTryParseKVTypedValueFromError_StillRecoversRealValue(t *testing.T) {
+	body := []byte(`{"type":"STRING","value":"hello"}`)
+	err := &kestra.GenericOpenAPIError{}
+	setGenericOpenAPIErrorBody(err, body)
+
+	got := tryParseKVTypedValueFromError(err)
+	if got == nil || got.Type != "STRING" || got.Value != "hello" {
+		t.Fatalf("expected the KV payload to still be recovered, got %#v", got)
+	}
+}
