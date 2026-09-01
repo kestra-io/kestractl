@@ -485,6 +485,67 @@ tasks:
 			unknown: 1,
 		},
 		{
+			name: "quoted arguments are not scanned as pebble",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ outputs.q | jq('.[] | select(.name) | map(.id) | sort_by(.x)') }}"
+`,
+			want:        map[string]int64{},
+			wantFilters: map[string]int64{"jq": 1},
+		},
+		{
+			name: "prose inside a quoted argument counts nothing",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ inputs.note ?? \"managed fields (see docs)\" }}"
+`,
+			want: map[string]int64{},
+		},
+		{
+			name: "a call needs its parenthesis attached",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ now() }} {{ version (2) }}"
+`,
+			want: map[string]int64{"now": 1},
+		},
+		{
+			name: "language keywords are never calls",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{% if(true) %}{{ (a) and(b) or not(c) }}{% endif %}"
+`,
+			want: map[string]int64{},
+		},
+		{
+			name: "a function keeps its name when its argument is stripped",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ secret('MY_KEY') }}"
+`,
+			want: map[string]int64{"secret": 1},
+		},
+		{
 			name: "engine-registered functions are recognized",
 			source: `
 id: f
@@ -1303,7 +1364,7 @@ tasks:
     tasks:
       - id: log
         type: io.kestra.plugin.core.log.Log
-        message: "SENTINEL-SECRET-VALUE {{ sentinelSecretMacro(now()) }} {{ x | sentinelSecretFilter('y') }}"
+        message: "SENTINEL-SECRET-VALUE {{ sentinelSecretMacro(now()) }} {{ x | sentinelSecretFilter('y') }} {{ z | jq('.sentinelJqName(w)') }}"
 pluginDefaults:
   - type: io.kestra.plugin.core.log.Log
     values:
@@ -1336,13 +1397,18 @@ func TestUsageReport_DoesNotLeakFlowValues(t *testing.T) {
 
 			// An undocumented function name may be a customer macro: it is
 			// counted, never named.
-			for _, name := range []string{"sentinelSecretMacro", "sentinelSecretFilter"} {
+			for _, name := range []string{"sentinelSecretMacro", "sentinelSecretFilter", "sentinelJqName"} {
 				if strings.Contains(markdown.String(), name) || strings.Contains(string(data), name) {
 					t.Errorf("the report leaked the unrecognized Pebble name %q", name)
 				}
 			}
+			// The jq program is a quoted argument: it is stripped before the
+			// scan, so it inflates neither bucket.
 			if report.Totals.PebbleUnknownFilterCount != 1 {
 				t.Errorf("unknown pebble filters: got %d, want 1", report.Totals.PebbleUnknownFilterCount)
+			}
+			if report.Totals.PebbleFilterCount["jq"] != 1 {
+				t.Errorf("expected the jq filter itself to be counted, got %v", report.Totals.PebbleFilterCount)
 			}
 			if report.Totals.PebbleUnknownFunctionCount != 1 {
 				t.Errorf("unknown pebble functions: got %d, want 1", report.Totals.PebbleUnknownFunctionCount)

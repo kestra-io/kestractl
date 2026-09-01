@@ -282,10 +282,22 @@ var pebbleExpressionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)\{%(.*?)%\}`),
 }
 
-// pebbleCallPattern matches an identifier used as a function call. The
-// preceding character is checked separately: Go's regexp has no lookbehind,
-// and consuming the boundary would hide the inner call of render(kv('K')).
-var pebbleCallPattern = regexp.MustCompile(`([A-Za-z_]\w*)\s*\(`)
+// pebbleCallPattern matches an identifier used as a function call. The `(`
+// must follow the name immediately: expressions are written `now()` and
+// `secret('X')`, while prose inside a block ("the managed fields (see docs)")
+// would otherwise match. The preceding character is checked separately, since
+// Go's regexp has no lookbehind and consuming the boundary would hide the
+// inner call of render(kv('K')).
+var pebbleCallPattern = regexp.MustCompile(`([A-Za-z_]\w*)\(`)
+
+// pebbleKeywords are the Pebble language keywords. They are never a function
+// or a filter, whatever punctuation follows them.
+var pebbleKeywords = map[string]bool{
+	"if": true, "elseif": true, "else": true, "endif": true,
+	"for": true, "endfor": true,
+	"and": true, "or": true, "not": true, "is": true, "in": true,
+	"true": true, "false": true, "null": true,
+}
 
 // pebbleBareFilterPattern catches the filters used without arguments, such as
 // `| upper` or `| trim`, which the call pattern cannot see.
@@ -297,9 +309,44 @@ var pebbleBareFilterPattern = regexp.MustCompile(`\|\s*([A-Za-z_]\w*)`)
 func (a *flowAnalysis) collectPebbleFunctions(raw string) {
 	for _, pattern := range pebbleExpressionPatterns {
 		for _, block := range pattern.FindAllStringSubmatch(raw, -1) {
-			a.countPebbleCalls(block[1])
+			a.countPebbleCalls(stripQuotedLiterals(block[1]))
 		}
 	}
+}
+
+// stripQuotedLiterals blanks out the quoted string arguments of an expression
+// before it is scanned. A jq program such as `jq('.[] | select(.a)')` is not
+// Pebble, and reading it as Pebble invented filters and functions that do not
+// exist. It also keeps the scanner away from the one place customer data
+// actually lives inside an expression. Each literal becomes a single space so
+// the surrounding boundaries stay intact; an unterminated quote swallows the
+// rest of the block.
+func stripQuotedLiterals(block string) string {
+	var stripped strings.Builder
+	stripped.Grow(len(block))
+
+	for index := 0; index < len(block); {
+		quote := block[index]
+		if quote != '\'' && quote != '"' {
+			stripped.WriteByte(quote)
+			index++
+			continue
+		}
+
+		stripped.WriteByte(' ')
+		for index++; index < len(block); index++ {
+			if block[index] == '\\' {
+				index++
+				continue
+			}
+			if block[index] == quote {
+				index++
+				break
+			}
+		}
+	}
+
+	return stripped.String()
 }
 
 func (a *flowAnalysis) countPebbleCalls(block string) {
@@ -318,6 +365,9 @@ func (a *flowAnalysis) countPebbleCalls(block string) {
 		}
 
 		counted[start] = true
+		if pebbleKeywords[strings.ToLower(block[start:end])] {
+			continue
+		}
 		if isFilterPosition(block, start) {
 			a.recordPebbleName(block[start:end], pebbleFilters, &a.PebbleFilters, &a.PebbleUnknownFilters)
 		} else {
@@ -332,6 +382,9 @@ func (a *flowAnalysis) countPebbleCalls(block string) {
 		}
 		// `a || b` is a boolean or, not a filter.
 		if pipe > 0 && block[pipe-1] == '|' {
+			continue
+		}
+		if pebbleKeywords[strings.ToLower(block[start:end])] {
 			continue
 		}
 		a.recordPebbleName(block[start:end], pebbleFilters, &a.PebbleFilters, &a.PebbleUnknownFilters)
