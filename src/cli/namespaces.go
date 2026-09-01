@@ -297,12 +297,19 @@ func runNamespacesCreate(client *Client, id, description string, variables map[s
 		"description": created.GetDescription(),
 		"variables":   created.GetVariables(),
 	}
+	if c, ok := created.GetConcurrencyOk(); ok {
+		result["concurrency"] = c
+	}
+	if quotas := created.GetQuotas(); len(quotas) > 0 {
+		result["quotas"] = quotas
+	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "ID\t%s\n", created.GetId())
 		if desc := created.GetDescription(); desc != "" {
 			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
 		}
+		writeConcurrencyAndQuotas(w, created.Concurrency, created.GetQuotas())
 		fmt.Fprintln(w, "\nNamespace created.")
 		return nil
 	})
@@ -448,12 +455,19 @@ func runNamespacesUpdate(client *Client, id, description string, descriptionSet 
 		"description": updated.GetDescription(),
 		"variables":   updated.GetVariables(),
 	}
+	if c, ok := updated.GetConcurrencyOk(); ok {
+		result["concurrency"] = c
+	}
+	if quotas := updated.GetQuotas(); len(quotas) > 0 {
+		result["quotas"] = quotas
+	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "ID\t%s\n", updated.GetId())
 		if desc := updated.GetDescription(); desc != "" {
 			fmt.Fprintf(w, "DESCRIPTION\t%s\n", desc)
 		}
+		writeConcurrencyAndQuotas(w, updated.Concurrency, updated.GetQuotas())
 		fmt.Fprintln(w, "\nNamespace updated.")
 		return nil
 	})

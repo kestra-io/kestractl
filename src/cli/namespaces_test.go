@@ -513,6 +513,10 @@ func TestRunNamespacesCreate_SendsConcurrencyAndQuotas(t *testing.T) {
 	if !ok || len(sentQuotas) != 1 {
 		t.Fatalf("expected quotas in request body, got: %v", gotBody)
 	}
+	out := buf.String()
+	if !strings.Contains(out, "CONCURRENCY") || !strings.Contains(out, "QUOTAS") {
+		t.Fatalf("expected concurrency and quotas echoed in create output, got:\n%s", out)
+	}
 }
 
 func TestRunNamespacesUpdate_ConcurrencyOnlyPreservesVariables(t *testing.T) {
