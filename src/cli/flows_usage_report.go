@@ -88,6 +88,13 @@ func runFlowsUsageReport(client *Client, opts usageReportOptions, renderer *Rend
 	anonymizer := newAnonymizer(opts.Anonymize)
 	report := aggregateReport(scans, anonymizer, time.Now())
 	report.Scope = usageReportScope
+	// The instance version is a nice-to-have header field: read it once, and
+	// note the failure rather than losing the whole report over it.
+	kestraVersion, err := fetchKestraVersion(client)
+	if err != nil {
+		report.Notes = append(report.Notes, "the Kestra server version could not be read: "+err.Error())
+	}
+	report.KestraVersion = kestraVersion
 	if tenantNote != "" {
 		report.Notes = append([]string{tenantNote}, report.Notes...)
 	}
@@ -251,6 +258,21 @@ func fetchTenantDeprecations(client *Client, tenant, namespace string) ([]deprec
 		})
 	}
 	return result, nil
+}
+
+// fetchKestraVersion reads the instance version from the (tenant-independent)
+// configuration endpoint.
+func fetchKestraVersion(client *Client) (string, error) {
+	config, err := client.Kestra.Misc().Configuration(client.Ctx)
+	if err != nil {
+		return "", formatSDKError(err)
+	}
+
+	version, ok := config["version"].(string)
+	if !ok || version == "" {
+		return "", fmt.Errorf("the configuration endpoint returned no version")
+	}
+	return version, nil
 }
 
 // buildUsageReportSearchFilters assembles the filter list for the flow export.

@@ -677,6 +677,7 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 		"| Trigger conditions/preconditions | 3 | 1 |",
 		"io.kestra.plugin.core.trigger.Schedule",
 		"Scope: single-tenant",
+		"- Kestra version: unknown",
 		"The deprecation endpoint could not be read",
 	} {
 		if !strings.Contains(out, want) {

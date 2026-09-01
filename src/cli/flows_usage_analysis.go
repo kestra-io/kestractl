@@ -33,6 +33,7 @@ const maxWalkDepth = 64
 type usageReport struct {
 	GeneratedAt      string           `json:"generated_at"`
 	KestractlVersion string           `json:"kestractl_version"`
+	KestraVersion    string           `json:"kestra_version"`
 	Anonymized       bool             `json:"anonymized"`
 	Scope            string           `json:"scope"`
 	Totals           usageTotals      `json:"totals"`
@@ -784,6 +785,11 @@ func renderUsageReportMarkdown(report *usageReport, w io.Writer) error {
 	out.printf("# Kestra usage report\n\n")
 	out.printf("- Generated at: %s\n", report.GeneratedAt)
 	out.printf("- kestractl version: %s\n", report.KestractlVersion)
+	kestraVersion := report.KestraVersion
+	if kestraVersion == "" {
+		kestraVersion = "unknown"
+	}
+	out.printf("- Kestra version: %s\n", kestraVersion)
 	out.printf("- Scope: %s\n", report.Scope)
 	out.printf("- Tenants scanned: %d\n", report.Totals.TenantsScanned)
 	if report.Anonymized {

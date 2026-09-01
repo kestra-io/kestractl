@@ -51,6 +51,7 @@ type usageReportServer struct {
 	deprecated http.HandlerFunc
 	search     http.HandlerFunc
 	flow       http.HandlerFunc
+	configs    http.HandlerFunc
 }
 
 func newUsageReportServer(t *testing.T, routes usageReportServer) *httptest.Server {
@@ -65,6 +66,8 @@ func newUsageReportServer(t *testing.T, routes usageReportServer) *httptest.Serv
 			handler = routes.deprecated
 		case strings.HasSuffix(r.URL.Path, "/flows/search"):
 			handler = routes.search
+		case strings.HasSuffix(r.URL.Path, "/configs"):
+			handler = routes.configs
 		default:
 			handler = routes.flow
 		}
@@ -146,6 +149,7 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 		"prod.reports/nightly.yml":   usageReportFlowB,
 	})
 	server := newUsageReportServer(t, usageReportServer{
+		configs:    jsonHandler(http.StatusOK, `{"uuid":"abc","version":"1.3.2","edition":"EE"}`),
 		export:     zipHandler(archive),
 		deprecated: jsonHandler(http.StatusOK, `[{"namespace":"prod.orders","flowId":"order-sync","revision":2,"deprecatedTasks":[{"taskId":"each","taskType":"io.kestra.plugin.core.flow.ForEach","replacement":"io.kestra.plugin.core.flow.ForEachItem"}]}]`),
 	})
@@ -164,6 +168,7 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 		"| Flows | 2 |",
 		"Server-reported deprecations",
 		"io.kestra.plugin.core.flow.Subflow",
+		"- Kestra version: 1.3.2",
 		"## Deprecated task types (server-reported)",
 		"| `io.kestra.plugin.core.flow.ForEach` | `io.kestra.plugin.core.flow.ForEachItem` | 1 |",
 	} {
@@ -184,6 +189,7 @@ func TestRunFlowsUsageReport_HappyPathMarkdown(t *testing.T) {
 func TestRunFlowsUsageReport_JSONAndAnonymizeOff(t *testing.T) {
 	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
 	server := newUsageReportServer(t, usageReportServer{
+		configs:    jsonHandler(http.StatusOK, `{"version":"1.3.2"}`),
 		export:     zipHandler(archive),
 		deprecated: jsonHandler(http.StatusOK, `[]`),
 	})
@@ -200,6 +206,9 @@ func TestRunFlowsUsageReport_JSONAndAnonymizeOff(t *testing.T) {
 	}
 	if report.Anonymized {
 		t.Error("expected the report to be flagged as not anonymized")
+	}
+	if report.KestraVersion != "1.3.2" {
+		t.Errorf("kestra version: got %q, want \"1.3.2\"", report.KestraVersion)
 	}
 	if report.Scope != usageReportScope || report.Totals.Count != 1 {
 		t.Fatalf("unexpected report: %+v", report)
@@ -319,6 +328,33 @@ func TestRunFlowsUsageReport_DeprecationEndpointUnavailable(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(report.Notes, "\n"), "deprecation check is unavailable") {
 		t.Errorf("expected a deprecation note, got %v", report.Notes)
+	}
+}
+
+func TestRunFlowsUsageReport_ServerVersionUnavailable(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:    jsonHandler(http.StatusNotFound, `{"message":"not found"}`),
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newTableRenderer(&out))
+	if err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	markdown := out.String()
+	if !strings.Contains(markdown, "- Kestra version: unknown") {
+		t.Error("expected the Kestra version to render as unknown")
+	}
+	if !strings.Contains(markdown, "the Kestra server version could not be read") {
+		t.Error("expected a scan note about the unreadable server version")
+	}
+	// The rest of the report is unaffected.
+	if !strings.Contains(markdown, "| Flows | 1 |") {
+		t.Error("expected the report to be produced anyway")
 	}
 }
 
