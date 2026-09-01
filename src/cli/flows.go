@@ -56,6 +56,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsEnableCommand())
 	cmd.AddCommand(newFlowsDisableCommand())
 	cmd.AddCommand(newFlowsExportCommand())
+	cmd.AddCommand(newFlowsUsageReportCommand())
 	cmd.AddCommand(newFlowsImportCommand())
 	cmd.AddCommand(newFlowsDeleteCommand())
 	cmd.AddCommand(newFlowsSearchCommand())
@@ -551,12 +552,18 @@ func runFlowsList(client *Client, namespace string, renderer *Renderer) error {
 }
 
 func listAllFlows(client *Client) ([]parsedFlow, error) {
+	return listAllFlowsForTenant(client, client.Tenant)
+}
+
+// listAllFlowsForTenant pages through every flow of the given tenant. Commands
+// that scan more than the configured tenant call it directly.
+func listAllFlowsForTenant(client *Client, tenant string) ([]parsedFlow, error) {
 	const pageSize int32 = 1000
 	page := int32(1)
 	results := make([]parsedFlow, 0)
 
 	for {
-		resp, _, err := client.API.FlowsAPI.SearchFlows(client.Ctx, client.Tenant).
+		resp, _, err := client.API.FlowsAPI.SearchFlows(client.Ctx, tenant).
 			Page(page).
 			Size(pageSize).
 			Execute()
