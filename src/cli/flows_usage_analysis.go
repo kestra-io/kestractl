@@ -804,12 +804,16 @@ func renderUsageReportMarkdown(report *usageReport, w io.Writer, detailed bool) 
 	out.printf("\nThis report is built from flow sources only: no execution, log or database data is read. ")
 	out.printf("Namespace-level plugin defaults are not part of a flow source and are therefore not visible here.\n\n")
 
+	// The inventory comes first — it answers "how big is this instance?" —
+	// then the migration signals and their detail. The task-type table is long
+	// enough to bury everything after it, so it closes the report.
+	renderInventorySection(out, report, detailed)
 	renderSignalsSection(out, report)
 	renderPluginDefaultsSection(out, report)
 	renderDeprecatedTaskTypesSection(out, report)
 	renderAffectedFlowsSection(out, report, detailed)
-	renderInventorySection(out, report, detailed)
 	renderNotesSection(out, report)
+	renderTaskTypesSection(out, report)
 
 	return out.err
 }
@@ -964,8 +968,7 @@ func renderInventorySection(out *markdownWriter, report *usageReport, detailed b
 		out.printf("\n")
 	}
 
-	renderCountTable(out, "Task types", "Task type", totals.TaskTypeCount, totals.TaskTypeFlowCount)
-	renderCountTable(out, "Trigger types", "Trigger type", totals.TriggerTypeCount, totals.TriggerTypeFlowCount)
+	renderCountTable(out, "###", "Trigger types", "Trigger type", totals.TriggerTypeCount, totals.TriggerTypeFlowCount)
 
 	out.printf("### Plugin families\n\n")
 	if len(totals.PluginFamilyCount) == 0 {
@@ -979,9 +982,17 @@ func renderInventorySection(out *markdownWriter, report *usageReport, detailed b
 	out.printf("\n")
 }
 
-// renderCountTable renders one "type → uses / flows" inventory table.
-func renderCountTable(out *markdownWriter, title, column string, counts, flowCounts map[string]int64) {
-	out.printf("### %s\n\n", title)
+// renderTaskTypesSection closes the report with the task-type inventory. It
+// lives at the end rather than inside ## Inventory because it is by far the
+// longest table, and it is never gated by --detailed.
+func renderTaskTypesSection(out *markdownWriter, report *usageReport) {
+	renderCountTable(out, "##", "Task types", "Task type", report.Totals.TaskTypeCount, report.Totals.TaskTypeFlowCount)
+}
+
+// renderCountTable renders one "type → uses / flows" inventory table under a
+// heading of the given level.
+func renderCountTable(out *markdownWriter, level, title, column string, counts, flowCounts map[string]int64) {
+	out.printf("%s %s\n\n", level, title)
 	if len(counts) == 0 {
 		out.printf("None found.\n\n")
 		return

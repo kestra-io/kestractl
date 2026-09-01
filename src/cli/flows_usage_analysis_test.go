@@ -672,6 +672,7 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 		"## Affected flows",
 		"## Inventory",
 		"## Scan notes",
+		"## Task types",
 		"| Task ForEachItem | 1 | 1 |",
 		"| Task ForEach | 0 | 0 |",
 		"| Trigger conditions/preconditions | 3 | 1 |",
@@ -737,6 +738,46 @@ func TestRenderUsageReportMarkdown_ServerDeprecations(t *testing.T) {
 	}
 }
 
+func TestRenderUsageReportMarkdown_SectionOrder(t *testing.T) {
+	analysis := mustAnalyze(t, nestedFlowSource)
+	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
+
+	var buf bytes.Buffer
+	if err := renderUsageReportMarkdown(report, &buf, true); err != nil {
+		t.Fatalf("renderUsageReportMarkdown returned an error: %v", err)
+	}
+	out := buf.String()
+
+	// The inventory opens the report and the long task-type table closes it.
+	sections := []string{
+		"## Inventory",
+		"## Migration signals",
+		"## pluginDefaults detail",
+		"## Affected flows",
+		"## Scan notes",
+		"## Task types",
+	}
+	previous := -1
+	for _, section := range sections {
+		index := strings.Index(out, section)
+		if index < 0 {
+			t.Fatalf("the report is missing %q", section)
+		}
+		if index <= previous {
+			t.Errorf("%q is out of order (index %d, previous section ended at %d)", section, index, previous)
+		}
+		previous = index
+	}
+
+	// Trigger types and plugin families stay inside the inventory section.
+	if strings.Index(out, "### Trigger types") > strings.Index(out, "## Migration signals") {
+		t.Error("### Trigger types must stay inside ## Inventory")
+	}
+	if strings.Index(out, "### Plugin families") > strings.Index(out, "## Migration signals") {
+		t.Error("### Plugin families must stay inside ## Inventory")
+	}
+}
+
 func TestRenderUsageReportMarkdown_DetailedGating(t *testing.T) {
 	analysis := mustAnalyze(t, nestedFlowSource)
 	report := testReport(t, true, []tenantScan{{Tenant: "main", Flows: []flowAnalysis{analysis}}})
@@ -760,7 +801,7 @@ func TestRenderUsageReportMarkdown_DetailedGating(t *testing.T) {
 		t.Error("expected the summary report to point at --detailed")
 	}
 	// Everything else is unchanged by the flag.
-	for _, want := range []string{"## Migration signals", "| Task ForEachItem | 1 | 1 |", "| Namespaces | 1 |", "### Task types"} {
+	for _, want := range []string{"## Migration signals", "| Task ForEachItem | 1 | 1 |", "| Namespaces | 1 |", "## Task types"} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("the summary report is missing %q", want)
 		}
