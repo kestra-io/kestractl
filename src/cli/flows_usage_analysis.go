@@ -220,34 +220,45 @@ const fsLocalDeleteType = "io.kestra.plugin.fs.local.Delete"
 // flows that mention `json (` in prose.
 var pebbleJSONPattern = regexp.MustCompile(`(^|[^\w.])json\s*\(`)
 
-// pebbleFunctionNames is the function reference of the Kestra docs. Only these
-// names are ever recorded: anything else a flow calls could be a customer
-// macro, and is counted anonymously instead.
+// pebbleFunctionNames is the function set the Kestra 1.3 engine registers.
+// Source of truth, to refresh when the engine changes:
+//   - kestra, releases/v1.3.x: core/src/main/java/io/kestra/core/runners/pebble/Extension.java
+//   - kestra-ee, releases/v1.3.x: core-ee/src/main/java/io/kestra/ee/core/runners/pebble/Extensions.java
+//   - the bundled pebble 4.1.2 library: CoreExtension
+//
+// Only these names are ever recorded: anything else a flow calls could be a
+// customer macro, and is counted anonymously instead.
 var pebbleFunctionNames = []string{
-	"render", "renderOnce", "fetchContext", "printContext", "block", "parent", "macro", "i18n",
-	"secret", "credential", "read", "fileURI", "kv", "encrypt", "decrypt",
-	"fromJson", "fromIon", "yaml", "json",
-	"errorLogs", "currentEachOutput", "tasksWithState", "iterationOutput", "parentOutput", "appLink",
-	"now", "max", "min", "range", "uuid", "id", "ksuid", "nanoId", "randomInt", "randomPort",
-	"http", "fileSize", "fileExists", "isFileEmpty",
-	"isWeekend", "isPublicHoliday", "isDayWeekInMonth",
-	"dayOfWeek", "dayOfMonth", "monthOfYear", "hourOfDay",
+	// kestra core
+	"now", "json", "fromJson", "currentEachOutput", "secret", "kv", "read", "fileURI",
+	"render", "renderOnce", "encrypt", "decrypt", "yaml", "printContext", "fetchContext",
+	"uuid", "id", "ksuid", "fromIon", "fileSize", "errorLogs", "randomInt", "randomPort",
+	"fileExists", "isFileEmpty", "nanoId", "tasksWithState", "http", "subflow",
+	// kestra ee
+	"credential", "appLink", "assets",
+	// pebble library
+	"max", "min", "range", "i18n",
 }
 
-// pebbleFilterNames is the filter reference of the Kestra docs. Filters are
-// allowlisted separately from functions: they are invoked in a different
-// position and a name can legitimately exist in both sets (yaml, toJson).
+// pebbleFilterNames is the filter set the Kestra 1.3 engine registers, from
+// the same sources as pebbleFunctionNames (kestra Extension.java, kestra-ee
+// Extensions.java, pebble 4.1.2 CoreExtension and its escaper extension).
+// Filters are allowlisted separately from functions: they are invoked in a
+// different position and a name can legitimately exist in both sets (json,
+// yaml, toJson). Matching is case-insensitive, so pebble's all-lowercase
+// registrations still resolve to the casing the Kestra docs use.
 var pebbleFilterNames = []string{
-	"toJson", "toIon", "jq", "abs", "number", "className", "numberFormat",
-	"first", "last", "length", "join", "split", "sort", "rsort", "reverse", "chunk", "distinct",
-	"slice", "merge", "flatten", "keys", "values",
-	"lower", "upper", "title", "capitalize", "trim", "abbreviate", "replace",
-	"substringBefore", "substringAfter", "substringBeforeLast", "substringAfterLast", "slugify",
-	"default", "startsWith", "endsWith",
-	"base64encode", "base64decode", "urlencode", "urldecode", "sha1", "sha512", "md5",
-	"string", "escapeChar",
-	"date", "dateAdd", "timestamp", "timestampMilli", "timestampMicro", "timestampNano",
-	"yaml", "indent", "nindent",
+	// kestra core
+	"chunk", "className", "date", "dateAdd", "timestamp", "timestampMicro", "timestampMilli",
+	"timestampNano", "jq", "escapeChar", "json", "toJson", "distinct", "keys", "number",
+	"urldecode", "slugify", "substringBefore", "substringBeforeLast", "substringAfter",
+	"substringAfterLast", "flatten", "indent", "nindent", "yaml", "startsWith", "endsWith",
+	"values", "toIon", "sha1", "sha512", "md5", "string",
+	// pebble library
+	"abbreviate", "abs", "capitalize", "default", "first", "format", "join", "last", "lower",
+	"numberFormat", "slice", "sort", "rsort", "reverse", "title", "trim", "upper", "urlencode",
+	"length", "replace", "merge", "split", "base64encode", "base64decode", "sha256", "nl2br",
+	"escape", "raw",
 }
 
 // pebbleFilters indexes the filter allowlist by lowercase name.

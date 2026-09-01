@@ -485,6 +485,31 @@ tasks:
 			unknown: 1,
 		},
 		{
+			name: "engine-registered functions are recognized",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ subflow('ns', 'flow') }} {{ assets('id') }}"
+`,
+			want: map[string]int64{"subflow": 1, "assets": 1},
+		},
+		{
+			name: "the deprecated json filter and the raw filter are recognized",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ inputs.payload | json }} {{ inputs.text | raw }}"
+`,
+			want:        map[string]int64{},
+			wantFilters: map[string]int64{"json": 1, "raw": 1},
+		},
+		{
 			name: "filters with arguments are filters, not unknown functions",
 			source: `
 id: f
