@@ -220,29 +220,40 @@ const fsLocalDeleteType = "io.kestra.plugin.fs.local.Delete"
 // flows that mention `json (` in prose.
 var pebbleJSONPattern = regexp.MustCompile(`(^|[^\w.])json\s*\(`)
 
-// pebbleFunctionNames is the function set the Kestra 1.3 engine registers.
-// Source of truth, to refresh when the engine changes:
-//   - kestra, releases/v1.3.x: core/src/main/java/io/kestra/core/runners/pebble/Extension.java
-//   - kestra-ee, releases/v1.3.x: core-ee/src/main/java/io/kestra/ee/core/runners/pebble/Extensions.java
+// pebbleFunctionNames is the union of the function sets the Kestra 1.3 and 2.0
+// engines register. A usage report is a migration tool: it reads sources
+// written for either version, so a name is kept as soon as one of them knows
+// it — the 1.3-only names are precisely the migration signals.
+//
+// Source of truth, to refresh when an engine changes:
+//   - kestra, releases/v1.3.x and develop: core/src/main/java/io/kestra/core/runners/pebble/Extension.java
+//   - kestra-ee, releases/v1.3.x and develop: core-ee/src/main/java/io/kestra/ee/core/runners/pebble/Extensions.java
 //   - the bundled pebble 4.1.2 library: CoreExtension
 //
 // Only these names are ever recorded: anything else a flow calls could be a
 // customer macro, and is counted anonymously instead.
 var pebbleFunctionNames = []string{
-	// kestra core
-	"now", "json", "fromJson", "currentEachOutput", "secret", "kv", "read", "fileURI",
+	// kestra core, both versions
+	"now", "fromJson", "secret", "kv", "read", "fileURI",
 	"render", "renderOnce", "encrypt", "decrypt", "yaml", "printContext", "fetchContext",
 	"uuid", "id", "ksuid", "fromIon", "fileSize", "errorLogs", "randomInt", "randomPort",
 	"fileExists", "isFileEmpty", "nanoId", "tasksWithState", "http", "subflow",
-	// kestra ee
+	// kestra core, 1.3 only (removed in 2.0) — these are migration signals
+	"json", "currentEachOutput",
+	// kestra core, 2.0 only
+	"env", "loopOutputs", "isWeekend", "isPublicHoliday", "isDayWeekInMonth", "isLastWorkingDay",
+	"dayOfWeek", "dayOfMonth", "monthOfYear", "hourOfDay",
+	// kestra ee, both versions
 	"credential", "appLink", "assets",
-	// pebble library
+	// pebble library (in 2.0 "range" is Kestra's own BoundedRangeFunction, same name)
 	"max", "min", "range", "i18n",
 }
 
-// pebbleFilterNames is the filter set the Kestra 1.3 engine registers, from
-// the same sources as pebbleFunctionNames (kestra Extension.java, kestra-ee
-// Extensions.java, pebble 4.1.2 CoreExtension and its escaper extension).
+// pebbleFilterNames is the union of the 1.3 and 2.0 filter sets, from the same
+// sources as pebbleFunctionNames (kestra Extension.java, kestra-ee
+// Extensions.java, pebble 4.1.2 CoreExtension and its escaper extension). The
+// two versions register the same filters except for `json`, which 2.0 removes
+// and which is therefore a migration signal worth counting.
 // Filters are allowlisted separately from functions: they are invoked in a
 // different position and a name can legitimately exist in both sets (json,
 // yaml, toJson). Matching is case-insensitive, so pebble's all-lowercase
@@ -250,10 +261,12 @@ var pebbleFunctionNames = []string{
 var pebbleFilterNames = []string{
 	// kestra core
 	"chunk", "className", "date", "dateAdd", "timestamp", "timestampMicro", "timestampMilli",
-	"timestampNano", "jq", "escapeChar", "json", "toJson", "distinct", "keys", "number",
+	"timestampNano", "jq", "escapeChar", "toJson", "distinct", "keys", "number",
 	"urldecode", "slugify", "substringBefore", "substringBeforeLast", "substringAfter",
 	"substringAfterLast", "flatten", "indent", "nindent", "yaml", "startsWith", "endsWith",
 	"values", "toIon", "sha1", "sha512", "md5", "string",
+	// kestra core, 1.3 only (removed in 2.0) — a migration signal
+	"json",
 	// pebble library
 	"abbreviate", "abs", "capitalize", "default", "first", "format", "join", "last", "lower",
 	"numberFormat", "slice", "sort", "rsort", "reverse", "title", "trim", "upper", "urlencode",
