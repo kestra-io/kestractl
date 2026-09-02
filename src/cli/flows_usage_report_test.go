@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
+	"github.com/spf13/viper"
 )
 
 const usageReportFlowA = `
@@ -52,6 +54,11 @@ type usageReportServer struct {
 	search     http.HandlerFunc
 	flow       http.HandlerFunc
 	configs    http.HandlerFunc
+	tenants    http.HandlerFunc
+
+	// tenantsHits counts the requests that reached the tenant-enumeration
+	// endpoint, so a test can assert it was never called.
+	tenantsHits *int
 }
 
 func newUsageReportServer(t *testing.T, routes usageReportServer) *httptest.Server {
@@ -68,6 +75,11 @@ func newUsageReportServer(t *testing.T, routes usageReportServer) *httptest.Serv
 			handler = routes.search
 		case strings.HasSuffix(r.URL.Path, "/configs"):
 			handler = routes.configs
+		case strings.HasSuffix(r.URL.Path, "/tenants/search"):
+			if routes.tenantsHits != nil {
+				*routes.tenantsHits++
+			}
+			handler = routes.tenants
 		default:
 			handler = routes.flow
 		}
@@ -220,7 +232,7 @@ func TestRunFlowsUsageReport_JSONAndAnonymizeOff(t *testing.T) {
 	if report.KestraVersion != "1.3.2" {
 		t.Errorf("kestra version: got %q, want \"1.3.2\"", report.KestraVersion)
 	}
-	if report.Scope != usageReportScope || report.Totals.Count != 1 {
+	if report.Scope != scopeSingleTenant || report.Totals.Count != 1 {
 		t.Fatalf("unexpected report: %+v", report)
 	}
 	if len(report.Tenants) != 1 || report.Tenants[0].Tenant != "main" {
@@ -405,14 +417,239 @@ func TestRunFlowsUsageReport_ServerVersionUnavailable(t *testing.T) {
 	}
 }
 
-func TestUsageReportTenants_SingleTenantOnV1(t *testing.T) {
-	tenants, note := usageReportTenants(&Client{Tenant: "acme"})
+func TestUsageReportTenants_ExplicitTenantSkipsEnumeration(t *testing.T) {
+	tenants, scope, note := usageReportTenants(&Client{Tenant: "acme"}, true)
 
 	if len(tenants) != 1 || tenants[0] != "acme" {
 		t.Errorf("unexpected tenants: %v", tenants)
 	}
+	if scope != scopeSingleTenant {
+		t.Errorf("scope: got %q, want %q", scope, scopeSingleTenant)
+	}
 	if note != "" {
 		t.Errorf("unexpected note: %q", note)
+	}
+}
+
+// tenantsPage renders one page of the tenant search response.
+func tenantsPage(total int, ids ...string) string {
+	results := make([]string, 0, len(ids))
+	for _, id := range ids {
+		results = append(results, `{"id":"`+id+`","name":"`+id+`","deleted":false}`)
+	}
+	return `{"results":[` + strings.Join(results, ",") + `],"total":` + strconv.Itoa(total) + `}`
+}
+
+func TestRunFlowsUsageReport_AllTenants(t *testing.T) {
+	archives := map[string][]byte{
+		"alpha": buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA}),
+		"beta":  buildFlowZip(t, map[string]string{"prod.reports/nightly.yml": usageReportFlowB}),
+	}
+	server := newUsageReportServer(t, usageReportServer{
+		configs: jsonHandler(http.StatusOK, `{"version":"2.0.0"}`),
+		tenants: jsonHandler(http.StatusOK, tenantsPage(2, "alpha", "beta")),
+		export: func(w http.ResponseWriter, r *http.Request) {
+			for tenant, archive := range archives {
+				if strings.Contains(r.URL.Path, "/"+tenant+"/") {
+					zipHandler(archive)(w, r)
+					return
+				}
+			}
+			w.WriteHeader(http.StatusNotFound)
+		},
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var jsonOut bytes.Buffer
+	client := newTestClient(t, server.URL)
+	if err := runFlowsUsageReport(client, usageReportOptions{Anonymize: false}, newJSONRenderer(&jsonOut)); err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(jsonOut.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Scope != scopeAllTenants {
+		t.Errorf("scope: got %q, want %q", report.Scope, scopeAllTenants)
+	}
+	if report.Totals.TenantsScanned != 2 || report.Totals.Count != 2 {
+		t.Fatalf("unexpected totals: %+v", report.Totals)
+	}
+	if len(report.Tenants) != 2 || report.Tenants[0].Tenant != "alpha" || report.Tenants[1].Tenant != "beta" {
+		t.Fatalf("unexpected tenant breakdown: %+v", report.Tenants)
+	}
+	// Both tenants' flows are aggregated into the shared signal counts.
+	if report.Signals.RemovedTasks["ForEach"].Occurrences != 1 || report.Signals.TriggerConditions.Occurrences != 1 {
+		t.Errorf("unexpected merged signals: %+v", report.Signals)
+	}
+
+	var markdown bytes.Buffer
+	if err := runFlowsUsageReport(client, usageReportOptions{Anonymize: true}, newTableRenderer(&markdown)); err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+	if !strings.Contains(markdown.String(), "- Scope: all-tenants") {
+		t.Error("expected the all-tenants scope in the markdown header")
+	}
+	if !strings.Contains(collapseSpaces(markdown.String()), "| Tenants scanned | 2 |") {
+		t.Error("expected both tenants in the inventory")
+	}
+}
+
+func TestRunFlowsUsageReport_TenantEnumerationForbidden(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:    jsonHandler(http.StatusOK, `{"version":"2.0.0"}`),
+		tenants:    jsonHandler(http.StatusForbidden, `{"message":"insufficient permissions"}`),
+		export:     zipHandler(archive),
+		deprecated: jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	if err := runFlowsUsageReport(newTestClient(t, server.URL), usageReportOptions{Anonymize: true}, newJSONRenderer(&out)); err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if report.Scope != scopeSingleTenant {
+		t.Errorf("scope: got %q, want %q", report.Scope, scopeSingleTenant)
+	}
+	if report.Totals.TenantsScanned != 1 || report.Totals.Count != 1 {
+		t.Fatalf("unexpected totals: %+v", report.Totals)
+	}
+	note := strings.Join(report.Notes, "\n")
+	if !strings.Contains(note, "tenant enumeration failed") || !strings.Contains(note, "covers only the configured tenant") {
+		t.Errorf("expected the enumeration fallback note, got %v", report.Notes)
+	}
+}
+
+func TestRunFlowsUsageReport_ExplicitTenantSkipsEnumeration(t *testing.T) {
+	hits := 0
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:     jsonHandler(http.StatusOK, `{"version":"2.0.0"}`),
+		tenants:     jsonHandler(http.StatusOK, tenantsPage(2, "alpha", "beta")),
+		tenantsHits: &hits,
+		export:      zipHandler(archive),
+		deprecated:  jsonHandler(http.StatusOK, `[]`),
+	})
+
+	var out bytes.Buffer
+	opts := usageReportOptions{Anonymize: false, ExplicitTenant: true}
+	if err := runFlowsUsageReport(newTestClient(t, server.URL), opts, newJSONRenderer(&out)); err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if hits != 0 {
+		t.Errorf("the tenant endpoint was called %d time(s) despite an explicit --tenant", hits)
+	}
+	if report.Scope != scopeSingleTenant || len(report.Tenants) != 1 || report.Tenants[0].Tenant != "main" {
+		t.Fatalf("unexpected report scope or tenants: %q %+v", report.Scope, report.Tenants)
+	}
+	if len(report.Notes) != 0 {
+		t.Errorf("an explicit tenant must not produce a note, got %v", report.Notes)
+	}
+}
+
+func TestRunFlowsUsageReport_ContextTenantStillEnumerates(t *testing.T) {
+	hits := 0
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:     jsonHandler(http.StatusOK, `{"version":"2.0.0"}`),
+		tenants:     jsonHandler(http.StatusOK, tenantsPage(1, "engineering")),
+		tenantsHits: &hits,
+		export:      zipHandler(archive),
+		deprecated:  jsonHandler(http.StatusOK, `[]`),
+	})
+
+	// A tenant coming from the auth context is not a restriction: the client
+	// is pointed at it, yet the report must still enumerate.
+	client := newTestClient(t, server.URL)
+	client.Tenant = "engineering"
+
+	var out bytes.Buffer
+	if err := runFlowsUsageReport(client, usageReportOptions{Anonymize: false}, newJSONRenderer(&out)); err != nil {
+		t.Fatalf("runFlowsUsageReport returned an error: %v", err)
+	}
+
+	var report usageReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("failed to decode the JSON report: %v", err)
+	}
+	if hits == 0 {
+		t.Error("expected the tenant endpoint to be called when no tenant was pinned")
+	}
+	if report.Scope != scopeAllTenants {
+		t.Errorf("scope: got %q, want %q", report.Scope, scopeAllTenants)
+	}
+}
+
+// TestFlowsUsageReportCommand_ExplicitTenantWiring drives the real command so
+// the RunE wiring of ExplicitTenant is covered, not just runFlowsUsageReport.
+func TestFlowsUsageReportCommand_ExplicitTenantWiring(t *testing.T) {
+	t.Setenv("KESTRACTL_TELEMETRY_DISABLED", "true")
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+
+	// The command writes through the global output flag; put it back.
+	previousOutput := globalFlags.Output
+	t.Cleanup(func() { globalFlags.Output = previousOutput })
+
+	hits := 0
+	archive := buildFlowZip(t, map[string]string{"prod.orders/order-sync.yml": usageReportFlowA})
+	server := newUsageReportServer(t, usageReportServer{
+		configs:     jsonHandler(http.StatusOK, `{"version":"2.0.0"}`),
+		tenants:     jsonHandler(http.StatusOK, tenantsPage(2, "alpha", "beta")),
+		tenantsHits: &hits,
+		export:      zipHandler(archive),
+		deprecated:  jsonHandler(http.StatusOK, `[]`),
+	})
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		client := newTestClient(t, server.URL)
+		client.Tenant = "main"
+		return client, nil
+	}
+	t.Cleanup(func() { newClientFunc = original })
+
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		root := NewRootCommand()
+		root.SetOut(&out)
+		root.SetErr(&out)
+		root.SetArgs(args)
+		if err := root.Execute(); err != nil {
+			t.Fatalf("command %v failed: %v", args, err)
+		}
+		return out.String()
+	}
+
+	out := run("flows", "usage-report", "--tenant", "main", "--output", "json")
+	if hits != 0 {
+		t.Errorf("--tenant must skip enumeration, but the endpoint was called %d time(s)", hits)
+	}
+	if !strings.Contains(out, `"scope": "`+scopeSingleTenant+`"`) {
+		t.Errorf("expected the single-tenant scope, got:\n%s", out)
+	}
+
+	// Without the flag the same command enumerates.
+	hits = 0
+	viper.Reset()
+	out = run("flows", "usage-report", "--output", "json")
+	if hits == 0 {
+		t.Error("expected enumeration when --tenant is absent")
+	}
+	if !strings.Contains(out, `"scope": "`+scopeAllTenants+`"`) {
+		t.Errorf("expected the all-tenants scope, got:\n%s", out)
 	}
 }
 

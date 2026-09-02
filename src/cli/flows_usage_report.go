@@ -2,23 +2,34 @@ package cli
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
-	kestra "github.com/kestra-io/client-sdk/go-sdk/kestra_api_client"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
-// usageReportScope labels what the report covers. kestractl v1 talks to a
-// single tenant (the v1 SDK has no tenant listing), so the scope is fixed here
-// and only changes together with usageReportTenants.
-const usageReportScope = "single-tenant"
+// The scopes a report can cover, decided by usageReportTenants.
+const (
+	scopeSingleTenant = "single-tenant"
+	scopeAllTenants   = "all-tenants"
+)
+
+// tenantPageSize is how many tenants one enumeration request asks for.
+const tenantPageSize = 100
 
 // usageReportOptions are the command's selectors.
 type usageReportOptions struct {
 	Namespace string
 	Anonymize bool
 	Detailed  bool
+
+	// ExplicitTenant records that the caller pinned a tenant for this
+	// invocation, which restricts the report to it. A tenant stored in the
+	// auth context is "the tenant I usually work in", not a restriction, so
+	// only the flag and the environment variable count.
+	ExplicitTenant bool
 }
 
 func newFlowsUsageReportCommand() *cobra.Command {
@@ -38,6 +49,9 @@ Pebble 'json()' function and 'fs.local.Delete'.
 Only flow sources are read — no execution, log or database data. Tenant,
 namespace and flow names are replaced by stable hashes unless --anonymize=false
 is given, so the report can be shared as-is.
+
+The report covers every tenant the caller can see; pass --tenant (or set
+KESTRACTL_TENANT) to restrict it to a single one.
 
 The markdown report is a summary; --detailed adds the per-namespace table and
 the affected-flow list of every signal. '--output json' always contains the
@@ -64,6 +78,8 @@ full data, whether or not --detailed is given.`,
 				return err
 			}
 
+			opts.ExplicitTenant = explicitTenantRequested(cmd)
+
 			return runFlowsUsageReport(client, opts, renderer)
 		},
 	}
@@ -76,7 +92,7 @@ full data, whether or not --detailed is given.`,
 }
 
 func runFlowsUsageReport(client *Client, opts usageReportOptions, renderer *Renderer) error {
-	tenants, tenantNote := usageReportTenants(client)
+	tenants, scope, tenantNote := usageReportTenants(client, opts.ExplicitTenant)
 
 	scans := make([]tenantScan, 0, len(tenants))
 	failed := 0
@@ -96,7 +112,7 @@ func runFlowsUsageReport(client *Client, opts usageReportOptions, renderer *Rend
 
 	anonymizer := newAnonymizer(opts.Anonymize)
 	report := aggregateReport(scans, anonymizer, time.Now())
-	report.Scope = usageReportScope
+	report.Scope = scope
 	// The instance version is a nice-to-have header field: read it once, and
 	// note the failure rather than losing the whole report over it.
 	kestraVersion, err := fetchKestraVersion(client)
@@ -114,11 +130,72 @@ func runFlowsUsageReport(client *Client, opts usageReportOptions, renderer *Rend
 	return renderUsageReportMarkdown(report, renderer.Writer(), opts.Detailed)
 }
 
-// usageReportTenants resolves the tenants to scan. It is the single
-// version-specific seam of this command: kestractl v1 targets the configured
-// tenant, while the v2 port enumerates every tenant it can see.
-func usageReportTenants(client *Client) ([]string, string) {
-	return []string{client.Tenant}, ""
+// usageReportTenants resolves the tenants to scan, the scope label for the
+// report header, and an optional note. It is the single version-specific seam
+// of this command: kestractl v1 can only target the configured tenant, while
+// v2 enumerates every tenant the caller can see.
+//
+// A tenant pinned for this invocation is taken as a deliberate restriction and
+// skips enumeration entirely.
+func usageReportTenants(client *Client, explicitTenant bool) ([]string, string, string) {
+	if explicitTenant {
+		return []string{client.Tenant}, scopeSingleTenant, ""
+	}
+
+	tenants, err := listAllTenants(client)
+	if err != nil {
+		// Enumeration needs superadmin rights; a regular user simply gets the
+		// tenant they are configured for, plus a note saying so.
+		return []string{client.Tenant}, scopeSingleTenant,
+			"tenant enumeration failed (" + err.Error() + "); report covers only the configured tenant"
+	}
+	if len(tenants) == 0 {
+		return []string{client.Tenant}, scopeSingleTenant, ""
+	}
+	return tenants, scopeAllTenants, ""
+}
+
+// explicitTenantRequested reports whether this invocation pinned a tenant. Only
+// the --tenant flag and KESTRACTL_TENANT count: the active auth context almost
+// always carries a tenant, and viper cannot tell that default apart from a
+// deliberate restriction (root.go seeds the key with viper.SetDefault, which
+// makes viper.IsSet true for everyone).
+func explicitTenantRequested(cmd *cobra.Command) bool {
+	// Cobra merges the parents' persistent flags into Flags(); the root
+	// lookup is a safeguard for a command run outside the root tree.
+	if cmd.Flags().Changed(FlagTenant) || cmd.Root().PersistentFlags().Changed(FlagTenant) {
+		return true
+	}
+	// Viper binds the environment with the KESTRACTL prefix (root.go:142).
+	return strings.TrimSpace(os.Getenv("KESTRACTL_TENANT")) != ""
+}
+
+// listAllTenants pages through the tenant list.
+func listAllTenants(client *Client) ([]string, error) {
+	size := tenantPageSize
+	tenants := make([]string, 0)
+
+	for page := 1; ; page++ {
+		pageParam := page
+		resp, err := client.Kestra.Tenants().SearchTenants(client.Ctx, &pageParam, &size, nil, nil)
+		if err != nil {
+			return nil, formatSDKError(err)
+		}
+		if resp == nil || len(resp.Results) == 0 {
+			break
+		}
+
+		for _, tenant := range resp.Results {
+			if id := tenant.GetId(); id != "" {
+				tenants = append(tenants, id)
+			}
+		}
+		if int64(len(tenants)) >= resp.Total {
+			break
+		}
+	}
+
+	return tenants, nil
 }
 
 // scanTenant fetches and analyzes one tenant's flows, degrading into notes

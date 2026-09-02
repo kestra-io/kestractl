@@ -558,6 +558,31 @@ tasks:
 			want: map[string]int64{"subflow": 1, "assets": 1},
 		},
 		{
+			name: "2.0 functions are recognized alongside the 1.3 ones",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ env('X') }} {{ loopOutputs('t') }} {{ isWeekend(now()) }}"
+`,
+			want: map[string]int64{"env": 1, "loopOutputs": 1, "isWeekend": 1, "now": 1},
+		},
+		{
+			name: "the 1.3-only json function and filter stay recognized",
+			source: `
+id: f
+namespace: ns
+tasks:
+  - id: log
+    type: io.kestra.plugin.core.log.Log
+    message: "{{ json(inputs.raw) }} {{ inputs.payload | json }}"
+`,
+			want:        map[string]int64{"json": 1},
+			wantFilters: map[string]int64{"json": 1},
+		},
+		{
 			name: "the deprecated json filter and the raw filter are recognized",
 			source: `
 id: f
@@ -805,7 +830,7 @@ func flowFor(namespace, id string, mutate func(a *flowAnalysis)) flowAnalysis {
 func testReport(t *testing.T, anonymize bool, scans []tenantScan) *usageReport {
 	t.Helper()
 	report := aggregateReport(scans, newAnonymizer(anonymize), time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC))
-	report.Scope = usageReportScope
+	report.Scope = scopeSingleTenant
 	return report
 }
 
@@ -1314,7 +1339,7 @@ func TestUsageReportJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("failed to unmarshal the report: %v", err)
 	}
-	if decoded.Scope != usageReportScope || !decoded.Anonymized {
+	if decoded.Scope != scopeSingleTenant || !decoded.Anonymized {
 		t.Errorf("unexpected decoded header: %+v", decoded)
 	}
 	if decoded.Totals.Count != 1 || decoded.Signals.RemovedTasks["ForEachItem"].Occurrences != 1 {
