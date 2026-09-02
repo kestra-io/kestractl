@@ -15,20 +15,61 @@ on:
         description: Tag to build and release.
         type: string
         required: true
+  # Dry run: builds the binaries and both container images and exercises the
+  # registry logins, but publishes nothing. Run it on a branch before tagging,
+  # or after touching anything Docker-related here.
+  workflow_dispatch:
 
 permissions:
   contents: write
+  # GHCR push. auto-tag.yml has to grant this too: a reusable workflow inherits
+  # the caller's GITHUB_TOKEN and can only narrow it, never elevate it.
+  packages: write
+
+env:
+  # Which release line owns the rolling `:latest` Docker tag, i.e. what an
+  # untagged `docker pull kestra/kestractl` resolves to. Docker has no notion of
+  # "newest release of a major line", so unlike install.sh this needs an explicit
+  # pointer, pinned per branch:
+  #   releases/v1 -> "true"  (stable v1 owns :latest)
+  #   main (v2)   -> "false" (pre-GA)
+  # Flip to "true" here (and to "false" on releases/v1) when 2.0.0 goes GA, in the
+  # same change that flips `release.make_latest` in .goreleaser.yml.
+  DOCKER_LATEST: "false"
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Everything downstream keys off this step, never off github.event_name or
+      # github.ref: in the workflow_call path both describe the *caller* -- ref is
+      # refs/heads/main and event_name is workflow_run, or workflow_dispatch on a
+      # manual auto-tag re-run -- not the tag being released.
+      - name: Resolve the release target
+        id: target
+        env:
+          CALLER_REF: ${{ inputs.ref }}
+          PUSHED_REF: ${{ github.ref }}
+          PUSHED_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$CALLER_REF" ]; then
+            tag="$CALLER_REF"; dry_run=false          # called by auto-tag.yml
+          elif [ "${PUSHED_REF#refs/tags/}" != "$PUSHED_REF" ]; then
+            tag="$PUSHED_NAME"; dry_run=false         # hand-cut tag push
+          else
+            tag=""; dry_run=true                     # workflow_dispatch on a branch
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
+          echo "Releasing: ${tag:-<dry run>}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
           # GoReleaser requires HEAD to sit exactly on the tag it is releasing,
           # and fetch-depth 0 brings the tags and the changelog history with it.
-          ref: ${{ inputs.ref || github.ref_name }}
+          ref: ${{ steps.target.outputs.tag || github.ref_name }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -37,13 +78,88 @@ jobs:
           go-version: "1.25"
           cache: true
 
+      # QEMU + buildx: the arm64 Alpine image runs `apk add` under emulation.
+      - name: Docker init
+        uses: kestra-io/actions/composite/setup-docker@main
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD || secrets.DOCKERHUB_TOKEN }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          args: release --clean
+          # `--snapshot` builds the container images without pushing them, which is
+          # what makes the dry run useful. Do NOT reach for `--skip=publish`:
+          # dockers_v2 builds during the publish phase, so that would skip the
+          # images entirely and leave a green job that tested nothing.
+          args: ${{ steps.target.outputs.dry_run == 'true' && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # GoReleaser publishes only the immutable exact-version manifests. `regctl
+      # image copy` re-points the rolling tags at that same manifest instead of
+      # rebuilding them, so every tag stays byte-identical across architectures.
+      - name: Install regctl
+        if: steps.target.outputs.dry_run == 'false'
+        uses: regclient/actions/regctl-installer@main
+
+      - name: Add rolling Docker tags
+        if: steps.target.outputs.dry_run == 'false'
+        env:
+          TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          triple="${version%%-*}"
+
+          if ! printf '%s' "$triple" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::notice::$TAG is not a version tag - no rolling tags"
+            exit 0
+          fi
+
+          # No suffix after the triple (`-rc.3`, `-beta1`, ...) means a stable release.
+          if [ "$version" = "$triple" ]; then
+            stable=true
+          else
+            stable=false
+          fi
+
+          minor="${triple%.*}"
+          major="${minor%.*}"
+
+          # A prerelease still moves the major-line tag, because that is what
+          # install.sh's default resolves to as well: `VERSION=2` picks the newest
+          # release of the major line, prereleases included. It must not touch the
+          # minor tag or `:latest`, which stay on stable releases only.
+          if [ "$stable" = "true" ]; then
+            rolling="$minor $major"
+            if [ "${DOCKER_LATEST}" = "true" ]; then
+              rolling="$rolling latest"
+            fi
+          else
+            rolling="$major"
+          fi
+
+          for repo in kestra/kestractl ghcr.io/kestra-io/kestractl; do
+            for suffix in "" "-static"; do
+              src="${repo}:${version}${suffix}"
+              for target in $rolling; do
+                echo "Retagging $src -> ${repo}:${target}${suffix}"
+                regctl image copy "$src" "${repo}:${target}${suffix}"
+              done
+            done
+          done
 
       - name: Slack notification
         if: success()
@@ -52,7 +168,7 @@ jobs:
           channel: 'C08KNSZGXQU'
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           users-map: ${{ vars.GITHUB_TO_SLACK_MAP }}
-          suffix: ${{ inputs.ref || github.ref_name }}
+          suffix: ${{ steps.target.outputs.tag || github.ref_name }}
 
       - name: Slack - Notify release failure
         if: failure()
@@ -61,4 +177,4 @@ jobs:
           channel: 'C09FE0QCN2E'
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           users-map: ${{ vars.GITHUB_TO_SLACK_MAP }}
-          suffix: ${{ inputs.ref || github.ref_name }}
+          suffix: ${{ steps.target.outputs.tag || github.ref_name }}

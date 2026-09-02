@@ -33,6 +33,67 @@ curl -fsSL -o kestractl https://github.com/kestra-io/kestractl/releases/download
 chmod +x kestractl
 ```
 
+### or run it as a container
+
+Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to both
+Docker Hub and GitHub Container Registry:
+
+```bash
+docker run --rm kestra/kestractl:2 --help
+docker run --rm ghcr.io/kestra-io/kestractl:2 --help
+```
+
+| Tag | Contents |
+| --- | --- |
+| `2`, `2.0.0-rc.4` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts. `:2` tracks the newest v2 release, prereleases included, exactly like the default installer |
+| `2-static`, `2.0.0-rc.4-static` | distroless, no shell — smallest surface, runs `kestractl` only |
+| `1`, `1.18`, `1.18.1`, `latest` | the v1 line. `latest` stays on stable v1 until 2.0.0 is GA — use `:2` for v2 |
+
+The `X.Y` tags (`2.0`, `1.18`) appear once a line has a stable release; while `main` is pre-GA
+every v2 release is an rc, so `:2` and the exact `2.0.0-rc.N` tags are what exist there.
+
+Configure it either with `KESTRACTL_*` environment variables:
+
+```bash
+docker run --rm \
+  -e KESTRACTL_HOST=https://kestra.example.com \
+  -e KESTRACTL_TENANT=main \
+  -e KESTRACTL_USERNAME=admin@example.com \
+  -e KESTRACTL_PASSWORD='...' \
+  kestra/kestractl:2 flows list
+```
+
+or by mounting a config file. The images run as a non-root user, so mount it at that
+user's home: `/home/kestractl/.kestractl` (Alpine) or `/home/nonroot/.kestractl`
+(`-static`).
+
+```bash
+docker run --rm \
+  -v ~/.kestractl:/home/kestractl/.kestractl:ro \
+  -v "$PWD/flows:/flows:ro" \
+  kestra/kestractl:2 flows deploy /flows
+```
+
+Deploying flows from GitLab CI:
+
+```yaml
+deploy-flows:
+  image: kestra/kestractl:2
+  variables:
+    KESTRACTL_HOST: https://kestra.example.com
+    KESTRACTL_TENANT: main
+  script:
+    - kestractl flows validate ./flows
+    - kestractl flows deploy ./flows
+```
+
+`KESTRACTL_TOKEN`, `KESTRACTL_USERNAME` and `KESTRACTL_PASSWORD` belong in your CI's
+masked/protected variables — never in the job definition.
+
+Note: GitLab CI and GitHub Actions container jobs override the image entrypoint and run
+your `script` through a shell, so use the default (Alpine) tag there. The `-static` tag
+has no shell and only works with `docker run`/`kubectl run` style invocations.
+
 ### or compile it
 ```bash
 git clone git@github.com:kestra-io/kestractl.git
