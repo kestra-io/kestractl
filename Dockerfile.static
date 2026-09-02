@@ -1,0 +1,17 @@
+# kestractl - distroless variant (`-static` tag).
+#
+# No shell, no package manager: smallest attack surface, but it can only run
+# kestractl itself. Use the default (Alpine) image for CI jobs that run scripts.
+#
+# Runs as the distroless `nonroot` user (uid 65532, HOME=/home/nonroot), so a
+# mounted config belongs at /home/nonroot/.kestractl/config.yaml.
+FROM gcr.io/distroless/static-debian12:nonroot
+
+ARG TARGETPLATFORM
+
+COPY $TARGETPLATFORM/kestractl /usr/local/bin/kestractl
+
+WORKDIR /home/nonroot
+
+ENTRYPOINT ["/usr/local/bin/kestractl"]
+CMD ["--help"]

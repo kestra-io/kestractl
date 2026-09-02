@@ -94,6 +94,12 @@ jobs:
   release:
     needs: tag
     if: ${{ needs.tag.outputs.pushed == 'true' }}
+    # release.yml pushes container images to GHCR. A reusable workflow inherits the
+    # caller's GITHUB_TOKEN and can only narrow it, so the grant has to happen here
+    # -- the `packages: write` in release.yml alone is not enough on this path.
+    permissions:
+      contents: write
+      packages: write
     uses: ./.github/workflows/release.yml
     with:
       ref: ${{ needs.tag.outputs.tag }}
