@@ -12,6 +12,17 @@ set -euo pipefail
 go_mod="${GO_MOD:-$(cd "$(dirname "$0")/../.." && pwd)/go.mod}"
 [ -f "$go_mod" ] || { printf 'check-sdk-pin: %s not found\n' "$go_mod" >&2; exit 1; }
 
+# A `replace` redirecting the SDK defeats the version check below entirely: the
+# `require` line can name a clean tag while the build actually resolves a fork, a
+# pseudo-version, or a local directory. Reject any replace touching the module.
+replaces="$(grep -nE '^[[:space:]]*(replace[[:space:]]+)?github\.com/kestra-io/client-sdk/go-sdk(/v[0-9]+)?[[:space:]]+=>' "$go_mod" || true)"
+if [ -n "$replaces" ]; then
+  printf 'check-sdk-pin: go.mod replaces the Kestra Go SDK:\n' >&2
+  printf '%s\n' "$replaces" | sed 's/^/               /' >&2
+  printf '               A replaced SDK is not what users get. Drop it before releasing.\n' >&2
+  exit 1
+fi
+
 # Every go-sdk requirement, majors included (go-sdk, go-sdk/v2, ...).
 # A while-read pipeline rather than `mapfile`, which macOS's bash 3.2 lacks.
 pins="$(grep -oE 'github\.com/kestra-io/client-sdk/go-sdk(/v[0-9]+)?[[:space:]]+v[^[:space:]/]+' "$go_mod" || true)"

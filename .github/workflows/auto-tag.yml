@@ -28,6 +28,9 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     outputs:
+      # `pushed`, not `tag`, gates the release: `tag` is set whenever a version was
+      # computed, which includes the case where that tag already exists.
+      pushed: ${{ steps.push.outputs.pushed }}
       tag: ${{ steps.next.outputs.tag }}
     steps:
       - name: Resolve the commit to tag
@@ -65,24 +68,32 @@ jobs:
         run: .github/scripts/next-version.sh
 
       - name: Push the tag
+        id: push
         if: ${{ steps.next.outputs.tag != '' }}
         env:
           TAG: ${{ steps.next.outputs.tag }}
           SHA: ${{ steps.target.outputs.sha }}
         run: |
+          # Reachable when two merges land close together and their Tests runs finish
+          # out of order: the older SHA's `git describe` cannot see the newer tag, so
+          # it recomputes the same version. Releasing again would fail in GoReleaser
+          # and fire the failure webhook, so report it and let the release job skip.
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists; nothing to push." >&2
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists; nothing to push, nothing to release." >&2
+            echo "Skipped: $TAG already exists." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG" "$SHA"
           git push origin "refs/tags/$TAG"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
           echo "Pushed $TAG at $SHA" >> "$GITHUB_STEP_SUMMARY"
 
   release:
     needs: tag
-    if: ${{ needs.tag.outputs.tag != '' }}
+    if: ${{ needs.tag.outputs.pushed == 'true' }}
     uses: ./.github/workflows/release.yml
     with:
       ref: ${{ needs.tag.outputs.tag }}

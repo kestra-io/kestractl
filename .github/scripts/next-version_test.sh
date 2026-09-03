@@ -18,7 +18,7 @@ check() {
   printf '%s\0' "$@" >"$f"
 
   local got status
-  got="$(LATEST_TAG="$latest" COMMIT_MESSAGES_FILE="$f" bash "$script" 2>/dev/null)"
+  got="$(env -u GITHUB_OUTPUT LATEST_TAG="$latest" COMMIT_MESSAGES_FILE="$f" bash "$script" 2>/dev/null)"
   status=$?
 
   if [ "$status" -ne 0 ]; then
@@ -40,7 +40,7 @@ check_fails() {
   shift 2
   local f="$tmp/records"
   printf '%s\0' "$@" >"$f"
-  if LATEST_TAG="$latest" COMMIT_MESSAGES_FILE="$f" bash "$script" >/dev/null 2>&1; then
+  if env -u GITHUB_OUTPUT LATEST_TAG="$latest" COMMIT_MESSAGES_FILE="$f" bash "$script" >/dev/null 2>&1; then
     printf 'FAIL %s: expected a non-zero exit\n' "$name"
     failures=$((failures + 1))
     return
@@ -97,6 +97,17 @@ check 'body quoting fix:'     v2.0.0-rc2 '' "$(printf 'docs: explain the mapping
 # ...but a real feat subject with a chatty body still releases.
 check 'feat with chatty body' v2.0.0-rc2 v2.0.0-rc.3 "$(printf 'feat(cli): add a flag\n\ndocs: not a real subject\nchore: nor this\n')"
 
+# --- BREAKING CHANGE is a FOOTER: only the last paragraph counts ---
+# Regression: matching any body line let a fix: whose body quotes the policy cut a
+# major release. AGENTS.md documents the footer verbatim, so it invites pasting.
+check 'BC quoted mid-body'    v2.1.0 v2.1.1 \
+  "$(printf 'fix(cli): a small fix\n\nBREAKING CHANGE: is a footer that maps to major, per the table.\n\nthe actual footer paragraph\n')"
+check 'BC in prose only'      v2.1.0 v2.2.0 \
+  "$(printf 'feat: a thing\n\nBREAKING CHANGE: would escalate this, so we do not write one.\n\nnothing to see here\n')"
+# ...and a real footer still escalates.
+check 'BC as the footer'      v2.1.0 v3.0.0 \
+  "$(printf 'fix(cli): a small fix\n\nsome explanation\n\nBREAKING CHANGE: the flag is gone\n')"
+
 # --- chore(deps) ships, bare chore does not ---
 check 'chore(deps)'      v2.1.0 v2.1.1 'chore(deps): bump go-sdk to v2.0.0-rc3'
 check 'chore(sdk)'       v2.1.0 ''     'chore(sdk): unrelated scope'
@@ -106,7 +117,13 @@ check 'chore(ci)'        v2.1.0 ''     'chore(ci): a CI change does not release'
 check 'skip in subject'       v2.1.0 '' 'feat: big thing [skip release]'
 check 'skip on its own line'  v2.1.0 '' "$(printf 'feat: big thing\n\n[skip release]\n')"
 check 'skip indented line'    v2.1.0 '' "$(printf 'feat: big thing\n\n  [skip release]  \n')"
-check 'skip in another commit' v2.1.0 '' 'feat: shipped' 'chore: oops [skip release]'
+# The marker is HEAD-ONLY. It used to match anywhere in the range, which latched the
+# release line off forever: skipping pushes no tag, so the base tag never advances
+# and the marked commit stays in `$latest..HEAD` on every subsequent run. Records are
+# newest-first, so arg 1 is HEAD.
+check 'skip on head'          v2.1.0 ''       'chore: oops [skip release]' 'feat: earlier'
+check 'skip behind a release' v2.1.0 v2.2.0   'feat: shipped' 'chore: oops [skip release]'
+check 'skip two commits back' v2.1.0 v2.1.1   'fix: a' 'docs: b' 'chore: c [skip release]'
 
 # Prose that merely MENTIONS the marker must not suppress a real release. The
 # commit introducing this feature documents "[skip release]" in its own body, which
@@ -149,7 +166,7 @@ check_repo() {
   )
 
   local got
-  got="$(cd "$repo" && bash "$script" 2>/dev/null)"
+  got="$(cd "$repo" && env -u GITHUB_OUTPUT bash "$script" 2>/dev/null)"
   if [ "$got" != "$want" ]; then
     printf 'FAIL %s: want %s, got %s\n' "$name" "${want:-<none>}" "${got:-<none>}"
     failures=$((failures + 1))

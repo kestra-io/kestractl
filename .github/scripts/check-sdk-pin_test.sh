@@ -55,6 +55,18 @@ check 'no go-sdk requirement' reject \
 check 'mixed pins' reject \
   "$(printf 'module m\n\nrequire (\n\tgithub.com/kestra-io/client-sdk/go-sdk v1.3.0\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-0.20260702143038-8c3851bea2e1\n)\n')"
 
+# A `replace` defeats the require-line check: the pin can read clean while the build
+# resolves something else entirely.
+check 'replace to a pseudo-version' reject \
+  "$(printf 'module m\n\nrequire (\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc3\n)\n\nreplace github.com/kestra-io/client-sdk/go-sdk/v2 => github.com/foo/bar v0.0.0-20260702143038-8c3851bea2e1\n')"
+check 'replace to a local dir' reject \
+  "$(printf 'module m\n\nrequire (\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc3\n)\n\nreplace github.com/kestra-io/client-sdk/go-sdk/v2 => ../client-sdk/go-sdk\n')"
+check 'replace inside a block' reject \
+  "$(printf 'module m\n\nrequire (\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc3\n)\n\nreplace (\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 => ../go-sdk\n)\n')"
+# An unrelated replace must not block a release.
+check 'unrelated replace' accept \
+  "$(printf 'module m\n\nrequire (\n\tgithub.com/kestra-io/client-sdk/go-sdk/v2 v2.0.0-rc3\n)\n\nreplace github.com/spf13/cobra => github.com/fork/cobra v1.9.0\n')"
+
 if [ "$failures" -ne 0 ]; then
   printf '\n%d test(s) failed\n' "$failures"
   exit 1

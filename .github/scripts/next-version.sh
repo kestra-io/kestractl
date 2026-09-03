@@ -9,8 +9,8 @@
 #   feat:                                      -> minor
 #   fix: perf: build: refactor: chore(deps):   -> patch
 #   docs: test: chore: ci: style:              -> none
-# The highest bump in the range wins. "[skip release]" in a subject, or alone on
-# its own line, forces none.
+# The highest bump in the range wins. "[skip release]" on the head commit -- in its
+# subject, or alone on its own line -- forces none.
 #
 # Only the subject carries the type, per the conventional-commits spec. Bodies are
 # scanned solely for BREAKING CHANGE: and [skip release] -- a body that merely
@@ -101,16 +101,26 @@ fi
 
 bump=none
 skip=0
+# Records arrive newest-first, so index 0 is the commit a release would be cut at.
+index=0
 # read -d '' consumes the NUL-separated records git log emits.
 while IFS= read -r -d '' record; do
   # First non-blank line, so a stray leading newline cannot blank out the subject.
   subject_line="$(printf '%s' "$record" | sed -n '/./{p;q;}')"
 
-  # Honour [skip release] only in the subject or on a line of its own. Matching it
-  # anywhere would let prose that merely mentions the marker -- release notes, a
-  # commit documenting this very feature -- silently suppress a real release.
-  if printf '%s' "$subject_line" | grep -qF '[skip release]' ||
-    printf '%s' "$record" | grep -qE '^[[:space:]]*\[skip release\][[:space:]]*$'; then
+  # Honour [skip release] only on the HEAD commit -- the one a release would be cut
+  # at -- and only in its subject or alone on a line of its own.
+  #
+  # Head-only matters: skipping does not push a tag, so the base tag does not
+  # advance and a marked commit stays inside `$latest..HEAD` on every later run.
+  # Matching it anywhere in the range therefore latched the whole release line off
+  # permanently after one marked merge. Restricting to prose-safe positions matters
+  # for the same reason the type is read only from the subject: a message that
+  # merely mentions the marker must not suppress a real release.
+  if [ "$index" -eq 0 ] && {
+    printf '%s' "$subject_line" | grep -qF '[skip release]' ||
+      printf '%s' "$record" | grep -qE '^[[:space:]]*\[skip release\][[:space:]]*$'
+  }; then
     skip=1
   fi
 
@@ -119,13 +129,22 @@ while IFS= read -r -d '' record; do
   # A BREAKING CHANGE: footer promotes the commit regardless of its type, but only
   # if the commit is conventional at all -- otherwise a quoted footer in a merge
   # blurb would escalate the whole range.
-  if [ "$this" != none ] && printf '%s' "$record" | grep -qE '^BREAKING[ -]CHANGE:'; then
-    this=major
+  #
+  # Per Conventional Commits this is a FOOTER, so only the last paragraph counts.
+  # Scanning every line let a fix: whose body quotes the policy (which AGENTS.md
+  # now spells out verbatim, so it invites pasting) silently cut a major release.
+  if [ "$this" != none ]; then
+    footer="$(printf '%s\n' "$record" | awk 'BEGIN { RS = "" } END { print }')"
+    if printf '%s' "$footer" | grep -qE '^BREAKING[ -]CHANGE:'; then
+      this=major
+    fi
   fi
 
   if [ "$(rank "$this")" -gt "$(rank "$bump")" ]; then
     bump="$this"
   fi
+
+  index=$((index + 1))
 done <"$records"
 
 emit() {
