@@ -267,6 +267,11 @@ func newNamespacesCreateCommand() *cobra.Command {
 }
 
 func runNamespacesCreate(client *Client, id, description string, variables map[string]interface{}, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
+	if concurrency != nil || quotas != nil {
+		if err := requireKestra2(client, "setting concurrency limits and quotas"); err != nil {
+			return err
+		}
+	}
 	ns := kestra.NewNamespace(id, false)
 	if description != "" {
 		ns.SetDescription(description)
@@ -416,6 +421,11 @@ previously set on the namespace.`,
 }
 
 func runNamespacesUpdate(client *Client, id, description string, descriptionSet bool, variables map[string]interface{}, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
+	if concurrency != nil || quotas != nil {
+		if err := requireKestra2(client, "setting concurrency limits and quotas"); err != nil {
+			return err
+		}
+	}
 	// UpdateNamespace is a full-replace PUT: start from the current namespace
 	// so fields not passed on this invocation aren't wiped.
 	ns, _, err := client.API.NamespacesAPI.Namespace(client.Ctx, id, client.Tenant).Execute()

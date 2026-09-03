@@ -315,6 +315,11 @@ func TestRunTenantsGet_RendersConcurrencyAndQuotas(t *testing.T) {
 func TestRunTenantsCreate_SendsConcurrencyAndQuotas(t *testing.T) {
 	var gotBody map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/configs" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"version":"2.0.0"}`))
+			return
+		}
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/tenants") {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}

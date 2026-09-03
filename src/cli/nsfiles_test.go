@@ -13,14 +13,20 @@ import (
 
 func newTestClient(t *testing.T, serverURL string) *Client {
 	t.Helper()
+	// Wired like newClientDefault: one HTTP client with the Kestra 1.x response
+	// shim in front of both SDK clients.
+	httpClient, compat := newCompatHTTPClient()
 	cfg := kestra.NewConfiguration()
 	cfg.Servers = kestra.ServerConfigurations{{URL: serverURL}}
-	return &Client{
+	cfg.HTTPClient = httpClient
+	c := &Client{
 		API:    kestra.NewAPIClient(cfg),
-		Kestra: kestra.NewClient(serverURL),
+		Kestra: kestra.NewClient(serverURL, kestra.WithHTTPClient(httpClient)),
 		Ctx:    context.Background(),
 		Tenant: "main",
 	}
+	compat.legacyServer = c.isLegacyServer
+	return c
 }
 
 func TestNamespaceExists_OSSResponseMissingDeleted(t *testing.T) {

@@ -332,6 +332,11 @@ func newUsersCreateCommand() *cobra.Command {
 }
 
 func runUsersCreate(client *Client, m userMutation, renderer *Renderer) error {
+	if m.superAdminSet && m.superAdmin {
+		if err := requireKestra2(client, "--superadmin"); err != nil {
+			return err
+		}
+	}
 	user, _, err := client.API.UsersAPI.CreateUser(client.Ctx).
 		IAMUserControllerApiCreateOrUpdateUserRequest(m.toRequest()).
 		Execute()
@@ -373,6 +378,11 @@ changed fields are merged on top before saving.`,
 }
 
 func runUsersUpdate(client *Client, id string, m userMutation, renderer *Renderer) error {
+	if m.superAdminSet && m.superAdmin {
+		if err := requireKestra2(client, "--superadmin"); err != nil {
+			return err
+		}
+	}
 	// The update endpoint is a full-replace PUT, so fetch the current user and
 	// overlay only the changed flags — otherwise unspecified attributes (e.g.
 	// superAdmin, groups) would be reset to their defaults.
@@ -869,6 +879,9 @@ func newUsersPatchSuperAdminCommand() *cobra.Command {
 }
 
 func runUsersPatchSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
+	if err := requireKestra2(client, "users set-super-admin"); err != nil {
+		return err
+	}
 	body := map[string]any{"instanceOwner": superAdmin}
 	if err := client.Kestra.Users().PatchUserInstanceOwner(client.Ctx, id, body); err != nil {
 		return formatSDKError(err)

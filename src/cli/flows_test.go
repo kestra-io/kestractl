@@ -1513,6 +1513,12 @@ const flowWithArrayLabelsJSON = `{"id":"my-flow","namespace":"my.namespace","rev
 
 func TestRunFlowsGet_ArrayLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The version probe is answered 404 so the shim stays off and the
+		// raw-body fallback under test is what actually decodes the flow.
+		if r.URL.Path == "/api/v1/configs" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/flows/my.namespace/my-flow") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -1560,6 +1566,12 @@ func TestRunFlowsGet_ArrayLabels_JSON(t *testing.T) {
 
 func TestRunFlowsList_Namespace_ArrayLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The version probe is answered 404 so the shim stays off and the
+		// raw-body fallback under test is what actually decodes the flow.
+		if r.URL.Path == "/api/v1/configs" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/flows/my.namespace") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -1582,6 +1594,12 @@ func TestRunFlowsList_Namespace_ArrayLabels(t *testing.T) {
 
 func TestListAllFlows_Search_ArrayLabels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The version probe is answered 404 so the shim stays off and the
+		// raw-body fallback under test is what actually decodes the flow.
+		if r.URL.Path == "/api/v1/configs" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/flows/search") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}

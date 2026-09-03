@@ -180,6 +180,11 @@ func newTenantsCreateCommand() *cobra.Command {
 }
 
 func runTenantsCreate(client *Client, id, name string, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
+	if concurrency != nil || quotas != nil {
+		if err := requireKestra2(client, "setting concurrency limits and quotas"); err != nil {
+			return err
+		}
+	}
 	if name == "" {
 		name = id
 	}
@@ -258,6 +263,11 @@ previously set on the tenant.`,
 }
 
 func runTenantsUpdate(client *Client, id, name string, nameSet bool, concurrency *kestra.Concurrency, quotas []kestra.Quota, renderer *Renderer) error {
+	if concurrency != nil || quotas != nil {
+		if err := requireKestra2(client, "setting concurrency limits and quotas"); err != nil {
+			return err
+		}
+	}
 	// UpdateTenant is a full-replace PUT: start from the current tenant so
 	// fields not passed on this invocation aren't wiped.
 	tenant, err := client.Kestra.Tenants().Tenant(client.Ctx, id)
