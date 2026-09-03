@@ -1,0 +1,89 @@
+name: Auto Tag
+
+# Computes and pushes the next semver tag after a green Tests run on main, then
+# releases it. See AGENTS.md "Branching & Releases" for the version policy.
+#
+# Hanging off workflow_run rather than `push` reuses the Tests run that already
+# happened for that commit -- no duplicate e2e matrix -- and tags the exact SHA
+# that was tested.
+on:
+  workflow_run:
+    workflows: ["Tests"]
+    types: [completed]
+    branches: [main]
+  # Manual re-run, e.g. after fixing a transient failure. Idempotent: a tag that
+  # already exists is skipped rather than re-released.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # Serialize: never cancel a run that may be mid tag-push.
+  group: auto-tag-main
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+    steps:
+      - name: Resolve the commit to tag
+        id: target
+        env:
+          # Empty on workflow_dispatch, where github.sha is the dispatched ref.
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          FALLBACK_SHA: ${{ github.sha }}
+          FALLBACK_BRANCH: ${{ github.ref_name }}
+        run: |
+          sha="${RUN_SHA:-$FALLBACK_SHA}"
+          branch="${RUN_BRANCH:-$FALLBACK_BRANCH}"
+          # workflow_run's `branches:` filter already excludes PR runs, and this
+          # backstops a workflow_dispatch aimed at the wrong branch.
+          if [ "$branch" != "main" ]; then
+            echo "Refusing to auto-tag branch '$branch'; only main is auto-released." >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          # next-version.sh needs the tags and the full history to find the base
+          # tag and the commits since it.
+          fetch-depth: 0
+
+      - name: Check the Go SDK pin is a released tag
+        run: .github/scripts/check-sdk-pin.sh
+
+      - name: Compute the next version
+        id: next
+        run: .github/scripts/next-version.sh
+
+      - name: Push the tag
+        if: ${{ steps.next.outputs.tag != '' }}
+        env:
+          TAG: ${{ steps.next.outputs.tag }}
+          SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists; nothing to push." >&2
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$SHA"
+          git push origin "refs/tags/$TAG"
+          echo "Pushed $TAG at $SHA" >> "$GITHUB_STEP_SUMMARY"
+
+  release:
+    needs: tag
+    if: ${{ needs.tag.outputs.tag != '' }}
+    uses: ./.github/workflows/release.yml
+    with:
+      ref: ${{ needs.tag.outputs.tag }}
+    secrets: inherit
