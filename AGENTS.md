@@ -77,6 +77,31 @@ Two long-lived branches, two release lines:
 - **`main`** — kestractl v2, targeting Kestra 2.x (Go SDK `go-sdk/v2`). Tags: `v2.x.y`.
 - **`releases/v1`** — legacy v1 maintenance, targeting Kestra 1.x (Go SDK v1). Tags: `v1.x.y`. **v1 bugfixes branch from and PR into `releases/v1`, not `main`.**
 
-Releases are created by pushing a Git tag from the matching branch. See `.github/workflows/release.yml` for more details. When releasing, be sure that Go SDK version in `go.mod` is a fixed and short one. For example, `github.com/kestra-io/client-sdk/go-sdk v1.1.0` is valid for a release but `github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1` is not valid for a release.
+Releases are created by pushing a Git tag from the matching branch, which runs `.github/workflows/release.yml` (GoReleaser). When releasing, be sure that Go SDK version in `go.mod` is a fixed and short one. For example, `github.com/kestra-io/client-sdk/go-sdk v1.1.0` is valid for a release but `github.com/kestra-io/client-sdk/go-sdk v1.1.1-0.20260702143038-8c3851bea2e1` is not valid for a release. `.github/scripts/check-sdk-pin.sh` enforces this and blocks the automated release path.
+
+### `main` releases itself
+
+`main` is auto-released. `.github/workflows/auto-tag.yml` runs after a **green `Tests` run on `main`** (via `workflow_run`, so it reuses that run rather than re-running the e2e matrix), computes the next tag with `.github/scripts/next-version.sh`, pushes it, and calls `release.yml`. `releases/v1` is untouched by this: its tags stay hand-cut.
+
+Version policy, derived from the conventional-commit subjects since the last tag (highest bump wins):
+
+| commit                                                    | bump  |
+| --------------------------------------------------------- | ----- |
+| `<type>!:` or `BREAKING CHANGE:` in the body              | major |
+| `feat:`                                                   | minor |
+| `fix:` `perf:` `build:` `refactor:` `chore(deps):`        | patch |
+| `docs:` `test:` `ci:` `style:` bare `chore:`              | none  |
+
+`[skip release]` suppresses the release, but only in a commit subject or alone on its own line in the body — prose that merely mentions the marker (release notes, a commit documenting this policy) must not silently stop a release.
+
+**While `main` is pre-GA the semver triple is frozen and only the rc counter moves.** The base tag is `v2.0.0-rcN`, so any release-worthy merge yields `v2.0.0-rc.(N+1)` — a `feat:` does *not* jump to `v2.1.0`, and a breaking change does *not* jump to `v3.0.0`. Cutting `v2.0.0` GA is a deliberate manual tag push; after that the table above applies literally.
+
+Three traps are worth knowing before touching any of this:
+
+- **The rc counter must keep its dot.** `-rcN` is a single alphanumeric semver identifier compared as a string, so `rc10` sorts *below* `rc9`; `-rc.N` is a numeric identifier and increments without bound. The legacy `v2.0.0-rc1`/`rc2` tags use the undotted form, and `next-version.sh` normalises to dotted on the next bump. Note `v2.0.0-rc.3` therefore sorts *below* those two legacy tags under strict semver — harmless here, because nothing resolves these tags by semver (`install.sh` reads `/releases` in creation order, the update notifier reads `/releases/latest`, which excludes prereleases). Verify claims like this with a real semver implementation: GNU `sort -V` is not semver-compliant and gets this case backwards.
+- **Never find the base tag with `git tag --sort=-v:refname`.** Git's version sort mis-orders prerelease suffixes unless `versionsort.suffix` is configured. `next-version.sh` uses `git describe --tags --abbrev=0`, i.e. nearest by commit topology.
+- **A tag pushed with the default `GITHUB_TOKEN` does not fire `on: push: tags`.** GitHub suppresses workflow events originating from `GITHUB_TOKEN`. That is why `release.yml` also has a `workflow_call` trigger and `auto-tag.yml` invokes it directly, rather than the repo carrying a PAT or GitHub App token with write access.
+
+Each auto-tagged rc is what a default `curl … | bash` install resolves to, because `install.sh`'s `VERSION=2` default picks the newest release of the major line, **prereleases included**. That is why the release gate is the full `Tests` suite (unit, installer smoke, e2e matrix) and not a fast subset.
 
 **"Latest" is pinned per branch, not chronological.** GitHub has one repo-wide "latest" release and the public install script's default resolves it, so `.goreleaser.yml` pins `release.make_latest`: `"true"` on `releases/v1` (v1 stays the default install channel), `"false"` on `main` (v2 is opt-in via `VERSION=2`). Do not change these values as a side effect of another change — flipping main's to `"true"` is the deliberate switch that makes v2 the default install channel.

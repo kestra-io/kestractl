@@ -1,9 +1,20 @@
 name: Release
 
 on:
+  # Hand-cut tags, including every release on releases/v1.
   push:
     tags:
       - "v*"
+  # Called by auto-tag.yml. A tag pushed with the default GITHUB_TOKEN does not
+  # fire the trigger above -- GitHub suppresses workflow events originating from
+  # GITHUB_TOKEN -- so the tagger invokes this workflow directly instead of
+  # relying on a PAT or GitHub App with write access to the repo.
+  workflow_call:
+    inputs:
+      ref:
+        description: Tag to build and release.
+        type: string
+        required: true
 
 permissions:
   contents: write
@@ -15,6 +26,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          # GoReleaser requires HEAD to sit exactly on the tag it is releasing,
+          # and fetch-depth 0 brings the tags and the changelog history with it.
+          ref: ${{ inputs.ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -38,7 +52,7 @@ jobs:
           channel: 'C08KNSZGXQU'
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           users-map: ${{ vars.GITHUB_TO_SLACK_MAP }}
-          suffix: ${{ github.ref_name }}
+          suffix: ${{ inputs.ref || github.ref_name }}
 
       - name: Slack - Notify release failure
         if: failure()
@@ -47,4 +61,4 @@ jobs:
           channel: 'C09FE0QCN2E'
           webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
           users-map: ${{ vars.GITHUB_TO_SLACK_MAP }}
-          suffix: ${{ github.ref_name }}
+          suffix: ${{ inputs.ref || github.ref_name }}

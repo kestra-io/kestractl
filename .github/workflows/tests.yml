@@ -32,6 +32,11 @@ jobs:
       - name: Run tests
         run: go test ./src/...
 
+      - name: Test the release automation scripts
+        run: |
+          .github/scripts/next-version_test.sh
+          .github/scripts/check-sdk-pin_test.sh
+
       - name: Check installer defaults to the v2 line
         run: |
           cat ./install-scripts/install.sh | INSTALL_DIR=./ bash
