@@ -4,6 +4,10 @@ set -euo pipefail
 BINARY_NAME="${BINARY_NAME:-kestractl}"
 GITHUB_REPO="${GITHUB_REPO:-kestra-io/kestractl}"
 INSTALL_DIR="${INSTALL_DIR:-}"
+# The release line installed when VERSION is unset or "latest". kestractl v2
+# targets Kestra 2.x and stays usable against Kestra 1.3, so it is the default;
+# VERSION=1 selects the legacy v1 line, VERSION=x.y.z an exact release.
+DEFAULT_MAJOR="2"
 VERSION="${VERSION:-}"
 
 err() {
@@ -79,10 +83,13 @@ esac
 require awk
 release_json="$(mktemp)"
 if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
-  download "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" "$release_json"
-elif echo "$VERSION" | grep -qE '^v?[0-9]+$'; then
+  VERSION="$DEFAULT_MAJOR"
+fi
+if echo "$VERSION" | grep -qE '^v?[0-9]+$'; then
   # Bare major version (e.g. VERSION=2 or VERSION=v2): resolve to the newest
-  # release of that major line, prereleases included.
+  # release of that major line, prereleases included. GitHub's own "latest"
+  # release is not used: it is a single repo-wide pointer, and v1 and v2 are
+  # released independently from their own branches.
   major="$(echo "$VERSION" | sed 's/^v//')"
   list_json="$(mktemp)"
   download "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100" "$list_json"
