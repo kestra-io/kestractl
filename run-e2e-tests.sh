@@ -29,6 +29,13 @@ for KESTRA_VERSION in $versions; do
     *) export KESTRA_IMAGE_SUFFIX="slim" ;;
   esac
 
+  # -slim can be missing for some tags (not backfilled yet); fall back to -no-plugins.
+  image="europe-west1-docker.pkg.dev/kestra-host/docker/kestra-ee:${KESTRA_VERSION}-${KESTRA_IMAGE_SUFFIX}"
+  if [ "$KESTRA_IMAGE_SUFFIX" = "slim" ] && ! docker pull "$image" >/dev/null 2>&1; then
+    echo "-slim image not found for $KESTRA_VERSION, falling back to -no-plugins"
+    export KESTRA_IMAGE_SUFFIX="no-plugins"
+  fi
+
   echo "start Kestra container"
   log_and_run docker compose -f docker-compose-ci.yml down
 
