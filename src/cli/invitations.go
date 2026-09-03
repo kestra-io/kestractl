@@ -277,6 +277,11 @@ of sending an invitation.`,
 }
 
 func runInvitationsCreate(client *Client, email string, roles, groups []string, superAdmin, createUserIfNotExist bool, renderer *Renderer) error {
+	if superAdmin {
+		if err := requireKestra2(client, "--superadmin"); err != nil {
+			return err
+		}
+	}
 	req := kestra.IAMInvitationControllerApiInvitationCreateRequest{Email: email, Groups: groups}
 	for _, roleID := range roles {
 		req.Roles = append(req.Roles, kestra.IAMInvitationControllerApiInvitationRole{Id: roleID})

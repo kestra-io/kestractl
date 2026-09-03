@@ -220,6 +220,11 @@ Names must be lowercase alphanumeric, optionally separated by dashes.`,
 }
 
 func runServiceAccountsCreate(client *Client, m serviceAccountMutation, renderer *Renderer) error {
+	if m.superAdminSet && m.superAdmin {
+		if err := requireKestra2(client, "--superadmin"); err != nil {
+			return err
+		}
+	}
 	body := kestra.IAMServiceAccountControllerApiCreateServiceAccountRequest{Name: m.name}
 	if m.descriptionSet {
 		body.Description = &m.description
@@ -557,6 +562,9 @@ func newServiceAccountsSetSuperAdminCommand() *cobra.Command {
 }
 
 func runServiceAccountsSetSuperAdmin(client *Client, id string, superAdmin bool, renderer *Renderer) error {
+	if err := requireKestra2(client, "service-accounts set-super-admin"); err != nil {
+		return err
+	}
 	body := map[string]any{"instanceOwner": superAdmin}
 	if err := client.Kestra.ServiceAccount().PatchServiceAccountInstanceOwner(client.Ctx, id, body); err != nil {
 		return formatSDKError(err)

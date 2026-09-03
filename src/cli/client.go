@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"sync"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/viper"
@@ -23,6 +24,11 @@ type Client struct {
 	Kestra *kestra.KestraClient
 	Ctx    context.Context
 	Tenant string
+
+	// Kestra version reported by the server, resolved lazily by ServerVersion.
+	serverVersion     string
+	serverVersionErr  error
+	serverVersionOnce sync.Once
 }
 
 // newClientFunc is the client factory function. Override in tests.
@@ -67,6 +73,11 @@ func newClientDefault() (*Client, error) {
 	}
 	cfg.Debug = isVerbose
 
+	// One HTTP client for both SDK clients, so the Kestra 1.x response shim
+	// (see compat.go) applies to generated and hand-written endpoints alike.
+	httpClient, compat := newCompatHTTPClient()
+	cfg.HTTPClient = httpClient
+
 	parsed, err := parseHeaders(globalFlags.Headers)
 	if err != nil {
 		return nil, err
@@ -79,7 +90,7 @@ func newClientDefault() (*Client, error) {
 
 	// The hand-written client shares the same resolved host, headers, and debug
 	// setting; auth is appended per-branch below.
-	opts := []kestra.ClientOption{kestra.WithDebug(isVerbose)}
+	opts := []kestra.ClientOption{kestra.WithDebug(isVerbose), kestra.WithHTTPClient(httpClient)}
 	if len(parsed) > 0 {
 		opts = append(opts, kestra.WithHeaders(parsed))
 	}
@@ -98,12 +109,14 @@ func newClientDefault() (*Client, error) {
 		return nil, fmt.Errorf("could not init client without any auth, at least token or username+password is required")
 	}
 
-	return &Client{
+	c := &Client{
 		API:    client,
 		Kestra: kestra.NewClient(host, opts...),
 		Ctx:    ctx,
 		Tenant: tenant,
-	}, nil
+	}
+	compat.legacyServer = c.isLegacyServer
+	return c, nil
 }
 
 // resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
