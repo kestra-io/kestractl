@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Installs the latest kestractl v2 release (prereleases included) by default.
-# Thin wrapper around install.sh: defaults VERSION=2, everything else
-# (VERSION, INSTALL_DIR, BINARY_NAME, GITHUB_REPO) can still be overridden
-# via environment variables exactly like install.sh.
+# Installs the latest kestractl v2 release (prereleases included).
+#
+# Kept for links that predate install.sh defaulting to v2 — the two scripts now
+# do the same thing. Thin wrapper around install.sh: defaults VERSION=2,
+# everything else (VERSION, INSTALL_DIR, BINARY_NAME, GITHUB_REPO) can still be
+# overridden via environment variables exactly like install.sh.
 set -euo pipefail
 
 INSTALL_SCRIPT_URL="${INSTALL_SCRIPT_URL:-https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh}"
