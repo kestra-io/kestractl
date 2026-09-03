@@ -87,12 +87,15 @@ Version policy, derived from the conventional-commit subjects since the last tag
 
 | commit                                                    | bump  |
 | --------------------------------------------------------- | ----- |
-| `<type>!:` or `BREAKING CHANGE:` in the body              | major |
+| `<type>!:`, or a `BREAKING CHANGE:` footer                 | major |
 | `feat:`                                                   | minor |
 | `fix:` `perf:` `build:` `refactor:` `chore(deps):`        | patch |
 | `docs:` `test:` `ci:` `style:` bare `chore:`              | none  |
 
-`[skip release]` suppresses the release, but only in a commit subject or alone on its own line in the body — prose that merely mentions the marker (release notes, a commit documenting this policy) must not silently stop a release.
+Two positional rules keep prose from moving the version, because AGENTS.md documents these markers verbatim and that invites pasting them into a commit body:
+
+- `BREAKING CHANGE:` counts only as a **footer** — the last paragraph of the message. Quoted mid-body it is ignored.
+- `[skip release]` counts only on the **head commit**, in its subject or alone on its own line. It suppresses that merge only: skipping pushes no tag, so the base tag does not advance, and a range-wide match would latch the release line off permanently after one marked merge.
 
 **While `main` is pre-GA the semver triple is frozen and only the rc counter moves.** The base tag is `v2.0.0-rcN`, so any release-worthy merge yields `v2.0.0-rc.(N+1)` — a `feat:` does *not* jump to `v2.1.0`, and a breaking change does *not* jump to `v3.0.0`. Cutting `v2.0.0` GA is a deliberate manual tag push; after that the table above applies literally.
 
@@ -104,4 +107,4 @@ Three traps are worth knowing before touching any of this:
 
 Each auto-tagged rc is what a default `curl … | bash` install resolves to, because `install.sh`'s `VERSION=2` default picks the newest release of the major line, **prereleases included**. That is why the release gate is the full `Tests` suite (unit, installer smoke, e2e matrix) and not a fast subset.
 
-**"Latest" is pinned per branch, not chronological.** GitHub has one repo-wide "latest" release and the public install script's default resolves it, so `.goreleaser.yml` pins `release.make_latest`: `"true"` on `releases/v1` (v1 stays the default install channel), `"false"` on `main` (v2 is opt-in via `VERSION=2`). Do not change these values as a side effect of another change — flipping main's to `"true"` is the deliberate switch that makes v2 the default install channel.
+**GitHub's "latest" is a badge, not the install default.** GitHub has one repo-wide "latest" release, and `.goreleaser.yml` pins `release.make_latest` per branch: `"true"` on `releases/v1`, `"false"` on `main` while 2.0 is pre-GA. Since `install.sh` resolves the newest release of a major line itself (`DEFAULT_MAJOR=2`, with `VERSION=1` for the legacy line), that pointer no longer decides what a default install gets — it drives the GitHub UI badge, and the in-CLI update notifier, which reads `/releases/latest`. Flip `main` to `"true"` (and `releases/v1` to `"false"`) when 2.0 goes GA, deliberately and not as a side effect of another change.
