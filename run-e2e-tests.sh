@@ -7,6 +7,21 @@ log_and_run() {
   "$@"
 }
 
+# -slim replaces -no-plugins (kestra-io/kestra#16054, kestra-io/actions#204), but
+# older/unreleased versions may not have published a -slim image yet. Probe the
+# registry and fall back so CI doesn't break on those.
+resolve_kestra_image_suffix() {
+  local version="$1"
+  local repo="europe-west1-docker.pkg.dev/kestra-host/docker/kestra-ee"
+
+  if docker pull -q "${repo}:${version}-slim" >/dev/null 2>&1; then
+    echo "-slim"
+  else
+    echo "no ${repo}:${version}-slim, falling back to -no-plugins" >&2
+    echo "-no-plugins"
+  fi
+}
+
 if [ $# -ge 1 ]; then
   versions="$1"
 else
@@ -23,10 +38,11 @@ for KESTRA_VERSION in $versions; do
 
   echo "docker KESTRA_VERSION used: $KESTRA_VERSION\n"
 
+  export KESTRA_VERSION=$KESTRA_VERSION
+  export KESTRA_IMAGE_SUFFIX=$(resolve_kestra_image_suffix "$KESTRA_VERSION")
+
   echo "start Kestra container"
   log_and_run docker compose -f docker-compose-ci.yml down
-
-  export KESTRA_VERSION=$KESTRA_VERSION
   log_and_run docker compose -f docker-compose-ci.yml up -d --wait || {
      echo "db Docker Compose failed. Dumping logs:";
      log_and_run docker compose -f docker-compose-ci.yml logs;
