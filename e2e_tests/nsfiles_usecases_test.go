@@ -50,6 +50,38 @@ func TestNsfilesUpload_e2e(t *testing.T) {
 	require.Error(t, err, "file should have been deleted")
 }
 
+// Regression test for #130: deleting a subdirectory recursively used to wipe
+// every sibling file in the parent directory.
+func TestNsfilesDeleteRecursive_keepsSiblings(t *testing.T) {
+	dir := "e2e-nsfiles-tests/" + randomId()
+	keep := dir + "/keep.txt"
+	nested := dir + "/sub/x.txt"
+
+	_, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "upload", "system", "./README.md", keep)
+	require.Empty(t, stderr)
+	require.NoError(t, err)
+
+	_, stderr, err = RunAuthenticatedCliCmd(t, "nsfiles", "upload", "system", "./README.md", nested)
+	require.Empty(t, stderr)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		_, _, _ = RunAuthenticatedCliCmd(t, "nsfiles", "delete", "system", dir, "--recursive", "--force")
+	})
+
+	_, stderr, err = RunAuthenticatedCliCmd(t, "nsfiles", "delete", "system", dir+"/sub", "--recursive")
+	require.Empty(t, stderr)
+	require.NoError(t, err)
+
+	_, _, err = RunAuthenticatedCliCmd(t, "nsfiles", "get", "system", nested)
+	require.Error(t, err, "deleted file should be gone")
+
+	stdout, stderr, err := RunAuthenticatedCliCmd(t, "nsfiles", "get", "system", keep)
+	require.Empty(t, stderr)
+	require.NoError(t, err, "sibling file must survive a recursive delete of a subdirectory")
+	require.Contains(t, stdout, "e2e tests")
+}
+
 func getRandomNsFilePath() string {
 	return "e2e-nsfiles-tests/" + randomId()
 }

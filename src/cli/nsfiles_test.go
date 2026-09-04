@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -352,6 +355,138 @@ func TestNamespaceFilesExportCommand_NoArgs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "accepts 1 arg") {
 		t.Fatalf("expected args error, got: %v", err)
+	}
+}
+
+// Regression test for #130: `delete /qa/sub --recursive` used to DELETE each
+// enumerated child before the directory itself, which wiped /qa. The server
+// prunes a directory once its last child goes, and a DELETE on a path that no
+// longer exists deletes the parent. One slash-prefixed DELETE on the directory
+// is the only safe request.
+func TestRunNamespaceFilesDelete_RecursiveIssuesOneDirectoryDelete(t *testing.T) {
+	var deletedPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Query().Get("path")
+		switch {
+		case r.Method == http.MethodDelete:
+			deletedPaths = append(deletedPaths, path)
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/files/stats"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"fileName":"sub","type":"Directory","size":0}`))
+		case strings.HasSuffix(r.URL.Path, "/files/directory"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"fileName":"nested.py","type":"File","size":3}]`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	renderer, err := NewRenderer("json", &out)
+	if err != nil {
+		t.Fatalf("NewRenderer() returned error: %v", err)
+	}
+
+	if err := runNamespaceFilesDelete(newTestClient(t, server.URL), "qa.ns", "/qa/sub", true, false, renderer); err != nil {
+		t.Fatalf("runNamespaceFilesDelete() returned error: %v", err)
+	}
+
+	if len(deletedPaths) != 1 || deletedPaths[0] != "/qa/sub" {
+		t.Fatalf("expected exactly one DELETE for [/qa/sub], got %v", deletedPaths)
+	}
+
+	// The single request removes the subtree, but the report still names every
+	// path that went away.
+	for _, reported := range []string{"qa/sub/nested.py", "qa/sub"} {
+		if !strings.Contains(out.String(), reported) {
+			t.Errorf("expected %q in the delete report, got: %s", reported, out.String())
+		}
+	}
+}
+
+// A recursive delete is one request, so a failure is one failure — however many
+// paths the report names.
+func TestRunNamespaceFilesDelete_RecursiveFailureCountsOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusInternalServerError)
+		case strings.HasSuffix(r.URL.Path, "/files/stats"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"fileName":"sub","type":"Directory","size":0}`))
+		case strings.HasSuffix(r.URL.Path, "/files/directory"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"fileName":"a.py","type":"File","size":3},{"fileName":"b.py","type":"File","size":3}]`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	renderer, err := NewRenderer("json", &out)
+	if err != nil {
+		t.Fatalf("NewRenderer() returned error: %v", err)
+	}
+
+	err = runNamespaceFilesDelete(newTestClient(t, server.URL), "qa.ns", "/qa/sub", true, false, renderer)
+	if err == nil {
+		t.Fatal("expected an error when the DELETE fails")
+	}
+	if !strings.Contains(err.Error(), "1 error(s)") {
+		t.Errorf("expected the summary to report 1 error, got: %v", err)
+	}
+
+	// Every reported row still carries the failure, so the report stays useful.
+	var summary namespaceFileDeleteSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("could not decode the delete report: %v (%s)", err, out.String())
+	}
+	if len(summary.Results) != 3 {
+		t.Fatalf("expected 3 reported rows, got %d: %s", len(summary.Results), out.String())
+	}
+	for _, result := range summary.Results {
+		if result.Success {
+			t.Errorf("expected row %q to be marked failed", result.Path)
+		}
+		if result.Error == "" {
+			t.Errorf("expected row %q to carry the error", result.Path)
+		}
+	}
+}
+
+func TestRunNamespaceFilesDelete_SingleFileSendsSlashPrefixedPath(t *testing.T) {
+	var deletedPaths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			deletedPaths = append(deletedPaths, r.URL.Query().Get("path"))
+			w.WriteHeader(http.StatusOK)
+		case strings.HasSuffix(r.URL.Path, "/files/stats"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"fileName":"hello.txt","type":"File","size":3}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	renderer, err := NewRenderer("json", io.Discard)
+	if err != nil {
+		t.Fatalf("NewRenderer() returned error: %v", err)
+	}
+
+	if err := runNamespaceFilesDelete(newTestClient(t, server.URL), "qa.ns", "qa/hello.txt", false, false, renderer); err != nil {
+		t.Fatalf("runNamespaceFilesDelete() returned error: %v", err)
+	}
+
+	if len(deletedPaths) != 1 || deletedPaths[0] != "/qa/hello.txt" {
+		t.Fatalf("expected DELETE path [/qa/hello.txt], got %v", deletedPaths)
 	}
 }
 
