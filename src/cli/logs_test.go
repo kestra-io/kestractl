@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -197,6 +201,48 @@ func TestLogFilterOptions(t *testing.T) {
 		f := logFilterOptions("", "", "", false, 0)
 		if f.attempt != nil {
 			t.Errorf("expected attempt nil when not changed, got %v", *f.attempt)
+		}
+	})
+}
+
+// Regression test for #122: the LEVEL column and the JSON "level" field must
+// not carry the JSON quotes of the SDK's Level enum.
+func TestRunLogsList_LevelHasNoQuotes(t *testing.T) {
+	body := `[{"timestamp":"2026-09-03T12:54:31.000Z","level":"INFO","namespace":"bug122","flowId":"hello122","taskId":"hello","message":"hello from bug122"}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+
+	t.Run("json", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := runLogsList(newTestClient(t, server.URL), "exec-1", logFilter{}, newJSONRenderer(&buf)); err != nil {
+			t.Fatalf("runLogsList error: %v", err)
+		}
+		var got []map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+			t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+		}
+		if len(got) != 1 {
+			t.Fatalf("expected 1 entry, got %d: %s", len(got), buf.String())
+		}
+		if got[0]["level"] != "INFO" {
+			t.Errorf(`json level = %#v, want "INFO"`, got[0]["level"])
+		}
+	})
+
+	t.Run("table", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := runLogsList(newTestClient(t, server.URL), "exec-1", logFilter{}, newTableRenderer(&buf)); err != nil {
+			t.Fatalf("runLogsList error: %v", err)
+		}
+		out := buf.String()
+		if strings.Contains(out, `"INFO"`) {
+			t.Errorf("table output contains quoted level:\n%s", out)
+		}
+		if !strings.Contains(out, "INFO") {
+			t.Errorf("table output missing level:\n%s", out)
 		}
 	})
 }

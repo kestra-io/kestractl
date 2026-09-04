@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"text/tabwriter"
 )
@@ -70,6 +71,28 @@ func (r *Renderer) RenderJSON(value any) error {
 	return err
 }
 
+// underlyingString reports the text of any value whose underlying kind is
+// string, dereferencing pointers along the way.
+//
+// The Kestra SDK generates its enums as named string types (Level, StateType,
+// Relation, ...) with no String() method, so a plain `case string` type switch
+// does not match them and they would otherwise fall through to json.Marshal
+// and be rendered with their JSON quotes — e.g. `"INFO"` instead of INFO.
+// See https://github.com/kestra-io/kestractl/issues/122.
+func underlyingString(value any) (string, bool) {
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return "", false
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() == reflect.String {
+		return rv.String(), true
+	}
+	return "", false
+}
+
 func stringify(value any) string {
 	switch v := value.(type) {
 	case nil:
@@ -79,6 +102,9 @@ func stringify(value any) string {
 	case fmt.Stringer:
 		return v.String()
 	default:
+		if s, ok := underlyingString(v); ok {
+			return s
+		}
 		data, err := json.Marshal(v)
 		if err != nil {
 			return fmt.Sprintf("%v", v)
@@ -94,6 +120,9 @@ func toPrettyString(value any) string {
 	case string:
 		return v
 	default:
+		if s, ok := underlyingString(v); ok {
+			return s
+		}
 		data, err := json.MarshalIndent(v, "", "  ")
 		if err != nil {
 			return fmt.Sprintf("%v", v)
