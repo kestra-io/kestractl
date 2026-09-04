@@ -306,7 +306,7 @@ func runLogsSearch(client *Client, filters []kestra.SearchFilter, page, size int
 	for i, entry := range logs {
 		result[i] = map[string]any{
 			"timestamp": entry.GetTimestamp().Format(time.RFC3339),
-			"level":     stringify(entry.GetLevel()),
+			"level":     string(entry.GetLevel()),
 			"namespace": entry.GetNamespace(),
 			"flowId":    entry.GetFlowId(),
 			"taskId":    entry.GetTaskId(),
@@ -424,7 +424,7 @@ func runLogsList(client *Client, executionID string, opts logFilter, renderer *R
 	for i, entry := range logs {
 		result[i] = map[string]any{
 			"timestamp": entry.GetTimestamp().Format(time.RFC3339),
-			"level":     stringify(entry.GetLevel()),
+			"level":     string(entry.GetLevel()),
 			"taskId":    entry.GetTaskId(),
 			"message":   entry.GetMessage(),
 		}

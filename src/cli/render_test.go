@@ -2,10 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"text/tabwriter"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 )
 
 func TestNormalizeOutputFormat(t *testing.T) {
@@ -120,5 +123,52 @@ func TestRenderer_RenderTable(t *testing.T) {
 	}
 	if strings.Contains(output, "\"id\"") {
 		t.Fatalf("did not expect JSON output, got: %s", output)
+	}
+}
+
+// bugStringer is a named string type that also implements fmt.Stringer, to
+// prove the Stringer branch still wins over the plain-string-kind fallback.
+type bugStringer string
+
+func (b bugStringer) String() string { return "stringer:" + string(b) }
+
+func TestStringify(t *testing.T) {
+	tests := []struct {
+		name  string
+		input any
+		want  string
+	}{
+		{name: "nil", input: nil, want: ""},
+		{name: "plain string", input: "INFO", want: "INFO"},
+		{name: "sdk Level enum", input: kestra.LEVEL_INFO, want: "INFO"},
+		{name: "sdk Level enum error", input: kestra.LEVEL_ERROR, want: "ERROR"},
+		{name: "sdk StateType enum", input: kestra.STATETYPE_SUCCESS, want: "SUCCESS"},
+		{name: "sdk Relation enum", input: kestra.RELATION_USED_BY, want: "USED_BY"},
+		{name: "pointer to enum", input: kestra.LEVEL_WARN.Ptr(), want: "WARN"},
+		{name: "stringer wins over string kind", input: bugStringer("x"), want: "stringer:x"},
+		{name: "int stays json", input: 42, want: "42"},
+		{name: "bool stays json", input: true, want: "true"},
+		{name: "byte slice stays json", input: []byte("hi"), want: `"aGk="`},
+		{name: "json.RawMessage stays json", input: json.RawMessage(`{"a":1}`), want: `{"a":1}`},
+		{name: "map stays json", input: map[string]any{"a": 1}, want: `{"a":1}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := stringify(tc.input); got != tc.want {
+				t.Errorf("stringify(%#v) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToPrettyString_EnumHasNoQuotes(t *testing.T) {
+	if got := toPrettyString(kestra.STATETYPE_FAILED); got != "FAILED" {
+		t.Errorf("toPrettyString(STATETYPE_FAILED) = %q, want %q", got, "FAILED")
+	}
+	// Non-string values keep their existing pretty-printed JSON form.
+	wantPretty := "{\n  \"a\": 1\n}"
+	if got := toPrettyString(json.RawMessage(`{"a":1}`)); got != wantPretty {
+		t.Errorf("toPrettyString(RawMessage) = %q, want %q", got, wantPretty)
 	}
 }
