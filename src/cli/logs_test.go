@@ -104,7 +104,7 @@ func TestLogsDeleteFlowCommand_ClientError(t *testing.T) {
 	defer func() { newClientFunc = original }()
 
 	cmd := newLogsDeleteFlowCommand()
-	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "--trigger-id", "my-trigger")
 	if err == nil {
 		t.Fatal("expected client error")
 	}
@@ -245,4 +245,70 @@ func TestRunLogsList_LevelHasNoQuotes(t *testing.T) {
 			t.Errorf("table output missing level:\n%s", out)
 		}
 	})
+}
+
+// The flow-scoped log deletion endpoint declares triggerId as a required query
+// parameter on both Kestra 1.3 and 2.x, and an empty value is accepted but
+// deletes nothing. Omitting --trigger-id must therefore fail locally with a
+// helpful message rather than round-trip to a 400 or silently no-op.
+func TestRunLogsDeleteFlow_MissingTriggerIDFailsWithoutRequest(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runLogsDeleteFlow(newTestClient(t, server.URL), "my.ns", "my-flow", "", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected an error when --trigger-id is omitted")
+	}
+	if !strings.Contains(err.Error(), "--trigger-id is required") {
+		t.Fatalf("expected a --trigger-id error, got: %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("expected no request to be sent, got %d", requests)
+	}
+}
+
+func TestRunLogsDeleteFlow_SendsTriggerID(t *testing.T) {
+	var gotMethod, gotPath, gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runLogsDeleteFlow(newTestClient(t, server.URL), "my.ns", "my-flow", "my-trigger", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runLogsDeleteFlow error: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Errorf("expected DELETE, got %s", gotMethod)
+	}
+	if gotPath != "/api/v1/main/logs/my.ns/my-flow" {
+		t.Errorf("unexpected path: %s", gotPath)
+	}
+	if gotQuery != "triggerId=my-trigger" {
+		t.Errorf("expected triggerId in query, got %q", gotQuery)
+	}
+}
+
+func TestLogsDeleteFlowCommand_MissingTriggerID(t *testing.T) {
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) {
+		return nil, errors.New("client error")
+	}
+	defer func() { newClientFunc = original }()
+
+	cmd := newLogsDeleteFlowCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow")
+	if err == nil {
+		t.Fatal("expected an error when --trigger-id is omitted")
+	}
+	if !strings.Contains(err.Error(), "--trigger-id is required") {
+		t.Fatalf("expected a --trigger-id error, got: %v", err)
+	}
 }
