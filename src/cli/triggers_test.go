@@ -2,10 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -778,5 +780,166 @@ func TestTriggersExportCSVCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+// --- issue #118: the 2.0 trigger/state response shape ---
+//
+// Kestra 2.0 answers GET /triggers/search with {"trigger":{...},"state":{...}}
+// while 1.3 answers {"abstractTrigger":{...},"triggerContext":{...}}. Both must
+// render the same row, on both servers.
+
+func TestRunTriggersList_RendersBothEras(t *testing.T) {
+	for _, tt := range []struct {
+		version, body string
+	}{
+		{"2.0.0-rc13", trigger20SearchBody},
+		{"1.3.35", trigger13SearchBody},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			server := triggerTestServer(t, tt.version, tt.body)
+
+			var buf bytes.Buffer
+			if err := runTriggersList(newTestClient(t, server.URL), 1, 50, newTableRenderer(&buf)); err != nil {
+				t.Fatalf("runTriggersList: %v", err)
+			}
+			out := buf.String()
+			for _, want := range []string{
+				"bug118", "sched118", "every_min",
+				"io.kestra.plugin.core.trigger.Schedule",
+				"2026-09-04T10:40:00Z",
+			} {
+				if !strings.Contains(out, want) {
+					t.Errorf("expected %q in output, got:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+// The JSON keys are part of the CLI's contract and must not move.
+func TestRunTriggersList_JSONKeys(t *testing.T) {
+	server := triggerTestServer(t, "2.0.0-rc13", trigger20SearchBody)
+
+	var buf bytes.Buffer
+	renderer, err := NewRenderer("json", &buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runTriggersList(newTestClient(t, server.URL), 1, 50, renderer); err != nil {
+		t.Fatalf("runTriggersList: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("output is not JSON: %v (%s)", err, buf.String())
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+	want := map[string]any{
+		"namespace":         "bug118",
+		"flowId":            "sched118",
+		"triggerId":         "every_min",
+		"type":              "io.kestra.plugin.core.trigger.Schedule",
+		"disabled":          false,
+		"nextExecutionDate": "2026-09-04T10:40:00Z",
+	}
+	if !reflect.DeepEqual(rows[0], want) {
+		t.Fatalf("row mismatch\n got: %v\nwant: %v", rows[0], want)
+	}
+}
+
+func TestRunTriggersSearchForFlow_BothEras(t *testing.T) {
+	for _, tt := range []struct {
+		version, body string
+	}{
+		{"2.0.0-rc13", `{"results":[` + trigger20StateBody + `],"total":1}`},
+		{"1.3.35", `{"results":[` + trigger13StateBody + `],"total":1}`},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			server := triggerTestServer(t, tt.version, tt.body)
+
+			var buf bytes.Buffer
+			err := runTriggersSearchForFlow(newTestClient(t, server.URL), "bug118", "sched118", 1, 50, "", newTableRenderer(&buf))
+			if err != nil {
+				t.Fatalf("runTriggersSearchForFlow: %v", err)
+			}
+			for _, want := range []string{"bug118", "sched118", "every_min"} {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("expected %q in output, got:\n%s", want, buf.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunTriggersUnlock_BothEras(t *testing.T) {
+	for _, tt := range []struct {
+		version, body string
+	}{
+		{"2.0.0-rc13", trigger20StateBody},
+		{"1.3.35", trigger13StateBody},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			server := triggerTestServer(t, tt.version, tt.body)
+
+			var buf bytes.Buffer
+			err := runTriggersUnlock(newTestClient(t, server.URL), "bug118", "sched118", "every_min", newTableRenderer(&buf))
+			if err != nil {
+				t.Fatalf("runTriggersUnlock: %v", err)
+			}
+			for _, want := range []string{"bug118", "sched118", "every_min"} {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("expected %q in output, got:\n%s", want, buf.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunTriggersBackfillOp_BothEras(t *testing.T) {
+	for _, op := range []string{"pause", "unpause", "delete"} {
+		for _, tt := range []struct {
+			version, body string
+		}{
+			{"2.0.0-rc13", trigger20StateBody},
+			{"1.3.35", trigger13StateBody},
+		} {
+			t.Run(op+"/"+tt.version, func(t *testing.T) {
+				server := triggerTestServer(t, tt.version, tt.body)
+
+				var buf bytes.Buffer
+				err := runTriggersBackfillOp(newTestClient(t, server.URL), "bug118", "sched118", "every_min", op, newTableRenderer(&buf))
+				if err != nil {
+					t.Fatalf("runTriggersBackfillOp(%s): %v", op, err)
+				}
+				if !strings.Contains(buf.String(), "every_min") {
+					t.Errorf("expected the trigger id in output, got:\n%s", buf.String())
+				}
+			})
+		}
+	}
+}
+
+func TestRunTriggersRestart_BothEras(t *testing.T) {
+	for _, tt := range []struct {
+		version, body string
+	}{
+		{"2.0.0-rc13", trigger20StateBody},
+		{"1.3.35", trigger13StateBody},
+	} {
+		t.Run(tt.version, func(t *testing.T) {
+			server := triggerTestServer(t, tt.version, tt.body)
+
+			var buf bytes.Buffer
+			err := runTriggersRestart(newTestClient(t, server.URL), "bug118", "sched118", "every_min", newTableRenderer(&buf))
+			if err != nil {
+				t.Fatalf("runTriggersRestart: %v", err)
+			}
+			if !strings.Contains(buf.String(), "restarted") {
+				t.Errorf("expected a restart confirmation, got:\n%s", buf.String())
+			}
+		})
 	}
 }
