@@ -115,7 +115,7 @@ func newClientDefault() (*Client, error) {
 		Ctx:    ctx,
 		Tenant: tenant,
 	}
-	compat.legacyServer = c.isLegacyServer
+	compat.era = c.serverEra
 	return c, nil
 }
 
