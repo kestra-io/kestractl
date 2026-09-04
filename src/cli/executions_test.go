@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -1565,5 +1566,61 @@ func TestExecutionsWatchCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestRunExecutionsRun_WaitJSONOutputIsParseable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"SUCCESS"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out, errOut bytes.Buffer
+	renderer := newJSONRenderer(&out).WithErrWriter(&errOut)
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, renderer); err != nil {
+		t.Fatalf("runExecutionsRun error: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout:\n%s", err, out.String())
+	}
+	if payload["id"] != "exec-1" {
+		t.Errorf("expected execution id exec-1, got %v", payload["id"])
+	}
+}
+
+func TestRunExecutionsRun_WaitProgressGoesToErrWriter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"SUCCESS"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out, errOut bytes.Buffer
+	renderer := newTableRenderer(&out).WithErrWriter(&errOut)
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, renderer); err != nil {
+		t.Fatalf("runExecutionsRun error: %v", err)
+	}
+
+	progress := errOut.String()
+	if !strings.Contains(progress, "Triggering execution of flow 'my-flow' in namespace 'my.ns'...") {
+		t.Errorf("expected triggering notice on the error writer, got:\n%s", progress)
+	}
+	if !strings.Contains(progress, "Waiting for execution to complete...") {
+		t.Errorf("expected waiting notice on the error writer, got:\n%s", progress)
+	}
+
+	stdout := out.String()
+	if strings.Contains(stdout, "Triggering execution") || strings.Contains(stdout, "Waiting for execution") {
+		t.Errorf("progress lines must not reach stdout, got:\n%s", stdout)
+	}
+	// The result lines stay on stdout.
+	if !strings.Contains(stdout, "Execution ID: exec-1") {
+		t.Errorf("expected execution result on stdout, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "SUCCESS") {
+		t.Errorf("expected state on stdout, got:\n%s", stdout)
 	}
 }
