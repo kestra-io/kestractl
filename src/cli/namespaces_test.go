@@ -568,3 +568,117 @@ func TestNamespacesCreateCommand_InvalidQuota(t *testing.T) {
 		t.Fatalf("expected missing-key error, got: %v", err)
 	}
 }
+
+// The inherited-variables endpoint answers with a flat {variable: value} map on
+// both Kestra 1.3 and 2.0, while the SDK types it as map[string]map[string]any
+// (issue #128). Any scalar value fails that decode.
+func TestRunNamespacesInheritedVariables_FlatMapWithScalarValues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/main/namespaces/my.namespace/inherited-variables" {
+			t.Errorf("unexpected request path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"count":7,"name":"hello","nested":{"a":1},"flag":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesInheritedVariables error: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{"NAMESPACE", "KEY", "VALUE", "my.namespace", "count", "7", "name", "hello", "flag", "true", "nested", `{"a":1}`, "Total variables: 4"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected %q in output, got:\n%s", want, out)
+		}
+	}
+}
+
+// A variable above 2^53 must render with every digit, not in float notation.
+func TestRunNamespacesInheritedVariables_PreservesLargeIntegers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"big":1725000000000000001}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesInheritedVariables error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "1725000000000000001") {
+		t.Fatalf("expected the exact integer in output, got:\n%s", out)
+	}
+	if strings.Contains(out, "e+18") {
+		t.Fatalf("expected no float notation in output, got:\n%s", out)
+	}
+}
+
+func TestRunNamespacesInheritedVariables_JSONOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"big":1725000000000000001,"name":"hello"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newJSONRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesInheritedVariables error: %v", err)
+	}
+
+	var rows []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &rows); err != nil {
+		t.Fatalf("output is not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("expected 2 rows, got %d: %s", len(rows), buf.String())
+	}
+	// Rows are sorted by key, so "big" comes first.
+	if rows[0]["namespace"] != "my.namespace" || rows[0]["key"] != "big" || rows[0]["value"] != "1725000000000000001" {
+		t.Fatalf("unexpected first row: %v", rows[0])
+	}
+	if rows[1]["key"] != "name" || rows[1]["value"] != "hello" {
+		t.Fatalf("unexpected second row: %v", rows[1])
+	}
+}
+
+func TestRunNamespacesInheritedVariables_EmptyResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runNamespacesInheritedVariables error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Total variables: 0") {
+		t.Fatalf("expected an empty listing, got:\n%s", buf.String())
+	}
+}
+
+func TestRunNamespacesInheritedVariables_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"status":404,"message":"namespace not found"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "missing.namespace", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected an error for a 404 response")
+	}
+	if !strings.Contains(err.Error(), "namespace not found") {
+		t.Fatalf("expected the server message in the error, got: %v", err)
+	}
+}
