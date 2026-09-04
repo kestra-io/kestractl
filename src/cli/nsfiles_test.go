@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -402,6 +403,58 @@ func TestRunNamespaceFilesDelete_RecursiveIssuesOneDirectoryDelete(t *testing.T)
 	for _, reported := range []string{"qa/sub/nested.py", "qa/sub"} {
 		if !strings.Contains(out.String(), reported) {
 			t.Errorf("expected %q in the delete report, got: %s", reported, out.String())
+		}
+	}
+}
+
+// A recursive delete is one request, so a failure is one failure — however many
+// paths the report names.
+func TestRunNamespaceFilesDelete_RecursiveFailureCountsOnce(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusInternalServerError)
+		case strings.HasSuffix(r.URL.Path, "/files/stats"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"fileName":"sub","type":"Directory","size":0}`))
+		case strings.HasSuffix(r.URL.Path, "/files/directory"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"fileName":"a.py","type":"File","size":3},{"fileName":"b.py","type":"File","size":3}]`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	renderer, err := NewRenderer("json", &out)
+	if err != nil {
+		t.Fatalf("NewRenderer() returned error: %v", err)
+	}
+
+	err = runNamespaceFilesDelete(newTestClient(t, server.URL), "qa.ns", "/qa/sub", true, false, renderer)
+	if err == nil {
+		t.Fatal("expected an error when the DELETE fails")
+	}
+	if !strings.Contains(err.Error(), "1 error(s)") {
+		t.Errorf("expected the summary to report 1 error, got: %v", err)
+	}
+
+	// Every reported row still carries the failure, so the report stays useful.
+	var summary namespaceFileDeleteSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("could not decode the delete report: %v (%s)", err, out.String())
+	}
+	if len(summary.Results) != 3 {
+		t.Fatalf("expected 3 reported rows, got %d: %s", len(summary.Results), out.String())
+	}
+	for _, result := range summary.Results {
+		if result.Success {
+			t.Errorf("expected row %q to be marked failed", result.Path)
+		}
+		if result.Error == "" {
+			t.Errorf("expected row %q to carry the error", result.Path)
 		}
 	}
 }
