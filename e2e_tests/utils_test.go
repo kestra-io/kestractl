@@ -45,6 +45,7 @@ func RunCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err 
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, cliPath, args...)
+	cmd.Env = isolatedEnv(t)
 
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -58,6 +59,44 @@ func RunCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err 
 	}
 
 	return outBuf.String(), errBuf.String(), err
+}
+
+// isolatedEnv returns the environment for a CLI run with the developer's own
+// kestractl config kept out of it.
+//
+// The CLI resolves credentials as flags > env > ~/.kestractl/config.yaml, and
+// prefers a token over username/password. So a developer who has ever run
+// `kestractl config` has a token on disk that outranks the --username/--password
+// these tests pass, and the whole suite fails with "Authentication required"
+// against a perfectly good server. TestSimpleCmd_Unauthenticated has the same
+// dependency from the other side: it can only pass when no config is readable.
+// CI never notices because its HOME is empty.
+//
+// Pointing HOME at a per-test temp dir makes the suite hermetic. The KESTRACTL_*
+// credential variables are dropped for the same reason, minus the harness's own.
+func isolatedEnv(t *testing.T) []string {
+	t.Helper()
+
+	home := t.TempDir()
+	env := []string{"HOME=" + home, "USERPROFILE=" + home}
+	for _, kv := range os.Environ() {
+		key, _, found := strings.Cut(kv, "=")
+		if !found {
+			continue
+		}
+		switch key {
+		case "HOME", "USERPROFILE":
+			continue
+		case KESTRACTL_CLI_GENERATED_FOR_E2E:
+			// The harness's own handle on the built binary, not CLI config.
+		default:
+			if strings.HasPrefix(key, "KESTRACTL_") {
+				continue
+			}
+		}
+		env = append(env, kv)
+	}
+	return env
 }
 
 func cliExeName() string {
