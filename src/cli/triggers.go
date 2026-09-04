@@ -88,30 +88,28 @@ func runTriggersList(client *Client, page, size int32, renderer *Renderer) error
 		size = 50
 	}
 
-	resp, _, err := client.API.TriggersAPI.
-		SearchTriggers(client.Ctx, client.Tenant).
-		Page(page).
-		Size(size).
-		Execute()
+	// Both response shapes are read in compat_triggers.go; the 2.0 one is what a
+	// 2.x server sends and what the generated endpoint used here before could
+	// not decode (issue #118).
+	triggers, total, err := fetchTriggerRows(client, page, size)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
-	triggers := resp.GetResults()
 	result := make([]map[string]any, len(triggers))
 	for i, t := range triggers {
-		ctx := t.GetTriggerContext()
 		row := map[string]any{
-			"namespace": ctx.GetNamespace(),
-			"flowId":    ctx.GetFlowId(),
-			"triggerId": ctx.GetTriggerId(),
-			"disabled":  ctx.GetDisabled(),
+			"namespace": t.Namespace,
+			"flowId":    t.FlowID,
+			"triggerId": t.TriggerID,
+			"type":      t.Type,
+			"disabled":  t.Disabled,
 		}
-		if next, ok := ctx.GetNextExecutionDateOk(); ok && next != nil && !next.IsZero() {
-			row["nextExecutionDate"] = next.Format(time.RFC3339)
+		// The output key keeps the 1.x spelling kestractl has always rendered,
+		// whichever server the value came from.
+		if t.NextExecutionDate != nil {
+			row["nextExecutionDate"] = t.NextExecutionDate.Format(time.RFC3339)
 		}
-		ab := t.GetAbstractTrigger()
-		row["type"] = ab.GetType()
 		result[i] = row
 	}
 
@@ -131,7 +129,7 @@ func runTriggersList(client *Client, page, size int32, renderer *Renderer) error
 				nextRun,
 			)
 		}
-		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(result), page, resp.GetTotal())
+		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(result), page, total)
 		return nil
 	})
 }
@@ -201,11 +199,9 @@ func newTriggersUnlockCommand() *cobra.Command {
 }
 
 func runTriggersUnlock(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
-	t, _, err := client.API.TriggersAPI.
-		UnlockTrigger(client.Ctx, namespace, flowID, triggerID, client.Tenant).
-		Execute()
+	t, err := unlockTriggerRef(client, namespace, flowID, triggerID)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 	if t == nil {
 		result := map[string]any{"namespace": namespace, "flowId": flowID, "triggerId": triggerID}
@@ -216,16 +212,16 @@ func runTriggersUnlock(client *Client, namespace, flowID, triggerID string, rend
 	}
 
 	result := map[string]any{
-		"namespace": t.GetNamespace(),
-		"flowId":    t.GetFlowId(),
-		"triggerId": t.GetTriggerId(),
-		"disabled":  t.GetDisabled(),
+		"namespace": t.Namespace,
+		"flowId":    t.FlowID,
+		"triggerId": t.TriggerID,
+		"disabled":  t.Disabled,
 	}
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "NAMESPACE\t%s\n", t.GetNamespace())
-		fmt.Fprintf(w, "FLOW\t%s\n", t.GetFlowId())
-		fmt.Fprintf(w, "TRIGGER\t%s\n", t.GetTriggerId())
-		fmt.Fprintf(w, "DISABLED\t%v\n", t.GetDisabled())
+		fmt.Fprintf(w, "NAMESPACE\t%s\n", t.Namespace)
+		fmt.Fprintf(w, "FLOW\t%s\n", t.FlowID)
+		fmt.Fprintf(w, "TRIGGER\t%s\n", t.TriggerID)
+		fmt.Fprintf(w, "DISABLED\t%v\n", t.Disabled)
 		fmt.Fprintln(w, "\nTrigger unlocked.")
 		return nil
 	})
@@ -254,6 +250,12 @@ func newTriggersRestartCommand() *cobra.Command {
 }
 
 func runTriggersRestart(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
+	// Deliberately still the generated endpoint: it decodes into
+	// map[string]interface{}, which accepts both the 2.0 and the 1.x response
+	// shapes, so restart is not affected by issue #118. The hand-written
+	// endpoint returns a typed ApiTriggerState, whose required `updatedAt` a 1.3
+	// server omits from this particular response — swapping it would trade a
+	// working command on both servers for a broken one on 1.3.
 	resp, _, err := client.API.TriggersAPI.
 		RestartTrigger(client.Ctx, namespace, flowID, triggerID, client.Tenant).
 		Execute()
@@ -334,41 +336,29 @@ func runTriggersSearchForFlow(client *Client, namespace, flowID string, page, si
 		size = 50
 	}
 
-	req := client.API.TriggersAPI.
-		SearchTriggersForFlow(client.Ctx, namespace, flowID, client.Tenant).
-		Page(page).
-		Size(size)
-	if query != "" {
-		req = req.Q(query)
-	}
-
-	resp, _, err := req.Execute()
+	// See compat_triggers.go: a 2.0 server's ApiTriggerState has no `date`, which
+	// the generated endpoint's model requires (issue #118).
+	triggers, total, err := fetchFlowTriggerRefs(client, namespace, flowID, page, size, query)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
-	triggers := resp.GetResults()
 	result := make([]map[string]any, len(triggers))
 	for i, t := range triggers {
 		result[i] = map[string]any{
-			"namespace": t.GetNamespace(),
-			"flowId":    t.GetFlowId(),
-			"triggerId": t.GetTriggerId(),
-			"disabled":  t.GetDisabled(),
+			"namespace": t.Namespace,
+			"flowId":    t.FlowID,
+			"triggerId": t.TriggerID,
+			"disabled":  t.Disabled,
 		}
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "NAMESPACE\tFLOW\tTRIGGER ID\tDISABLED")
 		for _, t := range triggers {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%v\n",
-				t.GetNamespace(),
-				t.GetFlowId(),
-				t.GetTriggerId(),
-				t.GetDisabled(),
-			)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\n", t.Namespace, t.FlowID, t.TriggerID, t.Disabled)
 		}
-		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(triggers), page, resp.GetTotal())
+		fmt.Fprintf(w, "\nShowing %d trigger(s) (page %d, total %d)\n", len(triggers), page, total)
 		return nil
 	})
 }
@@ -440,38 +430,16 @@ func newTriggersBackfillDeleteCommand() *cobra.Command {
 }
 
 func runTriggersBackfillOp(client *Client, namespace, flowID, triggerID, op string, renderer *Renderer) error {
-	t := kestra.NewTrigger(namespace, flowID, triggerID, time.Now())
-
-	var updated *kestra.Trigger
-	var err error
-
-	switch op {
-	case "pause":
-		updated, _, err = client.API.TriggersAPI.
-			PauseBackfill(client.Ctx, client.Tenant).
-			Trigger(*t).
-			Execute()
-	case "unpause":
-		updated, _, err = client.API.TriggersAPI.
-			UnpauseBackfill(client.Ctx, client.Tenant).
-			Trigger(*t).
-			Execute()
-	default: // delete
-		updated, _, err = client.API.TriggersAPI.
-			DeleteBackfill(client.Ctx, client.Tenant).
-			Trigger(*t).
-			Execute()
-	}
-
+	updated, err := backfillTriggerRef(client, namespace, flowID, triggerID, op)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
 	ns, fid, tid := namespace, flowID, triggerID
 	if updated != nil {
-		ns = updated.GetNamespace()
-		fid = updated.GetFlowId()
-		tid = updated.GetTriggerId()
+		ns = updated.Namespace
+		fid = updated.FlowID
+		tid = updated.TriggerID
 	}
 
 	result := map[string]any{
