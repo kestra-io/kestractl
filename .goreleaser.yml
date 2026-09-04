@@ -58,3 +58,51 @@ changelog:
     exclude:
       - "^docs:"
       - "^test:"
+
+# Container images. The binaries above are already static (CGO_ENABLED=0), so the
+# Dockerfiles are thin COPY layers and no compilation happens inside Docker.
+#
+# `dockers_v2` builds one real multi-platform manifest per entry with buildx and
+# pushes it to every registry in `images`, so no per-arch tags leak into the
+# registries. Only the immutable X.Y.Z tags are produced here - the rolling tags
+# (X.Y, X, latest) are added by release.yml with `regctl image copy`, which
+# re-points the same manifest instead of rebuilding it.
+#
+# Note: these builds run in GoReleaser's *publish* phase. Use `--snapshot` (not
+# `--skip=publish`) for a no-push dry run; snapshot emits per-platform images
+# tagged `<tag>-amd64` / `<tag>-arm64` instead of a manifest.
+dockers_v2:
+  - id: alpine
+    ids: [kestractl]
+    dockerfile: Dockerfile
+    images:
+      - kestra/kestractl
+      - ghcr.io/kestra-io/kestractl
+    tags:
+      - "{{ .Version }}"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels: &oci_labels
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Command-line interface for Kestra"
+      org.opencontainers.image.vendor: "Kestra Technologies"
+      org.opencontainers.image.url: "https://kestra.io"
+      org.opencontainers.image.source: "https://github.com/kestra-io/kestractl"
+      org.opencontainers.image.licenses: "Apache-2.0"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+  - id: static
+    ids: [kestractl]
+    dockerfile: Dockerfile.static
+    images:
+      - kestra/kestractl
+      - ghcr.io/kestra-io/kestractl
+    tags:
+      - "{{ .Version }}-static"
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels: *oci_labels

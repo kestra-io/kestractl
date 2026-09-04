@@ -108,3 +108,15 @@ Three traps are worth knowing before touching any of this:
 Each auto-tagged rc is what a default `curl … | bash` install resolves to, because `install.sh`'s `VERSION=2` default picks the newest release of the major line, **prereleases included**. That is why the release gate is the full `Tests` suite (unit, installer smoke, e2e matrix) and not a fast subset.
 
 **GitHub's "latest" is a badge, not the install default.** GitHub has one repo-wide "latest" release, and `.goreleaser.yml` pins `release.make_latest` per branch: `"true"` on `releases/v1`, `"false"` on `main` while 2.0 is pre-GA. Since `install.sh` resolves the newest release of a major line itself (`DEFAULT_MAJOR=2`, with `VERSION=1` for the legacy line), that pointer no longer decides what a default install gets — it drives the GitHub UI badge, and the in-CLI update notifier, which reads `/releases/latest`. Flip `main` to `"true"` (and `releases/v1` to `"false"`) when 2.0 goes GA, deliberately and not as a side effect of another change.
+
+### Container images
+
+Every release also publishes a multi-arch (`linux/amd64` + `linux/arm64`) image, built by GoReleaser from the same tag (`dockers_v2` in `.goreleaser.yml`) and pushed to both `kestra/kestractl` and `ghcr.io/kestra-io/kestractl`, in two variants: Alpine (default tag) and distroless (`-static`).
+
+Three things to know before touching this:
+
+- **The rolling tags are copies, not rebuilds.** GoReleaser publishes only the exact-version manifest; `release.yml` then uses `regctl image copy` to point `X.Y`, `X` and `latest` at that same manifest. Rebuilding them would produce different digests per tag.
+- **A prerelease still moves the major-line tag.** `:2` tracks the newest v2 release *including* rcs, mirroring what `install.sh`'s `VERSION=2` default resolves to. Only stable releases move `:X.Y` and `:latest`. Without this, `main` being pre-GA would mean no usable moving tag exists at all.
+- **`packages: write` has to be granted by the caller.** A reusable workflow inherits the caller's `GITHUB_TOKEN` and can only narrow it, so the grant in `release.yml` does nothing on the `auto-tag.yml` path unless `auto-tag.yml`'s `release` job grants it too. Getting this wrong fails only at the GHCR push, only on a real release.
+
+`DOCKER_LATEST` in `release.yml` decides which line owns `:latest`, i.e. what an untagged `docker pull` resolves to. Docker cannot resolve "newest release of a major line" the way `install.sh` does, so this needs an explicit per-branch pointer. It stays on v1 until 2.0.0 is GA, and gets flipped in the same change as `release.make_latest`.

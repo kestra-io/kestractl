@@ -53,6 +53,42 @@ jobs:
   list-versions:
     uses: ./.github/workflows/list-versions.yml
 
+  # The Docker path only ever runs on a tag, so without this it could only break
+  # in production. Builds every image variant (amd64 + arm64, Alpine + static)
+  # from the real .goreleaser.yml and smoke-tests the native ones.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Docker init
+        uses: kestra-io/actions/composite/setup-docker@main
+
+      - name: Build images (snapshot, no push)
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --snapshot --clean
+
+      - name: Smoke test images
+        run: |
+          set -euo pipefail
+          version=$(jq -r .version dist/metadata.json)
+          docker run --rm "kestra/kestractl:${version}-amd64" version
+          docker run --rm "kestra/kestractl:${version}-amd64" --help > /dev/null
+          docker run --rm --entrypoint sh "kestra/kestractl:${version}-amd64" \
+            -c 'git --version && curl --version && bash --version' > /dev/null
+          docker run --rm "kestra/kestractl:${version}-static-amd64" version
+
   e2e-tests:
     needs: list-versions
     # Fork PRs don't receive secrets (GCP creds for the private EE image, EE license), so e2e cannot run.
@@ -99,7 +135,7 @@ jobs:
 
   notify-failure:
     name: Notify CI failure
-    needs: [test, list-versions, e2e-tests]
+    needs: [test, docker-build, list-versions, e2e-tests]
     if: always() && github.event_name != 'pull_request' && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     steps:
@@ -108,6 +144,7 @@ jobs:
         run: |
           failed=""
           [ "${{ needs.test.result }}" = "failure" ] && failed="$failed test"
+          [ "${{ needs.docker-build.result }}" = "failure" ] && failed="$failed docker-build"
           [ "${{ needs.list-versions.result }}" = "failure" ] && failed="$failed list-versions"
           [ "${{ needs.e2e-tests.result }}" = "failure" ] && failed="$failed e2e-tests"
           echo "list=${failed# }" >> "$GITHUB_OUTPUT"
