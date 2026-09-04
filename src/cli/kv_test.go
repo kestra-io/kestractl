@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -166,12 +167,8 @@ func TestFormatKVRequestBody(t *testing.T) {
 	}
 }
 
-func TestExtractKVTypedValue(t *testing.T) {
-	resp := kestra.NewKVControllerKvDetail()
-	resp.SetType(kestra.KVTYPE_STRING)
-	resp.SetValue(map[string]any{"value": "hello"})
-
-	typed := extractKVTypedValue(resp)
+func TestParseKVTypedValueBody(t *testing.T) {
+	typed := parseKVTypedValueBody([]byte(`{"type":"STRING","value":"hello","revision":1}`))
 	if typed == nil {
 		t.Fatal("expected typed value, got nil")
 	}
@@ -183,12 +180,8 @@ func TestExtractKVTypedValue(t *testing.T) {
 	}
 }
 
-func TestExtractKVTypedValue_JSONObject(t *testing.T) {
-	resp := kestra.NewKVControllerKvDetail()
-	resp.SetType(kestra.KVTYPE_JSON)
-	resp.SetValue(map[string]any{"feature": true, "count": 2})
-
-	typed := extractKVTypedValue(resp)
+func TestParseKVTypedValueBody_JSONObject(t *testing.T) {
+	typed := parseKVTypedValueBody([]byte(`{"type":"JSON","value":{"feature":true,"count":2}}`))
 	if typed == nil {
 		t.Fatal("expected typed value, got nil")
 	}
@@ -203,8 +196,18 @@ func TestExtractKVTypedValue_JSONObject(t *testing.T) {
 	if valueMap["feature"] != true {
 		t.Fatalf("expected feature=true, got %v", valueMap["feature"])
 	}
-	if valueMap["count"] != 2 {
-		t.Fatalf("expected count=2, got %v", valueMap["count"])
+	if got := toPrettyString(valueMap["count"]); got != "2" {
+		t.Fatalf("expected count=2, got %s", got)
+	}
+}
+
+func TestParseKVTypedValueBody_RejectsProblemDocumentAndEmptyBody(t *testing.T) {
+	if got := parseKVTypedValueBody(nil); got != nil {
+		t.Fatalf("expected nil for an empty body, got %#v", got)
+	}
+	problem := []byte(`{"type":"https://kestra.io/docs/api-reference/problems/not-found","title":"Resource not found","status":404,"detail":"No value found"}`)
+	if got := parseKVTypedValueBody(problem); got != nil {
+		t.Fatalf("expected a problem document to be rejected, got %#v", got)
 	}
 }
 
@@ -230,8 +233,8 @@ func TestTryParseKVTypedValueFromError(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected map value, got %T", typed.Value)
 	}
-	if valueMap["a"] != 1.0 {
-		t.Fatalf("expected parsed value 1.0, got %v", valueMap["a"])
+	if got := toPrettyString(valueMap["a"]); got != "1" {
+		t.Fatalf("expected parsed value 1, got %s", got)
 	}
 }
 
@@ -378,5 +381,248 @@ func TestTryParseKVTypedValueFromError_StillRecoversRealValue(t *testing.T) {
 	got := tryParseKVTypedValueFromError(err)
 	if got == nil || got.Type != "STRING" || got.Value != "hello" {
 		t.Fatalf("expected the KV payload to still be recovered, got %#v", got)
+	}
+}
+
+// --- #121: integer precision above 2^53 ---------------------------------
+
+const (
+	bigNumber   = "9007199254740993"
+	bigNanosObj = `{"nanos":1725450000123456789}`
+)
+
+// TestFormatKVRequestBody_PreservesLargeIntegers pins the write path: the body
+// PUT to Kestra must carry the digits the user typed, not a float64 round-trip.
+func TestFormatKVRequestBody_PreservesLargeIntegers(t *testing.T) {
+	tests := []struct {
+		name     string
+		kvType   kestra.KVType
+		rawValue string
+		wantBody string
+	}{
+		{name: "number above 2^53", kvType: kestra.KVTYPE_NUMBER, rawValue: bigNumber, wantBody: bigNumber},
+		{name: "number with surrounding space", kvType: kestra.KVTYPE_NUMBER, rawValue: " " + bigNumber + " ", wantBody: bigNumber},
+		{name: "json with epoch nanos", kvType: kestra.KVTYPE_JSON, rawValue: bigNanosObj, wantBody: bigNanosObj},
+		{name: "json array of big ints", kvType: kestra.KVTYPE_JSON, rawValue: `[9007199254740993,9007199254740995]`, wantBody: `[9007199254740993,9007199254740995]`},
+		{name: "json nested big int", kvType: kestra.KVTYPE_JSON, rawValue: `{"a":{"b":[1725450000123456789]}}`, wantBody: `{"a":{"b":[1725450000123456789]}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := formatKVRequestBody(tt.kvType, tt.rawValue)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if body != tt.wantBody {
+				t.Fatalf("expected body %q, got %q", tt.wantBody, body)
+			}
+		})
+	}
+}
+
+// TestFormatKVRequestBody_JSONIsCompacted keeps the pre-#121 behaviour of
+// normalising whitespace, which the old Unmarshal/Marshal round-trip provided.
+func TestFormatKVRequestBody_JSONIsCompacted(t *testing.T) {
+	body, err := formatKVRequestBody(kestra.KVTYPE_JSON, "{ \"a\" : 1,\n\"b\": [ 2, 3 ] }")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if body != `{"a":1,"b":[2,3]}` {
+		t.Fatalf("expected compacted JSON, got %q", body)
+	}
+}
+
+func TestFormatKVRequestBody_RejectsNonNumericNumbers(t *testing.T) {
+	for _, raw := range []string{"abc", "true", `"5"`, "null", "[1]", "{}", "1 2", ""} {
+		if body, err := formatKVRequestBody(kestra.KVTYPE_NUMBER, raw); err == nil {
+			t.Fatalf("expected NUMBER %q to be rejected, got body %q", raw, body)
+		}
+	}
+}
+
+func TestFormatKVRequestBody_RejectsTrailingJSONGarbage(t *testing.T) {
+	if body, err := formatKVRequestBody(kestra.KVTYPE_JSON, `{"a":1} {"b":2}`); err == nil {
+		t.Fatalf("expected trailing garbage to be rejected, got body %q", body)
+	}
+}
+
+// TestParseKVDisplayValue_PreservesLargeIntegers covers the echo printed by
+// kv set / kv update, asserting on rendered digits rather than on Go types.
+func TestParseKVDisplayValue_PreservesLargeIntegers(t *testing.T) {
+	tests := []struct {
+		name     string
+		kvType   kestra.KVType
+		rawValue string
+		want     string
+	}{
+		{name: "number", kvType: kestra.KVTYPE_NUMBER, rawValue: bigNumber, want: bigNumber},
+		{name: "small number", kvType: kestra.KVTYPE_NUMBER, rawValue: "42", want: "42"},
+		{name: "float number", kvType: kestra.KVTYPE_NUMBER, rawValue: "1.5", want: "1.5"},
+		{name: "boolean", kvType: kestra.KVTYPE_BOOLEAN, rawValue: "true", want: "true"},
+		{name: "string", kvType: kestra.KVTYPE_STRING, rawValue: "hello", want: "hello"},
+		{name: "date", kvType: kestra.KVTYPE_DATE, rawValue: "2025-10-13", want: "2025-10-13"},
+		{name: "datetime", kvType: kestra.KVTYPE_DATETIME, rawValue: "2025-10-14T18:02:08Z", want: "2025-10-14T18:02:08Z"},
+		{name: "duration", kvType: kestra.KVTYPE_DURATION, rawValue: "PT15M", want: "PT15M"},
+		{name: "json nanos", kvType: kestra.KVTYPE_JSON, rawValue: bigNanosObj, want: "1725450000123456789"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := toPrettyString(parseKVDisplayValue(tt.kvType, tt.rawValue))
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("expected rendered value to contain %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestTryParseKVTypedValueFromError_PreservesLargeIntegers(t *testing.T) {
+	err := &kestra.GenericOpenAPIError{}
+	setGenericOpenAPIErrorBody(err, []byte(`{"type":"NUMBER","value":`+bigNumber+`,"revision":1}`))
+
+	got := tryParseKVTypedValueFromError(err)
+	if got == nil {
+		t.Fatal("expected the KV payload to be recovered")
+	}
+	if rendered := toPrettyString(got.Value); rendered != bigNumber {
+		t.Fatalf("expected %s, got %s", bigNumber, rendered)
+	}
+}
+
+// kvGetServer answers the KV detail endpoint with a canned raw body.
+func kvGetServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/namespaces/ns/kv/k") {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestKVGet_PreservesLargeIntegers(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "number", body: `{"type":"NUMBER","value":` + bigNumber + `,"revision":1}`, want: bigNumber},
+		{name: "json object", body: `{"type":"JSON","value":` + bigNanosObj + `,"revision":1}`, want: "1725450000123456789"},
+		{name: "json array", body: `{"type":"JSON","value":[9007199254740993],"revision":1}`, want: "9007199254740993"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := kvGetServer(t, tt.body)
+
+			var table bytes.Buffer
+			if err := runKVGet(newTestClient(t, server.URL), "ns", "k", newTableRenderer(&table)); err != nil {
+				t.Fatalf("runKVGet error: %v", err)
+			}
+			if !strings.Contains(table.String(), tt.want) {
+				t.Fatalf("table output lost precision, want %s in:\n%s", tt.want, table.String())
+			}
+
+			var asJSON bytes.Buffer
+			if err := runKVGet(newTestClient(t, server.URL), "ns", "k", newJSONRenderer(&asJSON)); err != nil {
+				t.Fatalf("runKVGet error: %v", err)
+			}
+			if !strings.Contains(asJSON.String(), tt.want) {
+				t.Fatalf("json output lost precision, want %s in:\n%s", tt.want, asJSON.String())
+			}
+			// The value must stay a bare JSON number, never a quoted string.
+			if strings.Contains(asJSON.String(), `"`+tt.want+`"`) {
+				t.Fatalf("expected a bare JSON number, got:\n%s", asJSON.String())
+			}
+		})
+	}
+}
+
+// TestKVGet_OtherTypes keeps the non-numeric types rendering as before.
+func TestKVGet_OtherTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "string", body: `{"type":"STRING","value":"hello"}`, want: "Value: hello"},
+		{name: "boolean", body: `{"type":"BOOLEAN","value":true}`, want: "Value: true"},
+		{name: "datetime", body: `{"type":"DATETIME","value":"2025-10-14T18:02:08Z"}`, want: "Value: 2025-10-14T18:02:08Z"},
+		{name: "duration", body: `{"type":"DURATION","value":"PT15M"}`, want: "Value: PT15M"},
+		{name: "nested json", body: `{"type":"JSON","value":{"a":{"b":true}}}`, want: `"b": true`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := kvGetServer(t, tt.body)
+			var buf bytes.Buffer
+			if err := runKVGet(newTestClient(t, server.URL), "ns", "k", newTableRenderer(&buf)); err != nil {
+				t.Fatalf("runKVGet error: %v", err)
+			}
+			if !strings.Contains(buf.String(), tt.want) {
+				t.Fatalf("expected %q in:\n%s", tt.want, buf.String())
+			}
+		})
+	}
+}
+
+func TestKVGet_NotFoundStillErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"type":"https://kestra.io/docs/api-reference/problems/not-found","title":"Resource not found","status":404,"detail":"No value found for key 'k' in namespace 'ns'"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runKVGet(newTestClient(t, server.URL), "ns", "k", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected a not-found error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected a not-found message, got: %v", err)
+	}
+}
+
+// TestKVWrite_SendsExactDigits is the data-loss half of #121: the value stored
+// server-side must be the digits the user typed.
+func TestKVWrite_SendsExactDigits(t *testing.T) {
+	tests := []struct {
+		name     string
+		kvType   string
+		rawValue string
+		wantBody string
+	}{
+		{name: "number", kvType: "NUMBER", rawValue: bigNumber, wantBody: bigNumber},
+		{name: "json", kvType: "JSON", rawValue: bigNanosObj, wantBody: bigNanosObj},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotBody string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				gotBody = string(raw)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			t.Cleanup(server.Close)
+
+			var buf bytes.Buffer
+			if err := runKVWrite(newTestClient(t, server.URL), "ns", "k", tt.rawValue, tt.kvType, "", false, newTableRenderer(&buf)); err != nil {
+				t.Fatalf("runKVWrite error: %v", err)
+			}
+			if gotBody != tt.wantBody {
+				t.Fatalf("expected request body %q, got %q", tt.wantBody, gotBody)
+			}
+			for _, digits := range strings.FieldsFunc(tt.wantBody, func(r rune) bool { return r < '0' || r > '9' }) {
+				if !strings.Contains(buf.String(), digits) {
+					t.Fatalf("expected the echo to show exact digits %s, got:\n%s", digits, buf.String())
+				}
+			}
+		})
 	}
 }

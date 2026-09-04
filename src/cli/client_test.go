@@ -414,3 +414,33 @@ func TestResolveConfigAuthPrecedence(t *testing.T) {
 		})
 	}
 }
+
+// TestIsProblemDocument_StatusNumberForms covers both decoders: a plain
+// json.Unmarshal yields float64, while UseNumber (used by the KV paths to keep
+// integers above 2^53 exact) yields json.Number. Either must still be
+// recognised, or a 404 would render as a record with a zero exit code.
+func TestIsProblemDocument_StatusNumberForms(t *testing.T) {
+	tests := []struct {
+		name string
+		doc  map[string]any
+		want bool
+	}{
+		{name: "float64 status", doc: map[string]any{"status": float64(404), "title": "Resource not found"}, want: true},
+		{name: "json.Number status", doc: map[string]any{"status": json.Number("404"), "title": "Resource not found"}, want: true},
+		{name: "json.Number status with detail only", doc: map[string]any{"status": json.Number("404"), "detail": "No value found"}, want: true},
+		{name: "json.Number status without title or detail", doc: map[string]any{"status": json.Number("404")}, want: false},
+		{name: "string status", doc: map[string]any{"status": "404", "title": "Resource not found"}, want: false},
+		{name: "no status", doc: map[string]any{"title": "Resource not found"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isProblemDocument(tt.doc); got != tt.want {
+				t.Fatalf("isProblemDocument = %v, want %v", got, tt.want)
+			}
+			if tt.want && problemMessage(tt.doc) == "" {
+				t.Fatal("expected a rendered problem message")
+			}
+		})
+	}
+}
