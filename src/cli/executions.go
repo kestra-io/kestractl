@@ -1353,7 +1353,10 @@ func newExecutionsBulkForceRunCommand() *cobra.Command {
 }
 
 func runExecutionsBulkOp(client *Client, ids []string, op string, renderer *Renderer) error {
-	var resp *kestra.BulkResponse
+	// The action bulk endpoints answer with the 2.0 async-operation shape; only
+	// the delete ones still return a BulkResponse (kestra-io/client-sdk#409).
+	var resp *kestra.ApiAsyncOperationResponse
+	var deleteResp *kestra.BulkResponse
 	var err error
 
 	switch op {
@@ -1362,7 +1365,7 @@ func runExecutionsBulkOp(client *Client, ids []string, op string, renderer *Rend
 			KillExecutionsByIds(client.Ctx, client.Tenant).
 			RequestBody(ids).Execute()
 	case "delete":
-		resp, _, err = client.API.ExecutionsAPI.
+		deleteResp, _, err = client.API.ExecutionsAPI.
 			DeleteExecutionsByIds(client.Ctx, client.Tenant).
 			RequestBody(ids).Execute()
 	case "restart":
@@ -1392,8 +1395,11 @@ func runExecutionsBulkOp(client *Client, ids []string, op string, renderer *Rend
 	}
 
 	count := int32(0)
-	if resp != nil {
-		count = resp.GetCount()
+	switch {
+	case resp != nil:
+		count = resp.GetTotalItems()
+	case deleteResp != nil:
+		count = deleteResp.GetCount()
 	}
 
 	result := map[string]any{
@@ -1450,7 +1456,7 @@ func runExecutionsBulkSetLabels(client *Client, ids []string, labels []kestra.La
 
 	count := int32(0)
 	if resp != nil {
-		count = resp.GetCount()
+		count = resp.GetTotalItems()
 	}
 
 	result := map[string]any{"count": count, "ids": ids, "labels": len(labels)}
@@ -1501,7 +1507,7 @@ func runExecutionsBulkUnqueue(client *Client, ids []string, state string, render
 
 	count := int32(0)
 	if resp != nil {
-		count = resp.GetCount()
+		count = resp.GetTotalItems()
 	}
 
 	result := map[string]any{"count": count, "ids": ids}
@@ -1791,7 +1797,7 @@ func runExecutionsUpdateStatusByQuery(client *Client, newStatus string, filters 
 
 	count := int32(0)
 	if resp != nil {
-		count = resp.GetCount()
+		count = resp.GetTotalItems()
 	}
 
 	result := map[string]any{"count": count, "new_status": newStatus}
