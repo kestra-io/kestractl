@@ -954,6 +954,7 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 			if err != nil {
 				return err
 			}
+			renderer.WithErrWriter(cmd.ErrOrStderr())
 			client, err := NewClient()
 			if err != nil {
 				return err
@@ -970,8 +971,10 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 
 func runExecutionsRun(client *Client, namespace, flowID string, wait bool, renderer *Renderer) error {
 	if wait {
-		fmt.Fprintf(renderer.Writer(), "Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
-		fmt.Fprintln(renderer.Writer(), "Waiting for execution to complete...")
+		// Progress goes to stderr so it never mixes into the rendered output,
+		// which would make `--output json` unparseable.
+		fmt.Fprintf(renderer.ErrWriter(), "Triggering execution of flow '%s' in namespace '%s'...\n", flowID, namespace)
+		fmt.Fprintln(renderer.ErrWriter(), "Waiting for execution to complete...")
 	}
 
 	// POST /executions/{namespace}/{flowId} is shaped exactly like a 1.x action

@@ -18,6 +18,7 @@ const (
 type Renderer struct {
 	format string
 	out    io.Writer
+	errOut io.Writer
 }
 
 func NewRenderer(output string, out io.Writer) (*Renderer, error) {
@@ -48,6 +49,23 @@ func (r *Renderer) IsJSON() bool {
 
 func (r *Renderer) Writer() io.Writer {
 	return r.out
+}
+
+// WithErrWriter sets the stream progress and diagnostic messages are written
+// to, keeping them out of the rendered output on Writer(). It returns the
+// receiver so it can be chained onto a constructor.
+func (r *Renderer) WithErrWriter(errOut io.Writer) *Renderer {
+	r.errOut = errOut
+	return r
+}
+
+// ErrWriter returns the stream for progress and diagnostic messages, which is
+// never the rendered-output stream. Defaults to os.Stderr.
+func (r *Renderer) ErrWriter() io.Writer {
+	if r.errOut == nil {
+		return os.Stderr
+	}
+	return r.errOut
 }
 
 func (r *Renderer) Render(value any, renderTable func(w *tabwriter.Writer) error) error {
