@@ -1,8 +1,14 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -563,9 +569,9 @@ func newNamespacesInheritedVariablesCommand() *cobra.Command {
 }
 
 func runNamespacesInheritedVariables(client *Client, id string, renderer *Renderer) error {
-	resp, _, err := client.API.NamespacesAPI.InheritedVariables(client.Ctx, id, client.Tenant).Execute()
+	variables, err := fetchInheritedVariables(client, id)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
 	type row struct {
@@ -574,11 +580,18 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 		Value     string `json:"value"`
 	}
 
-	var rows []row
-	for ns, vars := range resp {
-		for k, v := range vars {
-			rows = append(rows, row{Namespace: ns, Key: k, Value: fmt.Sprintf("%v", v)})
-		}
+	keys := make([]string, 0, len(variables))
+	for k := range variables {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	rows := make([]row, 0, len(keys))
+	for _, k := range keys {
+		// stringify keeps a json.Number's digits verbatim and renders a
+		// structured value as JSON; fmt.Sprintf("%v") turned a large integer
+		// into float notation and a map into Go's map[k:v] syntax.
+		rows = append(rows, row{Namespace: id, Key: k, Value: stringify(variables[k])})
 	}
 
 	jsonRows := make([]map[string]any, len(rows))
@@ -594,6 +607,101 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 		fmt.Fprintf(w, "\nTotal variables: %d\n", len(rows))
 		return nil
 	})
+}
+
+// fetchInheritedVariables reads a namespace's inherited variables with a direct
+// HTTP request instead of the SDK.
+//
+// The generated SDK types this endpoint's response as
+// map[string]map[string]interface{}, but both Kestra 1.3 and 2.0 answer with
+// the already-merged flat map of variable name to value — so any scalar value
+// fails the typed decode with "cannot unmarshal number into Go value of type
+// map[string]interface {}" and the command errors before rendering anything
+// (issue #128). Reading the body here also lets it be decoded with UseNumber,
+// which keeps integers above 2^53 exact rather than routing them through
+// float64.
+//
+// The URL mirrors the SDK's InheritedVariables endpoint, and the request reuses
+// the SDK's configured host, HTTP client, default headers and context-based
+// auth so the verbose dump and the 1.x compat shims still apply.
+func fetchInheritedVariables(client *Client, id string) (map[string]any, error) {
+	cfg := client.API.GetConfig()
+
+	base := ""
+	if len(cfg.Servers) > 0 {
+		base = cfg.Servers[0].URL
+	}
+	if base == "" {
+		base = cfg.Scheme + "://" + cfg.Host
+	}
+	base = strings.TrimRight(base, "/")
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/inherited-variables",
+		base,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(id),
+	)
+
+	req, err := http.NewRequestWithContext(client.Ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for h, v := range cfg.DefaultHeader {
+		req.Header.Set(h, v)
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read inherited variables response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, formatErrorBody(body, resp.Status)
+	}
+
+	return parseInheritedVariables(body)
+}
+
+// parseInheritedVariables decodes an inherited-variables body into a flat map,
+// preserving number literals as json.Number.
+//
+// A response that still uses the nested {namespace: {variable: value}} shape the
+// SDK models decodes into this map too: the inner object lands as the value and
+// renders as JSON, which is lossless, rather than being rejected.
+func parseInheritedVariables(body []byte) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	// UseNumber keeps a variable's digits verbatim: decoding into float64 would
+	// round anything above 2^53 on the way back out.
+	decoder.UseNumber()
+
+	var variables map[string]any
+	if err := decoder.Decode(&variables); err != nil {
+		return nil, fmt.Errorf("failed to parse inherited variables response: %w", err)
+	}
+	return variables, nil
 }
 
 func newNamespacesSearchCommand() *cobra.Command {
