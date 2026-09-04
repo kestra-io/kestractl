@@ -101,13 +101,28 @@ func TestExecutionActions_succeedOnTerminatedExecution(t *testing.T) {
 	deployExecutionsTestFlow(t, flowID)
 
 	tests := []struct {
-		action string
-		args   []string
-		expect string
+		action    string
+		args      []string
+		expect    string
+		minKestra [2]int
+		minReason string
 	}{
 		// Reached through the SDK's hand-written client, which emits the 2.0
 		// path: the one command that was broken on 1.3 rather than on 2.0.
-		{action: "eval-expression", args: []string{"{{ flow.id }}"}, expect: flowID},
+		//
+		// Gated at 1.3 because the endpoint behind it does not answer a basic
+		// authenticated request before then — v1.0 through v1.2 reply
+		// "Unauthorized" for an execution that exists, and the pre-1.3 Go SDK
+		// exposed only an /eval/{taskRunId} variant, which this command has no
+		// argument for. Asserting it there would be asserting a feature those
+		// server lines do not offer.
+		{
+			action:    "eval-expression",
+			args:      []string{"{{ flow.id }}"},
+			expect:    flowID,
+			minKestra: [2]int{1, 3},
+			minReason: "the execution eval endpoint is not usable before 1.3",
+		},
 		{action: "set-labels", args: []string{"env=e2e"}, expect: "Set 1 label(s)"},
 		{action: "replay", expect: "replayed as"},
 		{action: "change-status", args: []string{"SUCCESS"}, expect: "status changed to"},
@@ -115,6 +130,10 @@ func TestExecutionActions_succeedOnTerminatedExecution(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.action, func(t *testing.T) {
+			if tt.minKestra != [2]int{} {
+				skipBelowKestra(t, tt.minKestra[0], tt.minKestra[1], tt.minReason)
+			}
+
 			// A fresh execution per action, so one action cannot move the
 			// subject's state out from under the next.
 			executionID := runTerminatedExecution(t, flowID)
@@ -142,8 +161,9 @@ func TestExecutionActions_reachTheRoutedEndpoint(t *testing.T) {
 	executionID := runTerminatedExecution(t, flowID)
 
 	for _, tt := range []struct {
-		action string
-		args   []string
+		action    string
+		args      []string
+		minKestra [2]int
 	}{
 		{action: "kill"},
 		{action: "pause"},
@@ -155,9 +175,16 @@ func TestExecutionActions_reachTheRoutedEndpoint(t *testing.T) {
 		{action: "unqueue", args: []string{"--state", "RUNNING"}},
 		{action: "change-status", args: []string{"SUCCESS"}},
 		{action: "set-labels", args: []string{"env=e2e"}},
-		{action: "eval-expression", args: []string{"{{ flow.id }}"}},
+		// See the gate in TestExecutionActions_succeedOnTerminatedExecution: on
+		// a pre-1.3 server this can only pass vacuously, so it is skipped there
+		// rather than left to look like coverage.
+		{action: "eval-expression", args: []string{"{{ flow.id }}"}, minKestra: [2]int{1, 3}},
 	} {
 		t.Run(tt.action, func(t *testing.T) {
+			if tt.minKestra != [2]int{} {
+				skipBelowKestra(t, tt.minKestra[0], tt.minKestra[1], "endpoint not available")
+			}
+
 			args := append([]string{"executions", tt.action, executionID}, tt.args...)
 			stdout, stderr, _ := RunAuthenticatedCliCmd(t, args...)
 			requireRoutedCorrectly(t, tt.action, stdout, stderr)

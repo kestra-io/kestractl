@@ -3,14 +3,20 @@ package e2e_tests
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 const KESTRACTL_CLI_GENERATED_FOR_E2E = "KESTRACTL_CLI_GENERATED_FOR_E2E"
@@ -20,9 +26,69 @@ var (
 	builtCliErr error
 )
 
+// The instance this suite expects, per e2e_tests/README.md and
+// e2e_tests/docker-setup/application.yml.
+const (
+	e2eHost     = "http://localhost:9801"
+	e2eUsername = "root@root.com"
+	e2ePassword = "Root!1234"
+)
+
 func RunAuthenticatedCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err error) {
-	args = append(args, "--host", "http://localhost:9801", "--username", "root@root.com", "--password", "Root!1234")
+	args = append(args, "--host", e2eHost, "--username", e2eUsername, "--password", e2ePassword)
 	return RunCliCmd(t, args...)
+}
+
+// serverKestraVersion returns the major and minor version of the Kestra the
+// suite is running against.
+//
+// It asks the server rather than reading KESTRA_VERSION, because the documented
+// way to run this suite is against an instance you started yourself, where that
+// variable is not set. Tests use it to skip assertions about endpoints a given
+// server line does not have, rather than hard-coding a version matrix here.
+func serverKestraVersion(t *testing.T) (major int, minor int) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodGet, e2eHost+"/api/v1/configs", nil)
+	require.NoError(t, err)
+	req.SetBasicAuth(e2eUsername, e2ePassword)
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err, "could not reach the Kestra under test")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "unexpected status from /api/v1/configs")
+
+	var configs struct {
+		Version string `json:"version"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&configs))
+
+	// Versions look like "1.3.35", "2.0.0-rc13" or "SNAPSHOT" on a develop
+	// build. An unparseable version counts as current: this suite's develop job
+	// tracks the newest server, not an old one.
+	parts := strings.SplitN(configs.Version, ".", 3)
+	if len(parts) < 2 {
+		return math.MaxInt, 0
+	}
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return math.MaxInt, 0
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return major, 0
+	}
+	return major, minor
+}
+
+// skipBelowKestra skips the test when the server predates the given version.
+func skipBelowKestra(t *testing.T, major, minor int, reason string) {
+	t.Helper()
+
+	haveMajor, haveMinor := serverKestraVersion(t)
+	if haveMajor < major || (haveMajor == major && haveMinor < minor) {
+		t.Skipf("needs Kestra %d.%d or later (server is %d.%d): %s", major, minor, haveMajor, haveMinor, reason)
+	}
 }
 
 /*
