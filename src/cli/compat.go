@@ -8,7 +8,11 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
+
+	"github.com/spf13/viper"
 )
 
 // Kestra 1.x compatibility.
@@ -84,13 +88,26 @@ func rewriteExempt(ctx context.Context) bool {
 // Client.ServerVersion once the client exists, and the shims stay inert until
 // then.
 func newCompatHTTPClient() (*http.Client, *compatTransport) {
-	transport := &compatTransport{base: http.DefaultTransport, era: func() serverEra { return eraUnknown }}
+	transport := &compatTransport{
+		base:    http.DefaultTransport,
+		era:     func() serverEra { return eraUnknown },
+		verbose: viper.GetBool(FlagVerbose),
+	}
 	return &http.Client{Transport: transport}, transport
 }
 
 type compatTransport struct {
 	base http.RoundTripper
 	era  func() serverEra
+
+	// verbose enables the --verbose HTTP dump. Both SDK clients share this
+	// transport, so this is the one and only dump path: the SDKs' own debug
+	// loggers stay off (see newClientDefault), because the generated one prints
+	// the Authorization header verbatim (issue #119).
+	verbose bool
+	// logger is where the dump goes; nil means os.Stderr. It must never be
+	// stdout: `-o json` output has to stay parsable.
+	logger io.Writer
 }
 
 // compatMarkers are the keys a body must contain for fillCompatDefaults to have
@@ -99,7 +116,18 @@ type compatTransport struct {
 var compatMarkers = [][]byte{[]byte(`"tasks"`), []byte(`"flowRevision"`)}
 
 func (t *compatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.roundTrip(req)
+	if err != nil {
+		t.dumpTransportError(err)
+	} else {
+		t.dumpResponse(resp)
+	}
+	return resp, err
+}
+
+func (t *compatTransport) roundTrip(req *http.Request) (*http.Response, error) {
 	req, fallback := t.routeExecutionAction(req)
+	t.dumpRequest(req)
 
 	resp, err := t.base.RoundTrip(req)
 	if err == nil && fallback != "" && isRouteMiss(resp) {
@@ -108,6 +136,7 @@ func (t *compatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// the other shape safe to try. If it misses too, the first response is
 		// kept: its error describes the 2.x server this binary targets.
 		if retry, ok := cloneRequestWithPath(req, fallback); ok {
+			t.dumpRequest(retry)
 			if second, secondErr := t.base.RoundTrip(retry); secondErr == nil {
 				if isRouteMiss(second) {
 					drainAndClose(second)
@@ -488,4 +517,213 @@ func requireKestra2(client *Client, feature string) error {
 	}
 	version, _ := client.ServerVersion()
 	return fmt.Errorf("%s is only available on Kestra 2.0 or later (the server runs %s)", feature, version)
+}
+
+// --- verbose HTTP dump ---
+//
+// Both SDK clients ship their own debug logger, and they disagree: the
+// hand-written one masks sensitive headers, the generated one calls
+// httputil.DumpRequestOut and prints `Authorization: Basic <base64>` verbatim,
+// which is a credential in plain text (issue #119). Rather than depend on each
+// SDK client getting this right, kestractl turns both off and dumps here, on the
+// transport they share, so every request — generated, hand-written, or
+// hand-rolled (see runWebhookTrigger) — gets the same masking.
+
+// redactedHeaderValue is what a sensitive header's value is replaced with.
+const redactedHeaderValue = "REDACTED"
+
+// alwaysSensitiveHeaders are header names (lower-cased) that always carry a
+// credential.
+var alwaysSensitiveHeaders = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"cookie":              true,
+	"set-cookie":          true,
+}
+
+// sensitiveHeaderSubstrings catch credential-bearing headers this code does not
+// know by name, including anything a user passes with --header.
+var sensitiveHeaderSubstrings = []string{"token", "secret", "password", "api-key", "apikey"}
+
+// isSensitiveHeader reports whether a header's value must be masked in the
+// verbose dump. Matching is case-insensitive.
+func isSensitiveHeader(name string) bool {
+	lower := strings.ToLower(name)
+	if alwaysSensitiveHeaders[lower] {
+		return true
+	}
+	for _, needle := range sensitiveHeaderSubstrings {
+		if strings.Contains(lower, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// dumpWriter is where the verbose dump goes. Never stdout: the rendered command
+// output (notably `-o json`) has to stay parsable.
+func (t *compatTransport) dumpWriter() io.Writer {
+	if t.logger != nil {
+		return t.logger
+	}
+	return os.Stderr
+}
+
+// writeMaskedHeaders prints headers in sorted order, masking the sensitive
+// ones. It reads the header map without mutating it.
+func writeMaskedHeaders(w io.Writer, prefix string, h http.Header) {
+	names := make([]string, 0, len(h))
+	for name := range h {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		value := strings.Join(h[name], ", ")
+		if isSensitiveHeader(name) {
+			value = redactedHeaderValue
+		}
+		fmt.Fprintf(w, "%s %s: %s\n", prefix, name, value)
+	}
+}
+
+// dumpRequest prints the outgoing request. The request itself is left untouched:
+// the body is re-read through GetBody, and the headers are only read.
+func (t *compatTransport) dumpRequest(req *http.Request) {
+	if !t.verbose || req == nil {
+		return
+	}
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "> %s %s\n", req.Method, req.URL.String())
+	writeMaskedHeaders(&out, ">", req.Header)
+	if body, ok := requestBodyForDump(req); ok {
+		writeDumpBody(&out, ">", req.Header, body)
+	}
+	out.WriteString("\n")
+	_, _ = t.dumpWriter().Write(out.Bytes())
+}
+
+// requestBodyForDump returns a copy of the request body, or false when it
+// cannot be read without consuming what is about to be sent.
+func requestBodyForDump(req *http.Request) ([]byte, bool) {
+	if req.Body == nil || req.Body == http.NoBody || req.GetBody == nil {
+		return nil, false
+	}
+	rc, err := req.GetBody()
+	if err != nil || rc == nil {
+		return nil, false
+	}
+	defer func() { _ = rc.Close() }()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+// dumpResponse prints the response, then re-wraps its body so the SDK can still
+// decode it.
+func (t *compatTransport) dumpResponse(resp *http.Response) {
+	if !t.verbose || resp == nil {
+		return
+	}
+	var out bytes.Buffer
+	fmt.Fprintf(&out, "< %s\n", resp.Status)
+	writeMaskedHeaders(&out, "<", resp.Header)
+	if body, ok := t.readResponseBodyForDump(resp); ok {
+		writeDumpBody(&out, "<", resp.Header, body)
+	}
+	out.WriteString("\n")
+	_, _ = t.dumpWriter().Write(out.Bytes())
+}
+
+// readResponseBodyForDump buffers the response body and puts it back, so
+// dumping is transparent to the caller. A streaming response is skipped: it has
+// no end to read to, and buffering it would hang the command.
+func (t *compatTransport) readResponseBodyForDump(resp *http.Response) ([]byte, bool) {
+	if resp.Body == nil || resp.Body == http.NoBody || isEventStream(resp) {
+		return nil, false
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		// Hand the read error back to the caller rather than swallowing it.
+		resp.Body = io.NopCloser(errReader{err})
+		return body, true
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	return body, true
+}
+
+// isEventStream reports whether a response is a server-sent-event stream.
+func isEventStream(resp *http.Response) bool {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	return mediaType == "text/event-stream"
+}
+
+// errReader replays a read error, so a body that failed to buffer during the
+// dump still surfaces that failure to the SDK.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+// maxDumpBodyBytes caps how much of a body the dump prints. Past this, only the
+// placeholder is written: -v is a debugging aid, not a way to fill a terminal
+// with a multi-megabyte export.
+const maxDumpBodyBytes = 64 << 10
+
+// textLikeMediaTypes are the exact media types whose bodies are safe to print.
+// Anything else — a plugin jar, a namespace-file download, a CSV/zip export —
+// is binary and gets the placeholder instead of raw bytes on the terminal.
+var textLikeMediaTypes = map[string]bool{
+	"application/json":                  true,
+	"application/x-yaml":                true,
+	"application/yaml":                  true,
+	"application/x-www-form-urlencoded": true,
+}
+
+// isTextLikeContentType reports whether a body of this content type can be
+// printed as text. An absent or unparseable type is treated as binary: a body
+// that does not say what it is does not get dumped.
+func isTextLikeContentType(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	if strings.HasPrefix(mediaType, "text/") || textLikeMediaTypes[mediaType] {
+		return true
+	}
+	// application/problem+json and friends.
+	return strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json")
+}
+
+// writeDumpBody prints a body, or a one-line placeholder when it is binary or
+// too large to be worth printing. The bytes themselves are never altered: the
+// caller has already put the response body back for the SDK to read.
+func writeDumpBody(w io.Writer, prefix string, header http.Header, body []byte) {
+	if len(body) == 0 {
+		return
+	}
+	contentType := header.Get("Content-Type")
+	if !isTextLikeContentType(contentType) || len(body) > maxDumpBodyBytes {
+		label := contentType
+		if label == "" {
+			label = "unknown content type"
+		}
+		fmt.Fprintf(w, "%s [body: %s, %d bytes, not shown]\n", prefix, label, len(body))
+		return
+	}
+	fmt.Fprintf(w, "%s\n%s %s\n", prefix, prefix, body)
+}
+
+// dumpTransportError prints a failed round trip. The error text can carry the
+// request URL but never a header, so it needs no masking.
+func (t *compatTransport) dumpTransportError(err error) {
+	if !t.verbose {
+		return
+	}
+	fmt.Fprintf(t.dumpWriter(), "! %v\n\n", err)
 }

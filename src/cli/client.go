@@ -43,7 +43,6 @@ func NewClient() (*Client, error) {
 // newClientDefault is the default client creation logic.
 func newClientDefault() (*Client, error) {
 	host, tenant, auth, err := resolveConfig()
-	isVerbose := viper.GetBool("verbose")
 
 	if err != nil {
 		return nil, err
@@ -72,7 +71,10 @@ func newClientDefault() (*Client, error) {
 	cfg.Servers = kestra.ServerConfigurations{
 		{URL: host},
 	}
-	cfg.Debug = isVerbose
+	// The generated SDK debug logger prints the Authorization header verbatim,
+	// so both SDK loggers stay off and compatTransport does the dumping with
+	// uniform masking instead (issue #119).
+	cfg.Debug = false
 
 	// One HTTP client for both SDK clients, so the Kestra 1.x response shim
 	// (see compat.go) applies to generated and hand-written endpoints alike.
@@ -91,7 +93,7 @@ func newClientDefault() (*Client, error) {
 
 	// The hand-written client shares the same resolved host, headers, and debug
 	// setting; auth is appended per-branch below.
-	opts := []kestra.ClientOption{kestra.WithDebug(isVerbose), kestra.WithHTTPClient(httpClient)}
+	opts := []kestra.ClientOption{kestra.WithDebug(false), kestra.WithHTTPClient(httpClient)}
 	if len(parsed) > 0 {
 		opts = append(opts, kestra.WithHeaders(parsed))
 	}

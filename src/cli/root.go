@@ -77,19 +77,29 @@ with support for multiple authentication contexts and output formats.`,
 			// collected by awaitNewVersionCheck once the command is done.
 			startNewVersionCheck(cmd.ErrOrStderr())
 			if verbose, _ := cmd.Flags().GetBool(FlagVerbose); verbose == true {
+				// Diagnostics go to stderr so rendered output — `-o json` above
+				// all — stays parsable when -v is on.
+				diag := cmd.ErrOrStderr()
 				if viper.ConfigFileUsed() != "" {
-					fmt.Printf("config location: %s\n", viper.ConfigFileUsed())
+					fmt.Fprintf(diag, "config location: %s\n", viper.ConfigFileUsed())
 				}
-				fmt.Printf("resolved params: \n")
+				fmt.Fprintf(diag, "resolved params: \n")
 				cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 					v := flag.Value.String()
 					// Mask any credential-bearing flag, not just the global
 					// token/password ones (e.g. users --user-password).
 					name := strings.ToLower(flag.Name)
-					if v != "" && (strings.Contains(name, "token") || strings.Contains(name, "password")) {
+					switch {
+					case flag.Name == FlagHeader:
+						// A user-supplied header can carry a credential too, so
+						// mask per entry by header name (issue #119).
+						if headers, err := cmd.Flags().GetStringArray(FlagHeader); err == nil {
+							v = maskHeaderFlagValues(headers)
+						}
+					case v != "" && (strings.Contains(name, "token") || strings.Contains(name, "password")):
 						v = "XXX"
 					}
-					fmt.Printf("\t%s: %s\n", flag.Name, v)
+					fmt.Fprintf(diag, "\t%s: %s\n", flag.Name, v)
 				})
 			}
 			return nil
@@ -107,7 +117,7 @@ with support for multiple authentication contexts and output formats.`,
 	root.PersistentFlags().StringVar(&globalFlags.Tenant, FlagTenant, "", "Tenant name")
 	root.PersistentFlags().StringVarP(&globalFlags.Output, FlagOutput, "o", "table", "Output format (table or json)")
 	root.PersistentFlags().String(FlagConfig, "", "config file (default is $HOME/.kestractl/config.yaml)")
-	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "verbose output (warning: it will print credentials in http requests")
+	root.PersistentFlags().BoolP(FlagVerbose, "v", false, "print HTTP requests/responses to stderr; Authorization, cookie and other credential-bearing headers are masked, bodies are printed as-is")
 	root.PersistentFlags().StringArray(FlagHeader, nil, "Extra HTTP header to include in all requests (format: 'Key:Value', repeatable)")
 
 	root.AddCommand(newVersionCommand())
@@ -274,4 +284,23 @@ func newVersionCommand() *cobra.Command {
 			}
 		},
 	}
+}
+
+// maskHeaderFlagValues renders the --header flag for the verbose diagnostics,
+// masking the value of any entry whose header name looks credential-bearing.
+// The name is kept: knowing which header was sent is the point of -v.
+func maskHeaderFlagValues(headers []string) string {
+	masked := make([]string, 0, len(headers))
+	for _, h := range headers {
+		name, value, found := strings.Cut(h, ":")
+		if !found {
+			masked = append(masked, h)
+			continue
+		}
+		if isSensitiveHeader(strings.TrimSpace(name)) {
+			value = redactedHeaderValue
+		}
+		masked = append(masked, name+":"+value)
+	}
+	return "[" + strings.Join(masked, ",") + "]"
 }
