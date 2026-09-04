@@ -25,7 +25,7 @@ func newTestClient(t *testing.T, serverURL string) *Client {
 		Ctx:    context.Background(),
 		Tenant: "main",
 	}
-	compat.legacyServer = c.isLegacyServer
+	compat.era = c.serverEra
 	return c
 }
 

@@ -974,7 +974,11 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, rende
 		fmt.Fprintln(renderer.Writer(), "Waiting for execution to complete...")
 	}
 
-	resp, _, err := client.API.ExecutionsAPI.CreateExecution(client.Ctx, namespace, flowID, client.Tenant).
+	// POST /executions/{namespace}/{flowId} is shaped exactly like a 1.x action
+	// call, so the compat rewrite is opted out of here rather than guessed at in
+	// the transport (see withoutExecutionActionRewrite).
+	ctx := withoutExecutionActionRewrite(client.Ctx)
+	resp, _, err := client.API.ExecutionsAPI.CreateExecution(ctx, namespace, flowID, client.Tenant).
 		Wait(wait).
 		Execute()
 
@@ -2084,8 +2088,14 @@ func runExecutionsByQueryOp(client *Client, op string, filters []kestra.QueryFil
 		return formatSDKError(err)
 	}
 
+	// The server's own body is not rendered: its shape differs by version
+	// (`count` on 1.x, `operationId`/`totalItems` on 2.0) and the compat
+	// transport mirrors a key into it, which would surface as a field the server
+	// never sent. Rendering fields this command owns keeps the output stable
+	// across versions and confines the shim to the wire.
 	count := extractCount(result)
-	return renderer.Render(result, func(w *tabwriter.Writer) error {
+	row := map[string]any{"operation": op, "count": count}
+	return renderer.Render(row, func(w *tabwriter.Writer) error {
 		if count >= 0 {
 			fmt.Fprintf(w, "By-query %s: %d execution(s) affected.\n", op, count)
 		} else {
@@ -2095,12 +2105,23 @@ func runExecutionsByQueryOp(client *Client, op string, filters []kestra.QueryFil
 	})
 }
 
+// extractCount reads a bulk response's item count from an untyped body, under
+// either of the two names the servers use: `count` on 1.x, `totalItems` on 2.0.
+// It returns -1 when the body carries neither.
 func extractCount(m map[string]interface{}) int64 {
 	if m == nil {
 		return -1
 	}
-	if v, ok := m["count"]; ok {
+	for _, key := range []string{"count", "totalItems"} {
+		v, ok := m[key]
+		if !ok {
+			continue
+		}
 		switch n := v.(type) {
+		case json.Number:
+			if parsed, err := n.Int64(); err == nil {
+				return parsed
+			}
 		case float64:
 			return int64(n)
 		case int64:
