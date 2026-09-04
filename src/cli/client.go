@@ -344,7 +344,12 @@ func formatErrorBody(body []byte, errMsg string) error {
 // problem document carries a "type" key, which those helpers would
 // otherwise read as the resource's own type and report success on a 404.
 func isProblemDocument(m map[string]any) bool {
-	if _, ok := m["status"].(float64); !ok {
+	// "status" is a float64 after a plain json.Unmarshal and a json.Number when
+	// the body was decoded with json.Decoder.UseNumber (as the KV paths do to
+	// keep integers above 2^53 exact), so accept either.
+	switch m["status"].(type) {
+	case float64, json.Number:
+	default:
 		return false
 	}
 	if _, ok := m["title"].(string); ok {

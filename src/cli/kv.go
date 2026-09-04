@@ -1,8 +1,12 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -282,16 +286,9 @@ func newKVGetCommand() *cobra.Command {
 }
 
 func runKVGet(client *Client, namespace, key string, renderer *Renderer) error {
-	resp, _, err := client.API.KVAPI.KeyValue(client.Ctx, namespace, key, client.Tenant).Execute()
-
-	var typedValue *kvTypedValue
+	typedValue, err := fetchKVTypedValue(client, namespace, key)
 	if err != nil {
-		typedValue = tryParseKVTypedValueFromError(err)
-		if typedValue == nil {
-			return formatSDKError(err)
-		}
-	} else {
-		typedValue = extractKVTypedValue(resp)
+		return err
 	}
 
 	if typedValue == nil {
@@ -385,10 +382,10 @@ func formatKVRequestBody(kvType kestra.KVType, rawValue string) (string, error) 
 		return string(encoded), nil
 	case kestra.KVTYPE_NUMBER:
 		var parsed any
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		if err := decodeJSONPreservingNumbers([]byte(trimmed), &parsed); err != nil {
 			return "", fmt.Errorf("invalid NUMBER value %q: %w", rawValue, err)
 		}
-		if _, ok := parsed.(float64); !ok {
+		if _, ok := parsed.(json.Number); !ok {
 			return "", fmt.Errorf("invalid NUMBER value %q", rawValue)
 		}
 		return trimmed, nil
@@ -399,15 +396,18 @@ func formatKVRequestBody(kvType kestra.KVType, rawValue string) (string, error) 
 		}
 		return lower, nil
 	case kestra.KVTYPE_JSON:
+		// Validate without re-encoding: a decode into any followed by
+		// json.Marshal turns every integer above 2^53 into a lossy float64 and
+		// would store corrupted digits server-side (#121).
 		var parsed any
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		if err := decodeJSONPreservingNumbers([]byte(trimmed), &parsed); err != nil {
 			return "", fmt.Errorf("invalid JSON value %q: %w", rawValue, err)
 		}
-		encoded, err := json.Marshal(parsed)
-		if err != nil {
-			return "", err
+		var compacted bytes.Buffer
+		if err := json.Compact(&compacted, []byte(trimmed)); err != nil {
+			return "", fmt.Errorf("invalid JSON value %q: %w", rawValue, err)
 		}
-		return string(encoded), nil
+		return compacted.String(), nil
 	case kestra.KVTYPE_DATE:
 		if _, err := time.Parse("2006-01-02", trimmed); err != nil {
 			return "", fmt.Errorf("invalid DATE value %q, expected format YYYY-MM-DD", rawValue)
@@ -434,13 +434,32 @@ func parseKVDisplayValue(kvType kestra.KVType, rawValue string) any {
 	switch kvType {
 	case kestra.KVTYPE_NUMBER, kestra.KVTYPE_BOOLEAN, kestra.KVTYPE_JSON:
 		var parsed any
-		if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+		if err := decodeJSONPreservingNumbers([]byte(trimmed), &parsed); err == nil {
 			return parsed
 		}
 		return rawValue
 	default:
 		return rawValue
 	}
+}
+
+// decodeJSONPreservingNumbers decodes JSON into out with json.Decoder.UseNumber,
+// so numbers land as json.Number (their original digits) instead of float64.
+// Anything above 2^53 — a large ID, epoch nanos — otherwise loses precision the
+// moment it is decoded, and re-renders wrong (#121). json.Number re-encodes as a
+// bare JSON number, so both the table and the --output json paths stay exact.
+// Trailing content after the first value is rejected, which plain
+// json.Unmarshal does for free.
+func decodeJSONPreservingNumbers(data []byte, out any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if decoder.More() {
+		return fmt.Errorf("unexpected trailing data after JSON value")
+	}
+	return nil
 }
 
 func isLikelyISO8601Duration(value string) bool {
@@ -458,39 +477,96 @@ func isLikelyISO8601Duration(value string) bool {
 	return true
 }
 
-func extractKVTypedValue(resp *kestra.KVControllerKvDetail) *kvTypedValue {
-	if resp == nil {
+// fetchKVTypedValue reads a KV entry with a direct HTTP request instead of the
+// SDK. The SDK types KVControllerKvDetail.Value as map[string]interface{} and
+// decodes with plain json.Unmarshal, so a JSON value's integers are already
+// float64 (and above 2^53 already wrong) by the time kestractl sees them, and a
+// scalar value does not fit the map at all. Reading the body here lets it be
+// decoded with UseNumber, keeping every digit (#121). The URL mirrors the SDK's
+// KeyValue endpoint, and the request reuses the SDK's configured host, HTTP
+// client, default headers and context-based auth.
+func fetchKVTypedValue(client *Client, namespace, key string) (*kvTypedValue, error) {
+	cfg := client.API.GetConfig()
+
+	base := ""
+	if len(cfg.Servers) > 0 {
+		base = cfg.Servers[0].URL
+	}
+	if base == "" {
+		base = cfg.Scheme + "://" + cfg.Host
+	}
+	base = strings.TrimRight(base, "/")
+
+	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/kv/%s",
+		base,
+		url.PathEscape(client.Tenant),
+		url.PathEscape(namespace),
+		url.PathEscape(key),
+	)
+
+	req, err := http.NewRequestWithContext(client.Ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for h, v := range cfg.DefaultHeader {
+		req.Header.Set(h, v)
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read key-value response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, formatErrorBody(body, resp.Status)
+	}
+
+	return parseKVTypedValueBody(body), nil
+}
+
+// parseKVTypedValueBody reads a KV detail payload, preserving number literals.
+func parseKVTypedValueBody(body []byte) *kvTypedValue {
+	if len(body) == 0 {
+		return nil
+	}
+
+	var rawResp map[string]any
+	if decodeJSONPreservingNumbers(body, &rawResp) != nil {
+		return nil
+	}
+
+	// A problem document also carries a "type"; reading that as a value type
+	// would turn an error response into a rendered record.
+	if isProblemDocument(rawResp) {
 		return nil
 	}
 
 	result := &kvTypedValue{}
-	if typ, ok := resp.GetTypeOk(); ok && typ != nil {
-		result.Type = string(*typ)
+	if typ, ok := rawResp["type"].(string); ok {
+		result.Type = typ
 	}
-
-	if resp.Value != nil {
-		if value, ok := resp.Value["value"]; ok {
-			result.Value = value
-		} else if value, ok := resp.Value["Value"]; ok {
-			result.Value = value
-		} else {
-			result.Value = resp.Value
-		}
-	}
-
-	if resp.AdditionalProperties != nil {
-		if result.Type == "" {
-			if typ, ok := resp.AdditionalProperties["type"].(string); ok {
-				result.Type = typ
-			}
-		}
-		if result.Value == nil {
-			if value, ok := resp.AdditionalProperties["value"]; ok {
-				result.Value = value
-			} else if value, ok := resp.AdditionalProperties["Value"]; ok {
-				result.Value = value
-			}
-		}
+	if value, ok := rawResp["value"]; ok {
+		result.Value = value
+	} else if value, ok := rawResp["Value"]; ok {
+		result.Value = value
 	}
 
 	if result.Type == "" && result.Value == nil {
@@ -512,7 +588,7 @@ func tryParseKVTypedValueFromError(err error) *kvTypedValue {
 	}
 
 	var rawResp map[string]any
-	if json.Unmarshal(body, &rawResp) != nil {
+	if decodeJSONPreservingNumbers(body, &rawResp) != nil {
 		return nil
 	}
 
