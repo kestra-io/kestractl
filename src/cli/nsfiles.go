@@ -512,7 +512,6 @@ func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recur
 	// the deepest-first walk reaches the directory itself that path no longer
 	// exists — and a DELETE on a path that does not exist deletes its *parent*,
 	// taking every sibling file with it.
-	failed := 0
 	deleteErr := deleteNamespaceFilePath(client, namespace, normalizedPath)
 	for _, target := range deleteTargets {
 		result := namespaceFileDeleteResult{
@@ -522,11 +521,17 @@ func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recur
 		if deleteErr != nil {
 			result.Success = false
 			result.Error = deleteErr.Error()
-			failed++
 		} else {
 			result.Success = true
 		}
 		results = append(results, result)
+	}
+
+	// One request, so at most one failure — counting the reported rows instead
+	// would claim "6 error(s)" for a single 403 on a directory of five entries.
+	failed := 0
+	if deleteErr != nil {
+		failed = 1
 	}
 
 	if err := renderNamespaceFilesDeleteResults(results, renderer); err != nil {
