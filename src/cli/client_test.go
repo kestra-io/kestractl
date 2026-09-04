@@ -1,8 +1,11 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +16,128 @@ import (
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/viper"
 )
+
+// doRawRequest is the shared path for the endpoints the SDK cannot express
+// (the path-less webhook) or mistypes (namespace inherited variables), so its
+// URL building, auth and error handling are covered here rather than only
+// transitively through those two callers.
+func TestClientDoRawRequest(t *testing.T) {
+	t.Run("builds the tenant path and returns the body", func(t *testing.T) {
+		var gotPath, gotMethod, gotAccept string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath, gotMethod, gotAccept = r.URL.Path, r.Method, r.Header.Get("Accept")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}))
+		t.Cleanup(server.Close)
+
+		body, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "my.namespace", "inherited-variables")
+		if err != nil {
+			t.Fatalf("doRawRequest error: %v", err)
+		}
+		if string(body) != `{"ok":true}` {
+			t.Fatalf("unexpected body: %s", body)
+		}
+		if gotPath != "/api/v1/main/namespaces/my.namespace/inherited-variables" {
+			t.Fatalf("unexpected path: %s", gotPath)
+		}
+		if gotMethod != http.MethodGet || gotAccept != "application/json" {
+			t.Fatalf("unexpected method/accept: %s %s", gotMethod, gotAccept)
+		}
+	})
+
+	t.Run("escapes path segments", func(t *testing.T) {
+		var gotRawPath string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotRawPath = r.URL.EscapedPath()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(server.Close)
+
+		if _, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "a b/c"); err != nil {
+			t.Fatalf("doRawRequest error: %v", err)
+		}
+		// A segment containing a slash must not add a path element.
+		if gotRawPath != "/api/v1/main/namespaces/a%20b%2Fc" {
+			t.Fatalf("unexpected escaped path: %s", gotRawPath)
+		}
+	})
+
+	t.Run("sends the token from the context", func(t *testing.T) {
+		var gotAuth string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(server.Close)
+
+		client := newTestClient(t, server.URL)
+		client.Ctx = context.WithValue(client.Ctx, kestra.ContextAccessToken, "s3cret-token")
+
+		if _, err := client.doRawRequest(http.MethodGet, "namespaces"); err != nil {
+			t.Fatalf("doRawRequest error: %v", err)
+		}
+		if gotAuth != "Bearer s3cret-token" {
+			t.Fatalf("unexpected Authorization header: %q", gotAuth)
+		}
+	})
+
+	t.Run("sends basic auth from the context", func(t *testing.T) {
+		var gotUser string
+		var gotOK bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotUser, _, gotOK = r.BasicAuth()
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(server.Close)
+
+		client := newTestClient(t, server.URL)
+		client.Ctx = context.WithValue(client.Ctx, kestra.ContextBasicAuth, kestra.BasicAuth{UserName: "root@root.com", Password: "pw"})
+
+		if _, err := client.doRawRequest(http.MethodGet, "namespaces"); err != nil {
+			t.Fatalf("doRawRequest error: %v", err)
+		}
+		if !gotOK || gotUser != "root@root.com" {
+			t.Fatalf("expected basic auth to be sent, got user %q (ok=%v)", gotUser, gotOK)
+		}
+	})
+
+	t.Run("formats the error body on 404", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"namespace not found"}`))
+		}))
+		t.Cleanup(server.Close)
+
+		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "missing")
+		if err == nil {
+			t.Fatal("expected an error for a 404 response")
+		}
+		if !strings.Contains(err.Error(), "namespace not found") {
+			t.Fatalf("expected the server message in the error, got: %v", err)
+		}
+	})
+
+	t.Run("falls back to the status when the body carries no message", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`boom`))
+		}))
+		t.Cleanup(server.Close)
+
+		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces")
+		if err == nil {
+			t.Fatal("expected an error for a 500 response")
+		}
+		if !strings.Contains(err.Error(), "status 500") {
+			t.Fatalf("expected the status in the error, got: %v", err)
+		}
+	})
+}
 
 func setGenericOpenAPIErrorBody(err *kestra.GenericOpenAPIError, body []byte) {
 	field := reflect.ValueOf(err).Elem().FieldByName("body")

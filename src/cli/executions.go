@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2356,62 +2354,12 @@ func webhookResponseRow(result *kestra.WebhookResponse) map[string]any {
 // triggerWebhookDirect issues a path-less webhook request with the given method.
 // The SDK only exposes *WebhookWithPath helpers for POST/PUT, which append a
 // trailing path segment the server rejects with 404, so we build the request
-// directly while reusing the SDK's configured host, default headers, and
-// context-based authentication.
+// directly (see Client.doRawRequest) while reusing the SDK's configured host,
+// default headers, and context-based authentication.
 func triggerWebhookDirect(client *Client, method, namespace, flowID, key string) (map[string]any, error) {
-	cfg := client.API.GetConfig()
-
-	base := ""
-	if len(cfg.Servers) > 0 {
-		base = cfg.Servers[0].URL
-	}
-	if base == "" {
-		base = cfg.Scheme + "://" + cfg.Host
-	}
-	base = strings.TrimRight(base, "/")
-
-	endpoint := fmt.Sprintf("%s/api/v1/%s/executions/webhook/%s/%s/%s",
-		base,
-		url.PathEscape(client.Tenant),
-		url.PathEscape(namespace),
-		url.PathEscape(flowID),
-		url.PathEscape(key),
-	)
-
-	req, err := http.NewRequestWithContext(client.Ctx, method, endpoint, nil)
+	body, err := client.doRawRequest(method, "executions", "webhook", namespace, flowID, key)
 	if err != nil {
 		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	// Reuse the auth the SDK stored on the context.
-	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
-		req.SetBasicAuth(auth.UserName, auth.Password)
-	}
-	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for h, v := range cfg.DefaultHeader {
-		req.Header.Set(h, v)
-	}
-
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read webhook response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, formatErrorBody(body, fmt.Sprintf("status %d", resp.StatusCode))
 	}
 
 	result := map[string]any{}

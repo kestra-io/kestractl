@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -265,6 +267,82 @@ func normalizeHost(host string) string {
 	}
 
 	return normalized
+}
+
+// doRawRequest issues a request the generated SDK cannot express usefully and
+// returns the raw response body.
+//
+// Two kinds of endpoint need it: ones the SDK builds a URL for that the server
+// rejects (the path-less webhook, whose only SDK helpers append a trailing
+// segment answered with 404) and ones the SDK mistypes, where the typed decode
+// fails or silently rounds the payload before kestractl sees it (namespace
+// inherited variables — see issue #128). Callers decode the body themselves.
+//
+// The request reuses the SDK's resolved host, HTTP client (so the compat.go
+// shims still apply), default headers, and context-based authentication.
+// segments are the path below /api/v1/{tenant}/ and are escaped here, so a
+// namespace or flow id containing a slash or space cannot break out of its
+// position.
+//
+// Known limitation: --verbose is wired to the SDK's own debug logger inside
+// callAPI, so a request issued here does not appear in the verbose dump. That
+// has always been true of the webhook path; fixing it belongs in the shared
+// transport, not in each caller.
+func (c *Client) doRawRequest(method string, segments ...string) ([]byte, error) {
+	cfg := c.API.GetConfig()
+
+	base := ""
+	if len(cfg.Servers) > 0 {
+		base = cfg.Servers[0].URL
+	}
+	if base == "" {
+		base = cfg.Scheme + "://" + cfg.Host
+	}
+	base = strings.TrimRight(base, "/")
+
+	escaped := make([]string, 0, len(segments)+1)
+	escaped = append(escaped, url.PathEscape(c.Tenant))
+	for _, segment := range segments {
+		escaped = append(escaped, url.PathEscape(segment))
+	}
+	endpoint := base + "/api/v1/" + strings.Join(escaped, "/")
+
+	req, err := http.NewRequestWithContext(c.Ctx, method, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	// Reuse the auth the SDK stored on the context.
+	if auth, ok := c.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+	if token, ok := c.Ctx.Value(kestra.ContextAccessToken).(string); ok {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for h, v := range cfg.DefaultHeader {
+		req.Header.Set(h, v)
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, formatErrorBody(body, fmt.Sprintf("status %d", resp.StatusCode))
+	}
+	return body, nil
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors. It handles
