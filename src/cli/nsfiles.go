@@ -504,16 +504,24 @@ func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recur
 		})
 	}
 
+	// One DELETE removes the whole subtree, so the enumerated targets are only
+	// there to report what went away.
+	//
+	// Deleting them one by one instead destroys data (issue #130): the server
+	// prunes a directory as soon as its last child is removed, so by the time
+	// the deepest-first walk reaches the directory itself that path no longer
+	// exists — and a DELETE on a path that does not exist deletes its *parent*,
+	// taking every sibling file with it.
 	failed := 0
+	deleteErr := deleteNamespaceFilePath(client, namespace, normalizedPath)
 	for _, target := range deleteTargets {
-		err := deleteNamespaceFilePath(client, namespace, target.Path)
 		result := namespaceFileDeleteResult{
 			Path: target.Path,
 			Type: target.Type,
 		}
-		if err != nil {
+		if deleteErr != nil {
 			result.Success = false
-			result.Error = err.Error()
+			result.Error = deleteErr.Error()
 			failed++
 		} else {
 			result.Success = true
@@ -731,8 +739,14 @@ func ensureNamespaceDirectories(client *Client, namespace, dirPath string) error
 	return nil
 }
 
+// deleteNamespaceFilePath removes a namespace file, or a directory and
+// everything under it, in a single request.
+//
+// The path is sent slash-prefixed so the server resolves it absolutely rather
+// than relative to anything: a DELETE that misses its target does not fail, it
+// deletes the parent directory instead (issue #130).
 func deleteNamespaceFilePath(client *Client, namespace, path string) error {
-	_, err := client.API.FilesAPI.DeleteFileDirectory(client.Ctx, namespace, client.Tenant).Path(path).Execute()
+	_, err := client.API.FilesAPI.DeleteFileDirectory(client.Ctx, namespace, client.Tenant).Path(absoluteNamespacePath(path)).Execute()
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -907,6 +921,15 @@ func normalizeNamespacePath(path string) string {
 		return ""
 	}
 	return trimmed
+}
+
+// absoluteNamespacePath turns a normalized (slash-less) namespace path into the
+// absolute form the API resolves unambiguously. An empty path stays empty.
+func absoluteNamespacePath(path string) string {
+	if path == "" || strings.HasPrefix(path, "/") {
+		return path
+	}
+	return "/" + path
 }
 
 func joinNamespacePath(base, child string) string {
