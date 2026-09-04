@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -143,21 +144,26 @@ func TestLogsDownloadCommand_ClientError(t *testing.T) {
 
 func TestBuildLogSearchFilters(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		filters := buildLogSearchFilters("", "", "", "", "")
+		filters := buildLogSearchFilters(nil, "", "", "", "", "")
 		if len(filters) != 0 {
 			t.Fatalf("expected no filters, got %d", len(filters))
 		}
 	})
 
 	t.Run("all filters with upper-cased level", func(t *testing.T) {
-		filters := buildLogSearchFilters("boom", "my.ns", "my-flow", "trg-1", "warn")
+		filters := buildLogSearchFilters(nil, "boom", "my.ns", "my-flow", "trg-1", "warn")
 		if len(filters) != 5 {
 			t.Fatalf("expected 5 filters, got %d", len(filters))
 		}
 		got := map[kestra.SearchFilterField]any{}
 		for _, f := range filters {
-			if f.Operation != kestra.OpEquals {
-				t.Errorf("expected EQUALS op, got %v", f.Operation)
+			wantOp := kestra.OpEquals
+			if f.Field == kestra.FilterMinLevel {
+				// LEVEL is a minimum, and 2.0 rejects EQUALS on it.
+				wantOp = kestra.OpGreaterThanOrEqualTo
+			}
+			if f.Operation != wantOp {
+				t.Errorf("field %v: expected op %v, got %v", f.Field, wantOp, f.Operation)
 			}
 			got[f.Field] = f.Value
 		}
@@ -245,4 +251,56 @@ func TestRunLogsList_LevelHasNoQuotes(t *testing.T) {
 			t.Errorf("table output missing level:\n%s", out)
 		}
 	})
+}
+
+// The two server lines accept different operations on the level field, and
+// each answers the other's with a 400 (#132):
+//
+//   - 2.0: "Operation EQUALS is not supported for field LEVEL. Supported
+//     operations are GREATER_THAN_OR_EQUAL_TO, LESS_THAN_OR_EQUAL_TO, IN, NOT_IN"
+//   - 1.3: "Operation GREATER_THAN_OR_EQUAL_TO is not supported for field
+//     MIN_LEVEL. Supported operations are EQUALS, NOT_EQUALS"
+func TestRunLogsSearch_MinLevelOperationPerServerEra(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		version string
+		wantOp  string
+		badOp   string
+	}{
+		{name: "kestra 2.0", version: "2.0.0-rc13", wantOp: "GREATER_THAN_OR_EQUAL_TO", badOp: "EQUALS"},
+		{name: "kestra 1.3", version: "1.3.35", wantOp: "EQUALS", badOp: "GREATER_THAN_OR_EQUAL_TO"},
+		// A develop build gets the 2.0 shape, like the rest of the compat layer.
+		{name: "unknown version", version: "develop", wantOp: "GREATER_THAN_OR_EQUAL_TO", badOp: "EQUALS"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var rawQuery string
+			server := httptest.NewServer(versionHandler(tt.version, func(w http.ResponseWriter, r *http.Request) {
+				rawQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"total":0,"results":[]}`))
+			}))
+			t.Cleanup(server.Close)
+
+			var buf bytes.Buffer
+			client := newTestClient(t, server.URL)
+			filters := buildLogSearchFilters(client, "intentional", "qa.ns", "", "", "ERROR")
+			if err := runLogsSearch(client, filters, 1, 50, nil, newTableRenderer(&buf)); err != nil {
+				t.Fatalf("runLogsSearch error: %v", err)
+			}
+
+			decoded, err := url.QueryUnescape(rawQuery)
+			if err != nil {
+				t.Fatalf("unescape query %q: %v", rawQuery, err)
+			}
+			if want := "filters[level][" + tt.wantOp + "]=ERROR"; !strings.Contains(decoded, want) {
+				t.Errorf("expected %q, got query: %s", want, decoded)
+			}
+			if bad := "filters[level][" + tt.badOp + "]"; strings.Contains(decoded, bad) {
+				t.Errorf("level must not use %q on this server, got query: %s", bad, decoded)
+			}
+			if !strings.Contains(decoded, "filters[namespace][EQUALS]=qa.ns") {
+				t.Errorf("expected namespace EQUALS filter, got query: %s", decoded)
+			}
+		})
+	}
 }

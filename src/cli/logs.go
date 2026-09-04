@@ -244,7 +244,7 @@ Results are paginated. Use --page and --size to navigate larger result sets.`,
 				return err
 			}
 
-			filters := buildLogSearchFilters(query, namespace, flowID, triggerID, minLevel)
+			filters := buildLogSearchFilters(client, query, namespace, flowID, triggerID, minLevel)
 			return runLogsSearch(client, filters, page, size, sort, renderer)
 		},
 	}
@@ -261,27 +261,45 @@ Results are paginated. Use --page and --size to navigate larger result sets.`,
 	return cmd
 }
 
-// buildLogSearchFilters assembles EQUALS SearchFilters for a log search from
-// the optional query, namespace, flow, trigger, and level selectors.
-func buildLogSearchFilters(query, namespace, flowID, triggerID, minLevel string) []kestra.SearchFilter {
+// buildLogSearchFilters assembles the SearchFilters for a log search from the
+// optional query, namespace, flow, trigger, and level selectors. Every field is
+// matched with EQUALS except the level, whose accepted operation differs by
+// server era (see minLevelSearchOp).
+func buildLogSearchFilters(client *Client, query, namespace, flowID, triggerID, minLevel string) []kestra.SearchFilter {
 	filters := make([]kestra.SearchFilter, 0, 5)
-	add := func(field kestra.SearchFilterField, value string) {
+	add := func(field kestra.SearchFilterField, op kestra.SearchFilterOp, value string) {
 		if value != "" {
 			filters = append(filters, kestra.SearchFilter{
 				Field:     field,
-				Operation: kestra.OpEquals,
+				Operation: op,
 				Value:     value,
 			})
 		}
 	}
-	add(kestra.FilterQuery, query)
-	add(kestra.FilterNamespace, namespace)
-	add(kestra.FilterFlowId, flowID)
-	add(kestra.FilterTriggerId, triggerID)
-	if minLevel != "" {
-		add(kestra.FilterMinLevel, strings.ToUpper(minLevel))
-	}
+	add(kestra.FilterQuery, kestra.OpEquals, query)
+	add(kestra.FilterNamespace, kestra.OpEquals, namespace)
+	add(kestra.FilterFlowId, kestra.OpEquals, flowID)
+	add(kestra.FilterTriggerId, kestra.OpEquals, triggerID)
+	add(kestra.FilterMinLevel, minLevelSearchOp(client), strings.ToUpper(minLevel))
 	return filters
+}
+
+// minLevelSearchOp returns the operation the log-search endpoint accepts on the
+// level field. The two server lines disagree, and each rejects the other's
+// operation with a 400, so this cannot be a single value:
+//
+//   - Kestra 2.0 exposes the field as LEVEL and accepts only
+//     GREATER_THAN_OR_EQUAL_TO / LESS_THAN_OR_EQUAL_TO / IN / NOT_IN.
+//   - Kestra 1.x exposes it as MIN_LEVEL — already a minimum server-side — and
+//     accepts only EQUALS / NOT_EQUALS.
+//
+// An unknown server (develop build, unreachable /configs) gets the 2.0
+// operation, matching the rest of the compat layer's default.
+func minLevelSearchOp(client *Client) kestra.SearchFilterOp {
+	if client != nil && client.isLegacyServer() {
+		return kestra.OpEquals
+	}
+	return kestra.OpGreaterThanOrEqualTo
 }
 
 func runLogsSearch(client *Client, filters []kestra.SearchFilter, page, size int32, sort []string, renderer *Renderer) error {
