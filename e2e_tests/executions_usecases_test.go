@@ -1,6 +1,7 @@
 package e2e_tests
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -208,4 +209,27 @@ func TestExecutionsBulk_reportsTheAffectedCount(t *testing.T) {
 	require.NoError(t, err, "stdout: %s\nstderr: %s", stdout, stderr)
 	require.Contains(t, stdout, "1 execution(s) affected",
 		"the affected count was dropped at decode\nstdout: %s", stdout)
+}
+
+// TestExecutionsRun_waitJSONIsParseable pins #135: `--wait` used to print its
+// two progress lines to stdout, so `-o json` output could not be piped into a
+// JSON parser. The progress now goes to stderr and stdout stays machine
+// readable.
+func TestExecutionsRun_waitJSONIsParseable(t *testing.T) {
+	flowID := "e2e-executions-run-json"
+	deployExecutionsTestFlow(t, flowID)
+
+	stdout, stderr, err := RunAuthenticatedCliCmd(t, "executions", "run", executionsTestNamespace, flowID, "--wait", "--output", "json")
+	require.NoError(t, err, "run failed\nstdout: %s\nstderr: %s", stdout, stderr)
+
+	var execution struct {
+		ID    string `json:"id"`
+		State struct {
+			Current string `json:"current"`
+		} `json:"state"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(stdout), &execution),
+		"stdout is not parseable JSON:\n%s", stdout)
+	require.NotEmpty(t, execution.ID)
+	require.Equal(t, "SUCCESS", execution.State.Current)
 }
