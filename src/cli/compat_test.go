@@ -1,7 +1,9 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -836,5 +838,340 @@ func TestRunExecutionsByQueryOp_NormalizesOutputAcrossVersions(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestCompatTransport_MasksCredentialsInVerboseDump covers issue #119: the
+// verbose HTTP dump must never carry a usable credential. The dump lives on the
+// shared transport, so both SDK clients get the same masking.
+func TestCompatTransport_MasksCredentialsInVerboseDump(t *testing.T) {
+	const (
+		basic  = "dXNlcjpzZWNyZXRwYXNz" // user:secretpass
+		bearer = "faketoken123"
+		custom = "custom-token-value"
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Set-Cookie", "JSESSIONID=sessionsecret; Path=/")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	client, transport := newCompatHTTPClient()
+	transport.verbose = true
+	transport.logger = &out
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/v1/main/flows", strings.NewReader(`{"source":"id: f"}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Basic "+basic)
+	req.Header.Set("X-My-Token", custom)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	_ = resp.Body.Close()
+	if string(body) != `{"ok":true}` {
+		t.Fatalf("response body not readable after dump: %q", body)
+	}
+
+	// Same transport, Bearer auth, to prove tokens are masked too.
+	req2, err := http.NewRequest(http.MethodGet, server.URL+"/api/v1/configs", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req2.Header.Set("Authorization", "Bearer "+bearer)
+	resp2, err := client.Do(req2)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	drainAndClose(resp2)
+
+	dump := out.String()
+	for _, secret := range []string{basic, bearer, custom, "sessionsecret"} {
+		if strings.Contains(dump, secret) {
+			t.Errorf("verbose dump leaked %q:\n%s", secret, dump)
+		}
+	}
+	// The headers are still reported, just masked.
+	for _, want := range []string{"Authorization: REDACTED", "X-My-Token: REDACTED", "Set-Cookie: REDACTED"} {
+		if !strings.Contains(dump, want) {
+			t.Errorf("verbose dump missing %q:\n%s", want, dump)
+		}
+	}
+	// Bodies stay visible: that is the point of -v.
+	for _, want := range []string{`{"source":"id: f"}`, `{"ok":true}`} {
+		if !strings.Contains(dump, want) {
+			t.Errorf("verbose dump missing body %q:\n%s", want, dump)
+		}
+	}
+	// Non-sensitive headers keep their values.
+	if !strings.Contains(dump, "Content-Type: application/json") {
+		t.Errorf("verbose dump dropped Content-Type:\n%s", dump)
+	}
+}
+
+// TestCompatTransport_QuietWhenVerboseOff asserts the dump is opt-in, so normal
+// runs (and `-o json` stdout) stay clean.
+func TestCompatTransport_QuietWhenVerboseOff(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	client, transport := newCompatHTTPClient()
+	transport.logger = &out
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/configs", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpzZWNyZXRwYXNz")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	drainAndClose(resp)
+
+	if out.Len() != 0 {
+		t.Fatalf("expected no output with verbose off, got:\n%s", out.String())
+	}
+}
+
+func TestIsSensitiveHeader(t *testing.T) {
+	sensitive := []string{
+		"Authorization", "authorization", "Proxy-Authorization", "Cookie", "Set-Cookie",
+		"X-Api-Key", "x-apikey", "X-My-Token", "My-Secret-Header", "X-User-Password",
+	}
+	for _, name := range sensitive {
+		if !isSensitiveHeader(name) {
+			t.Errorf("%q should be treated as sensitive", name)
+		}
+	}
+	for _, name := range []string{"Content-Type", "Accept", "User-Agent", "X-Frame-Options"} {
+		if isSensitiveHeader(name) {
+			t.Errorf("%q should not be treated as sensitive", name)
+		}
+	}
+}
+
+// TestCompatTransport_DoesNotMutateHeadersWhenDumping guards the clone: the
+// live request must still carry the real credential after being dumped.
+func TestCompatTransport_DoesNotMutateHeadersWhenDumping(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	client, transport := newCompatHTTPClient()
+	transport.verbose = true
+	transport.logger = &out
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/configs", nil)
+	req.Header.Set("Authorization", "Basic dXNlcjpzZWNyZXRwYXNz")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	drainAndClose(resp)
+
+	if got != "Basic dXNlcjpzZWNyZXRwYXNz" {
+		t.Fatalf("server saw a mangled Authorization header: %q", got)
+	}
+	if req.Header.Get("Authorization") != "Basic dXNlcjpzZWNyZXRwYXNz" {
+		t.Fatalf("caller request was mutated: %q", req.Header.Get("Authorization"))
+	}
+}
+
+func TestMaskHeaderFlagValues(t *testing.T) {
+	got := maskHeaderFlagValues([]string{"X-My-Token:supersecret", "X-Request-Id:abc", "Authorization:Basic zzz", "malformed"})
+	want := "[X-My-Token:REDACTED,X-Request-Id:abc,Authorization:REDACTED,malformed]"
+	if got != want {
+		t.Fatalf("maskHeaderFlagValues = %q, want %q", got, want)
+	}
+}
+
+// TestCompatTransport_DumpsTextBodiesOnly covers the body guard: JSON prints,
+// binary and oversize bodies get a placeholder, and the response the SDK reads
+// is complete either way.
+func TestCompatTransport_DumpsTextBodiesOnly(t *testing.T) {
+	big := strings.Repeat("a", maxDumpBodyBytes+1)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        string
+		wantDumped  bool
+		wantLine    string
+	}{
+		{
+			name:        "json is printed",
+			contentType: "application/json",
+			body:        `{"ok":true}`,
+			wantDumped:  true,
+		},
+		{
+			name:        "problem+json is printed",
+			contentType: "application/problem+json",
+			body:        `{"title":"nope"}`,
+			wantDumped:  true,
+		},
+		{
+			name:        "yaml is printed",
+			contentType: "application/x-yaml",
+			body:        "id: f",
+			wantDumped:  true,
+		},
+		{
+			name:        "binary gets a placeholder",
+			contentType: "application/octet-stream",
+			body:        "PK\x03\x04binary-payload",
+			wantLine:    "< [body: application/octet-stream, 18 bytes, not shown]",
+		},
+		{
+			name:        "zip gets a placeholder",
+			contentType: "application/zip",
+			body:        "PK\x03\x04",
+			wantLine:    "< [body: application/zip, 4 bytes, not shown]",
+		},
+		{
+			name:        "missing content type gets a placeholder",
+			contentType: "",
+			body:        "who knows",
+			wantLine:    "< [body: unknown content type, 9 bytes, not shown]",
+		},
+		{
+			name:        "oversize text gets a placeholder",
+			contentType: "application/json",
+			body:        big,
+			wantLine:    fmt.Sprintf("< [body: application/json, %d bytes, not shown]", len(big)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.contentType != "" {
+					w.Header().Set("Content-Type", tt.contentType)
+				} else {
+					// Suppress net/http's content sniffing, so the "server sent
+					// no Content-Type" case really has none.
+					w.Header()["Content-Type"] = nil
+				}
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(server.Close)
+
+			var out bytes.Buffer
+			client, transport := newCompatHTTPClient()
+			transport.verbose = true
+			transport.logger = &out
+
+			req, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/main/files/download", nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			// Whatever the dump did, the SDK still sees the whole body.
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read body: %v", err)
+			}
+			_ = resp.Body.Close()
+			if string(body) != tt.body {
+				t.Fatalf("response body altered: got %d bytes, want %d", len(body), len(tt.body))
+			}
+
+			dump := out.String()
+			if tt.wantDumped {
+				if !strings.Contains(dump, tt.body) {
+					t.Errorf("expected body in dump:\n%s", dump)
+				}
+				if strings.Contains(dump, "not shown") {
+					t.Errorf("text body should not be replaced by a placeholder:\n%s", dump)
+				}
+				return
+			}
+			if !strings.Contains(dump, tt.wantLine) {
+				t.Errorf("dump missing %q:\n%s", tt.wantLine, truncateForMsg(dump))
+			}
+			if strings.Contains(dump, tt.body) {
+				t.Errorf("body bytes leaked into dump:\n%s", truncateForMsg(dump))
+			}
+		})
+	}
+}
+
+// truncateForMsg keeps a failure message readable when the dump is large.
+func truncateForMsg(s string) string {
+	if len(s) <= 512 {
+		return s
+	}
+	return s[:512] + "...(truncated)"
+}
+
+// TestCompatTransport_DumpsBinaryRequestBodyAsPlaceholder covers the upload
+// direction: a plugin or namespace-file upload must not spray bytes on stderr.
+func TestCompatTransport_DumpsBinaryRequestBodyAsPlaceholder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	client, transport := newCompatHTTPClient()
+	transport.verbose = true
+	transport.logger = &out
+
+	payload := "PK\x03\x04a-jar-file"
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/v1/main/files", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	drainAndClose(resp)
+
+	dump := out.String()
+	want := fmt.Sprintf("> [body: application/octet-stream, %d bytes, not shown]", len(payload))
+	if !strings.Contains(dump, want) {
+		t.Errorf("dump missing %q:\n%s", want, dump)
+	}
+	if strings.Contains(dump, "a-jar-file") {
+		t.Errorf("request body leaked into dump:\n%s", dump)
+	}
+}
+
+func TestIsTextLikeContentType(t *testing.T) {
+	for _, ct := range []string{
+		"text/plain", "text/plain; charset=utf-8", "application/json",
+		"application/problem+json", "application/json; charset=utf-8",
+		"application/x-yaml", "application/yaml", "application/x-www-form-urlencoded",
+	} {
+		if !isTextLikeContentType(ct) {
+			t.Errorf("%q should be text-like", ct)
+		}
+	}
+	for _, ct := range []string{
+		"", "application/octet-stream", "application/zip", "application/java-archive",
+		"image/png", "not a media type",
+	} {
+		if isTextLikeContentType(ct) {
+			t.Errorf("%q should not be text-like", ct)
+		}
 	}
 }
