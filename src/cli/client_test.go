@@ -444,3 +444,23 @@ func TestIsProblemDocument_StatusNumberForms(t *testing.T) {
 		})
 	}
 }
+
+// TestTryParseExecutionFromError_PreservesLargeIntegers covers the raw-body
+// fallback used by executions get/run on Kestra 2.x: it renders whatever the
+// execution carries, including user data such as JSON inputs with epoch nanos.
+func TestTryParseExecutionFromError_PreservesLargeIntegers(t *testing.T) {
+	sdkErr := &kestra.GenericOpenAPIError{}
+	setGenericOpenAPIErrorBody(sdkErr, []byte(`{"id":"exec-1","inputs":{"payload":{"nanos":1725450000123456789}},"state":{"current":"SUCCESS","duration":"PT0.07S"}}`))
+
+	execution := tryParseExecutionFromError(sdkErr)
+	if execution == nil {
+		t.Fatal("expected the execution to be recovered")
+	}
+	rendered := toPrettyString(execution)
+	if !strings.Contains(rendered, "1725450000123456789") {
+		t.Fatalf("expected exact digits in:\n%s", rendered)
+	}
+	if strings.Contains(rendered, "1725450000123456800") {
+		t.Fatalf("precision was lost:\n%s", rendered)
+	}
+}

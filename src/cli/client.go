@@ -391,8 +391,11 @@ func tryParseExecutionFromError(err error) map[string]any {
 		return nil
 	}
 
+	// UseNumber: this body is rendered as-is, user data included (a JSON input
+	// with epoch nanos, a large ID), and plain json.Unmarshal would round every
+	// integer above 2^53 through float64 (follow-up to #121).
 	var rawResp map[string]any
-	if json.Unmarshal(body, &rawResp) != nil {
+	if decodeJSONPreservingNumbers(body, &rawResp) != nil {
 		return nil
 	}
 

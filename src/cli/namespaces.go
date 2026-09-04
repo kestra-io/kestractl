@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 
@@ -151,11 +153,13 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 		ns = kestra.NewNamespaceWithDefaults()
 	}
 
+	variables := namespaceVariables(client, id, ns.GetVariables())
+
 	result := map[string]any{
 		"id":          ns.GetId(),
 		"description": ns.GetDescription(),
 		"deleted":     ns.GetDeleted(),
-		"variables":   ns.GetVariables(),
+		"variables":   variables,
 	}
 	if c, ok := ns.GetConcurrencyOk(); ok {
 		result["concurrency"] = c
@@ -171,10 +175,17 @@ func runNamespacesGet(client *Client, id string, renderer *Renderer) error {
 		}
 		fmt.Fprintf(w, "DELETED\t%v\n", ns.GetDeleted())
 		writeConcurrencyAndQuotas(w, ns.Concurrency, ns.GetQuotas())
-		if vars := ns.GetVariables(); len(vars) > 0 {
+		if len(variables) > 0 {
 			fmt.Fprintln(w, "\nVARIABLES:")
-			for k, v := range vars {
-				fmt.Fprintf(w, "  %s\t%v\n", k, v)
+			keys := make([]string, 0, len(variables))
+			for k := range variables {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				// stringify, not %v: a json.Number prints its digits and a
+				// nested object prints as JSON rather than Go's map[...] form.
+				fmt.Fprintf(w, "  %s\t%s\n", k, stringify(variables[k]))
 			}
 		}
 		return nil
@@ -210,6 +221,38 @@ func parseVariableFlags(pairs []string, filePath string) (map[string]interface{}
 	}
 
 	return variables, nil
+}
+
+// namespaceVariables re-reads a namespace straight from the API so its
+// variables keep every digit: the SDK types Namespace.Variables as
+// map[string]interface{} and decodes it with plain json.Unmarshal, which turns
+// any integer above 2^53 into a lossy float64 before kestractl sees it
+// (follow-up to #121). The SDK's own map is returned as a fallback, so a failed
+// extra read degrades to the old rendering instead of failing the command.
+func namespaceVariables(client *Client, id string, fallback map[string]any) map[string]any {
+	// No variables at all: the extra read cannot add anything, so the common
+	// case stays at a single request.
+	if len(fallback) == 0 {
+		return fallback
+	}
+
+	body, err := rawGet(client, fmt.Sprintf("/api/v1/%s/namespaces/%s",
+		url.PathEscape(client.Tenant),
+		url.PathEscape(id),
+	))
+	if err != nil {
+		return fallback
+	}
+
+	var raw map[string]any
+	if decodeJSONPreservingNumbers(body, &raw) != nil {
+		return fallback
+	}
+	variables, ok := raw["variables"].(map[string]any)
+	if !ok {
+		return fallback
+	}
+	return variables
 }
 
 func newNamespacesCreateCommand() *cobra.Command {
@@ -300,7 +343,7 @@ func runNamespacesCreate(client *Client, id, description string, variables map[s
 	result := map[string]any{
 		"id":          created.GetId(),
 		"description": created.GetDescription(),
-		"variables":   created.GetVariables(),
+		"variables":   namespaceVariables(client, id, created.GetVariables()),
 	}
 	if c, ok := created.GetConcurrencyOk(); ok {
 		result["concurrency"] = c
@@ -463,7 +506,7 @@ func runNamespacesUpdate(client *Client, id, description string, descriptionSet 
 	result := map[string]any{
 		"id":          updated.GetId(),
 		"description": updated.GetDescription(),
-		"variables":   updated.GetVariables(),
+		"variables":   namespaceVariables(client, id, updated.GetVariables()),
 	}
 	if c, ok := updated.GetConcurrencyOk(); ok {
 		result["concurrency"] = c

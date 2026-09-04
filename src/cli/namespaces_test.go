@@ -568,3 +568,145 @@ func TestNamespacesCreateCommand_InvalidQuota(t *testing.T) {
 		t.Fatalf("expected missing-key error, got: %v", err)
 	}
 }
+
+// --- large integers in namespace variables (follow-up to #121) -----------
+
+const nsBigVariablesBody = `{"id":"ns","deleted":false,"variables":{"bigint":1725450000123456789,"nested":{"nanos":9007199254740993},"small":42}}`
+
+// namespaceServer answers both the SDK's namespace call and the raw read with
+// the same body, so a test exercises whichever path the code takes.
+func namespaceServer(t *testing.T, body string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestNamespacesGet_PreservesLargeIntegers(t *testing.T) {
+	server := namespaceServer(t, nsBigVariablesBody)
+
+	var asJSON bytes.Buffer
+	if err := runNamespacesGet(newTestClient(t, server.URL), "ns", newJSONRenderer(&asJSON)); err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+	for _, digits := range []string{"1725450000123456789", "9007199254740993"} {
+		if !strings.Contains(asJSON.String(), digits) {
+			t.Fatalf("json output lost precision, want %s in:\n%s", digits, asJSON.String())
+		}
+		if strings.Contains(asJSON.String(), `"`+digits+`"`) {
+			t.Fatalf("expected a bare JSON number, got:\n%s", asJSON.String())
+		}
+	}
+
+	var table bytes.Buffer
+	if err := runNamespacesGet(newTestClient(t, server.URL), "ns", newTableRenderer(&table)); err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+	// The table used to print float64s through %v: "1.7254500001234568e+18"
+	// for a scalar and "map[nanos:9.007199254740992e+15]" for a nested object.
+	if !strings.Contains(table.String(), "1725450000123456789") {
+		t.Fatalf("table output lost precision:\n%s", table.String())
+	}
+	if strings.Contains(table.String(), "e+18") || strings.Contains(table.String(), "map[") {
+		t.Fatalf("expected JSON rendering rather than %%v, got:\n%s", table.String())
+	}
+	if !strings.Contains(table.String(), "9007199254740993") {
+		t.Fatalf("nested table value lost precision:\n%s", table.String())
+	}
+}
+
+func TestNamespacesCreate_EchoPreservesLargeIntegers(t *testing.T) {
+	server := namespaceServer(t, nsBigVariablesBody)
+
+	variables := map[string]any{"bigint": int64(1725450000123456789)}
+	var buf bytes.Buffer
+	if err := runNamespacesCreate(newTestClient(t, server.URL), "ns", "", variables, nil, nil, newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runNamespacesCreate error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1725450000123456789") {
+		t.Fatalf("create echo lost precision:\n%s", buf.String())
+	}
+}
+
+func TestNamespacesUpdate_EchoPreservesLargeIntegers(t *testing.T) {
+	server := namespaceServer(t, nsBigVariablesBody)
+
+	variables := map[string]any{"bigint": int64(1725450000123456789)}
+	var buf bytes.Buffer
+	if err := runNamespacesUpdate(newTestClient(t, server.URL), "ns", "", false, variables, nil, nil, newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runNamespacesUpdate error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1725450000123456789") {
+		t.Fatalf("update echo lost precision:\n%s", buf.String())
+	}
+}
+
+// TestNamespacesGet_RawReadFailureFallsBack keeps the command working when the
+// extra raw read fails: the SDK's (lossy) variables are better than an error.
+func TestNamespacesGet_RawReadFailureFallsBack(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ns","deleted":false,"variables":{"env":"prod"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runNamespacesGet(newTestClient(t, server.URL), "ns", newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "prod") {
+		t.Fatalf("expected the SDK variables as a fallback, got:\n%s", buf.String())
+	}
+}
+
+// TestNamespacesGet_NoVariablesSkipsRawRead keeps the common case at a single
+// request: an empty variables map has no precision to preserve.
+func TestNamespacesGet_NoVariablesSkipsRawRead(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ns","deleted":false}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runNamespacesGet(newTestClient(t, server.URL), "ns", newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected exactly one request, got %d", calls)
+	}
+}
+
+// TestNamespacesGet_VariablesTriggerRawRead is the counterpart: with variables
+// present, the raw read must happen so their digits survive.
+func TestNamespacesGet_VariablesTriggerRawRead(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(nsBigVariablesBody))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runNamespacesGet(newTestClient(t, server.URL), "ns", newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runNamespacesGet error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected the raw read to happen, got %d request(s)", calls)
+	}
+	if !strings.Contains(buf.String(), "1725450000123456789") {
+		t.Fatalf("expected exact digits:\n%s", buf.String())
+	}
+}

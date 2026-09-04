@@ -1157,6 +1157,12 @@ func formatDuration(raw any) string {
 		return v
 	case float64:
 		return fmt.Sprintf("%.2fs", v/1000)
+	case json.Number:
+		// Bodies decoded with UseNumber carry json.Number rather than float64.
+		if ms, err := v.Float64(); err == nil {
+			return fmt.Sprintf("%.2fs", ms/1000)
+		}
+		return v.String()
 	default:
 		return fmt.Sprintf("%v", v)
 	}
@@ -2416,7 +2422,9 @@ func triggerWebhookDirect(client *Client, method, namespace, flowID, key string)
 
 	result := map[string]any{}
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &result); err != nil {
+		// UseNumber: the whole response is rendered as-is, so integers above
+		// 2^53 must not be rounded through float64 (follow-up to #121).
+		if err := decodeJSONPreservingNumbers(body, &result); err != nil {
 			return nil, fmt.Errorf("failed to parse webhook response: %w", err)
 		}
 	}

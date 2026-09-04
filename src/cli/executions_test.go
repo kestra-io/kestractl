@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -392,6 +393,10 @@ func TestFormatDuration(t *testing.T) {
 		{input: "not-iso", expected: "not-iso"},
 		{input: "plain string", expected: "plain string"},
 		{input: 42, expected: "42"},
+		// Bodies decoded with UseNumber carry json.Number, not float64.
+		{input: json.Number("5000"), expected: "5.00s"},
+		{input: json.Number("1234"), expected: "1.23s"},
+		{input: json.Number("not-a-number"), expected: "not-a-number"},
 	}
 
 	for _, tt := range tests {
@@ -1565,5 +1570,24 @@ func TestExecutionsWatchCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+// TestTriggerWebhookDirect_PreservesLargeIntegers covers the path-less
+// POST/PUT webhook, whose whole response body is rendered as-is.
+func TestTriggerWebhookDirect_PreservesLargeIntegers(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"ns","flowId":"f","inputs":{"payload":{"nanos":1725450000123456789}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	result, err := triggerWebhookDirect(newTestClient(t, server.URL), http.MethodPost, "ns", "f", "key")
+	if err != nil {
+		t.Fatalf("triggerWebhookDirect error: %v", err)
+	}
+	rendered := toPrettyString(result)
+	if !strings.Contains(rendered, "1725450000123456789") {
+		t.Fatalf("expected exact digits in:\n%s", rendered)
 	}
 }
