@@ -4,9 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -621,62 +619,12 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 // which keeps integers above 2^53 exact rather than routing them through
 // float64.
 //
-// The URL mirrors the SDK's InheritedVariables endpoint, and the request reuses
-// the SDK's configured host, HTTP client, default headers and context-based
-// auth so the verbose dump and the 1.x compat shims still apply.
+// The path mirrors the SDK's InheritedVariables endpoint.
 func fetchInheritedVariables(client *Client, id string) (map[string]any, error) {
-	cfg := client.API.GetConfig()
-
-	base := ""
-	if len(cfg.Servers) > 0 {
-		base = cfg.Servers[0].URL
-	}
-	if base == "" {
-		base = cfg.Scheme + "://" + cfg.Host
-	}
-	base = strings.TrimRight(base, "/")
-
-	endpoint := fmt.Sprintf("%s/api/v1/%s/namespaces/%s/inherited-variables",
-		base,
-		url.PathEscape(client.Tenant),
-		url.PathEscape(id),
-	)
-
-	req, err := http.NewRequestWithContext(client.Ctx, http.MethodGet, endpoint, nil)
+	body, err := client.doRawRequest(http.MethodGet, "namespaces", id, "inherited-variables")
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/json")
-
-	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
-		req.SetBasicAuth(auth.UserName, auth.Password)
-	}
-	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for h, v := range cfg.DefaultHeader {
-		req.Header.Set(h, v)
-	}
-
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read inherited variables response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, formatErrorBody(body, resp.Status)
-	}
-
 	return parseInheritedVariables(body)
 }
 
