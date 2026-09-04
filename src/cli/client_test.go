@@ -3,12 +3,15 @@ package cli
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"unsafe"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
+	"github.com/spf13/viper"
 )
 
 func setGenericOpenAPIErrorBody(err *kestra.GenericOpenAPIError, body []byte) {
@@ -234,4 +237,180 @@ func TestTryParseActionsFromError(t *testing.T) {
 			t.Fatalf("expected nil, got: %v", actions)
 		}
 	})
+}
+
+// --- auth-method precedence (issue #120) ---
+
+// writeAuthConfig writes a config.yaml with a single default context and
+// returns its path.
+func writeAuthConfig(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return path
+}
+
+// initConfigForTest parses args on a fresh root command and runs the real
+// initializeConfig, so tests exercise the whole flags > env > config chain.
+func initConfigForTest(t *testing.T, args ...string) {
+	t.Helper()
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+	root := NewRootCommand()
+	if err := root.ParseFlags(args); err != nil {
+		t.Fatalf("parse flags: %v", err)
+	}
+	if err := initializeConfig(root); err != nil {
+		t.Fatalf("initializeConfig: %v", err)
+	}
+}
+
+const tokenContextConfig = `default_context: tokenctx
+contexts:
+  tokenctx:
+    host: http://example.invalid
+    tenant: othertenant
+    auth_method: token
+    token: config-token
+`
+
+const basicContextConfig = `default_context: basicctx
+contexts:
+  basicctx:
+    host: http://example.invalid
+    tenant: othertenant
+    auth_method: basic
+    username: config-user
+    password: config-pass
+`
+
+func TestResolveConfigAuthPrecedence(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   string
+		env      map[string]string
+		args     []string
+		want     resolvedAuth
+		errorHas string
+	}{
+		{
+			name:   "flag basic auth beats config file token",
+			config: tokenContextConfig,
+			args:   []string{"--host", "http://localhost:9801", "--username", "u", "--password", "p"},
+			want:   resolvedAuth{Method: authMethodBasic, Username: "u", Password: "p"},
+		},
+		{
+			name: "flag basic auth with no config file",
+			args: []string{"--host", "http://localhost:9801", "--username", "u", "--password", "p"},
+			want: resolvedAuth{Method: authMethodBasic, Username: "u", Password: "p"},
+		},
+		{
+			name: "flag basic auth beats env token",
+			env:  map[string]string{"KESTRACTL_TOKEN": "env-token"},
+			args: []string{"--username", "u", "--password", "p"},
+			want: resolvedAuth{Method: authMethodBasic, Username: "u", Password: "p"},
+		},
+		{
+			name:   "env basic auth beats config file token",
+			config: tokenContextConfig,
+			env:    map[string]string{"KESTRACTL_USERNAME": "envuser", "KESTRACTL_PASSWORD": "envpass"},
+			want:   resolvedAuth{Method: authMethodBasic, Username: "envuser", Password: "envpass"},
+		},
+		{
+			name:   "flag token beats config file basic auth",
+			config: basicContextConfig,
+			args:   []string{"--token", "flag-token"},
+			want:   resolvedAuth{Method: authMethodToken, Token: "flag-token"},
+		},
+		{
+			name:   "flag basic auth overrides config file basic auth values",
+			config: basicContextConfig,
+			args:   []string{"--username", "u", "--password", "p"},
+			want:   resolvedAuth{Method: authMethodBasic, Username: "u", Password: "p"},
+		},
+		{
+			name:   "config file token used when nothing else is set",
+			config: tokenContextConfig,
+			want:   resolvedAuth{Method: authMethodToken, Token: "config-token"},
+		},
+		{
+			name:   "config file basic auth used when nothing else is set",
+			config: basicContextConfig,
+			want:   resolvedAuth{Method: authMethodBasic, Username: "config-user", Password: "config-pass"},
+		},
+		{
+			name: "token wins over basic auth within the same source",
+			args: []string{"--token", "flag-token", "--username", "u", "--password", "p"},
+			want: resolvedAuth{Method: authMethodToken, Token: "flag-token"},
+		},
+		{
+			name:   "values for the chosen method still merge across sources",
+			config: basicContextConfig,
+			args:   []string{"--password", "flagpass"},
+			want:   resolvedAuth{Method: authMethodBasic, Username: "config-user", Password: "flagpass"},
+		},
+		{
+			name:     "incomplete basic auth from flags is a hard error, not a token fallback",
+			config:   tokenContextConfig,
+			args:     []string{"--username", "u"},
+			errorHas: "password",
+		},
+		{
+			name:     "incomplete basic auth from the config file is a hard error",
+			config:   "default_context: c\ncontexts:\n  c:\n    username: only-user\n",
+			errorHas: "password",
+		},
+		{
+			name:     "basic auth with only a password names the missing username",
+			args:     []string{"--password", "p"},
+			errorHas: "username",
+		},
+		{
+			// Documents the behaviour of an explicitly empty --token: it carries
+			// no auth information, so lower-precedence sources still apply.
+			name:   "empty token flag does not select the token method",
+			config: basicContextConfig,
+			args:   []string{"--token", ""},
+			want:   resolvedAuth{Method: authMethodBasic, Username: "config-user", Password: "config-pass"},
+		},
+		{
+			name: "no auth configured anywhere",
+			want: resolvedAuth{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			args := tt.args
+			if tt.config != "" {
+				args = append([]string{"--config", writeAuthConfig(t, tt.config)}, args...)
+			} else {
+				// Never let the developer's real ~/.kestractl/config.yaml leak in.
+				args = append([]string{"--config", writeAuthConfig(t, "")}, args...)
+			}
+			initConfigForTest(t, args...)
+
+			_, _, auth, err := resolveConfig()
+			if tt.errorHas != "" {
+				if err == nil {
+					t.Fatalf("expected an error mentioning %q, got auth %+v", tt.errorHas, auth)
+				}
+				if !strings.Contains(err.Error(), tt.errorHas) {
+					t.Fatalf("error %q does not mention %q", err.Error(), tt.errorHas)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if auth != tt.want {
+				t.Fatalf("auth = %+v, want %+v", auth, tt.want)
+			}
+		})
+	}
 }
