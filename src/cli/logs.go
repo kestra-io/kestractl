@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -106,15 +107,14 @@ func newLogsDeleteFlowCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "delete-flow <namespace> <flow_id>",
-		Short: "Delete all logs for a flow.",
-		Long: `Delete every log entry produced by a flow across all of its executions.
+		Short: "Delete the logs a trigger of a flow produced.",
+		Long: `Delete the log entries recorded against a specific trigger of a flow.
 
-Use --trigger-id to restrict deletion to logs produced by a specific
-trigger of the flow.`,
-		Example: `  # Delete all logs for a flow
-	  kestractl logs delete-flow my.namespace my-flow
-
-	  # Delete only logs produced by a specific trigger
+--trigger-id is required: the server declares triggerId as a mandatory query
+parameter and the endpoint deletes only the logs attributed to that trigger.
+Logs produced by the flow's executions are not affected — remove those with
+'kestractl logs delete <execution_id>'.`,
+		Example: `  # Delete the logs produced by a flow's trigger
 	  kestractl logs delete-flow my.namespace my-flow --trigger-id my-trigger`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -122,32 +122,43 @@ trigger of the flow.`,
 			if err != nil {
 				return err
 			}
+			if triggerID == "" {
+				return errTriggerIDRequired
+			}
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			var triggerFilter *string
-			if triggerID != "" {
-				triggerFilter = &triggerID
-			}
-			return runLogsDeleteFlow(client, args[0], args[1], triggerFilter, renderer)
+			return runLogsDeleteFlow(client, args[0], args[1], triggerID, renderer)
 		},
 	}
 
-	cmd.Flags().StringVar(&triggerID, "trigger-id", "", "Only delete logs produced by this trigger ID")
+	cmd.Flags().StringVar(&triggerID, "trigger-id", "", "Trigger ID whose logs are deleted (required)")
 
 	return cmd
 }
 
-func runLogsDeleteFlow(client *Client, namespace, flowID string, triggerID *string, renderer *Renderer) error {
-	err := client.Kestra.Logs().DeleteLogsFromFlow(client.Ctx, namespace, flowID, client.Tenant, triggerID)
+// errTriggerIDRequired explains why 'logs delete-flow' cannot run without
+// --trigger-id: the server declares triggerId as a required query parameter
+// (400 when omitted) and treats it as an exact filter, so sending an empty
+// value would be accepted with a 200 while deleting nothing.
+var errTriggerIDRequired = errors.New(
+	"--trigger-id is required: the server only deletes the logs attributed to a specific trigger of the flow. " +
+		"To delete an execution's logs, use 'kestractl logs delete <execution_id>'")
+
+func runLogsDeleteFlow(client *Client, namespace, flowID, triggerID string, renderer *Renderer) error {
+	if triggerID == "" {
+		return errTriggerIDRequired
+	}
+
+	err := client.Kestra.Logs().DeleteLogsFromFlow(client.Ctx, namespace, flowID, client.Tenant, &triggerID)
 	if err != nil {
 		return formatSDKError(err)
 	}
 
-	return renderStatus(renderer, fmt.Sprintf("Logs for flow '%s' in namespace '%s' deleted.", flowID, namespace),
-		map[string]any{"namespace": namespace, "flowId": flowID, "status": "deleted"})
+	return renderStatus(renderer, fmt.Sprintf("Logs for trigger '%s' of flow '%s' in namespace '%s' deleted.", triggerID, flowID, namespace),
+		map[string]any{"namespace": namespace, "flowId": flowID, "triggerId": triggerID, "status": "deleted"})
 }
 
 func newLogsDeleteCommand() *cobra.Command {
