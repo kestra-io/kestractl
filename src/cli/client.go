@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -41,7 +42,7 @@ func NewClient() (*Client, error) {
 
 // newClientDefault is the default client creation logic.
 func newClientDefault() (*Client, error) {
-	host, tenant, token, username, password, err := resolveConfig()
+	host, tenant, auth, err := resolveConfig()
 	isVerbose := viper.GetBool("verbose")
 
 	if err != nil {
@@ -96,15 +97,15 @@ func newClientDefault() (*Client, error) {
 	}
 
 	ctx := context.Background()
-	if token != "" {
-		ctx = context.WithValue(ctx, kestra.ContextAccessToken, token)
-		opts = append(opts, kestra.WithTokenAuth(token))
-	} else if username != "" && password != "" {
+	if auth.Token != "" {
+		ctx = context.WithValue(ctx, kestra.ContextAccessToken, auth.Token)
+		opts = append(opts, kestra.WithTokenAuth(auth.Token))
+	} else if auth.Username != "" && auth.Password != "" {
 		ctx = context.WithValue(ctx, kestra.ContextBasicAuth, kestra.BasicAuth{
-			UserName: username,
-			Password: password,
+			UserName: auth.Username,
+			Password: auth.Password,
 		})
-		opts = append(opts, kestra.WithBasicAuth(username, password))
+		opts = append(opts, kestra.WithBasicAuth(auth.Username, auth.Password))
 	} else {
 		return nil, fmt.Errorf("could not init client without any auth, at least token or username+password is required")
 	}
@@ -119,14 +120,27 @@ func newClientDefault() (*Client, error) {
 	return c, nil
 }
 
-// resolveConfig returns (host, tenant, token, error) using Viper for precedence: flags > env > config file.
-func resolveConfig() (string, string, string, string, string, error) {
+// Auth methods reported by resolvedAuth.
+const (
+	authMethodToken = "token"
+	authMethodBasic = "basic"
+)
+
+// resolvedAuth is the authentication kestractl will use for this invocation.
+// Only the fields belonging to Method are populated; Method is empty when no
+// source configured any authentication at all.
+type resolvedAuth struct {
+	Method   string
+	Token    string
+	Username string
+	Password string
+}
+
+// resolveConfig returns (host, tenant, auth, error) using Viper for precedence: flags > env > config file.
+func resolveConfig() (string, string, resolvedAuth, error) {
 	// Viper handles precedence automatically: flags > env > config > defaults
 	host := strings.TrimSpace(viper.GetString(FlagHost))
 	tenant := viper.GetString(FlagTenant)
-	token := viper.GetString(FlagToken)
-	username := viper.GetString(FlagUsername)
-	password := viper.GetString(FlagPassword)
 
 	// Set defaults if not provided
 	if host == "" {
@@ -138,7 +152,90 @@ func resolveConfig() (string, string, string, string, string, error) {
 
 	host = normalizeHost(host)
 
-	return host, tenant, token, username, password, nil
+	auth, err := resolveAuth()
+	if err != nil {
+		return host, tenant, resolvedAuth{}, err
+	}
+
+	return host, tenant, auth, nil
+}
+
+// explicitAuthFlags records which auth flags the user set on the command line
+// with a non-empty value. It is populated by initializeConfig and stays empty
+// for callers that never parse flags.
+var explicitAuthFlags map[string]bool
+
+// authFieldFromFlag reports whether the named auth field was set by a flag.
+func authFieldFromFlag(name string) bool { return explicitAuthFlags[name] }
+
+// authFieldFromEnv reports whether the named auth field was set by a
+// KESTRACTL_* environment variable.
+func authFieldFromEnv(name string) bool {
+	v, ok := os.LookupEnv(envPrefix + "_" + strings.ToUpper(name))
+	return ok && strings.TrimSpace(v) != ""
+}
+
+// authFieldResolved reports whether the named auth field has any value at all.
+// Used as the last source in the precedence chain, where a value can only come
+// from the config file's default context.
+func authFieldResolved(name string) bool { return viper.GetString(name) != "" }
+
+// resolveAuth picks the authentication method and its values.
+//
+// The method is decided by the highest-precedence source (flags > env > config
+// file) that sets any of token/username/password; a token wins over basic auth
+// within the same source. Once the method is chosen, its individual values
+// still resolve through the normal per-field Viper precedence, so a config-file
+// username can pair with a --password flag. Fields belonging to the losing
+// method are dropped rather than silently taking over the request (issue #120).
+func resolveAuth() (resolvedAuth, error) {
+	method := ""
+	for _, sets := range []func(string) bool{authFieldFromFlag, authFieldFromEnv, authFieldResolved} {
+		switch {
+		case sets(FlagToken):
+			method = authMethodToken
+		case sets(FlagUsername) || sets(FlagPassword):
+			method = authMethodBasic
+		}
+		if method != "" {
+			break
+		}
+	}
+
+	switch method {
+	case authMethodToken:
+		token := viper.GetString(FlagToken)
+		if token == "" {
+			return resolvedAuth{}, missingAuthFieldsError([]string{FlagToken})
+		}
+		return resolvedAuth{Method: authMethodToken, Token: token}, nil
+	case authMethodBasic:
+		username := viper.GetString(FlagUsername)
+		password := viper.GetString(FlagPassword)
+		var missing []string
+		if username == "" {
+			missing = append(missing, FlagUsername)
+		}
+		if password == "" {
+			missing = append(missing, FlagPassword)
+		}
+		if len(missing) > 0 {
+			return resolvedAuth{}, missingAuthFieldsError(missing)
+		}
+		return resolvedAuth{Method: authMethodBasic, Username: username, Password: password}, nil
+	}
+
+	return resolvedAuth{}, nil
+}
+
+// missingAuthFieldsError explains which auth fields are missing and where they
+// can be set.
+func missingAuthFieldsError(missing []string) error {
+	hints := make([]string, 0, len(missing))
+	for _, name := range missing {
+		hints = append(hints, fmt.Sprintf("--%s, %s_%s, or %q in the config file's default context", name, envPrefix, strings.ToUpper(name), name))
+	}
+	return fmt.Errorf("incomplete authentication: missing %s (set %s)", strings.Join(missing, " and "), strings.Join(hints, "; "))
 }
 
 // parseHeaders parses a slice of "Key:Value" strings into a map.

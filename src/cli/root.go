@@ -18,6 +18,9 @@ var (
 	buildDate = "unknown"
 )
 
+// envPrefix is the prefix for kestractl's environment variables.
+const envPrefix = "KESTRACTL"
+
 // Flag names
 const (
 	FlagHost     = "host"
@@ -139,7 +142,7 @@ with support for multiple authentication contexts and output formats.`,
 // initializeConfig sets up Viper to handle configuration from multiple sources.
 func initializeConfig(cmd *cobra.Command) error {
 	// 1. Set up Viper to use environment variables
-	viper.SetEnvPrefix("KESTRACTL")
+	viper.SetEnvPrefix(envPrefix)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 
@@ -175,6 +178,20 @@ func initializeConfig(cmd *cobra.Command) error {
 	// This ensures flags have the highest priority
 	if err := viper.BindPFlags(cmd.Flags()); err != nil {
 		return err
+	}
+
+	// 4b. Record which auth flags the user set explicitly. Viper flattens every
+	// auth field independently below, which loses track of the source; without
+	// this, a config-file token would outrank --username/--password (issue #120).
+	explicitAuthFlags = map[string]bool{}
+	for _, name := range []string{FlagToken, FlagUsername, FlagPassword} {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			f = cmd.Root().PersistentFlags().Lookup(name)
+		}
+		if f != nil && f.Changed && strings.TrimSpace(f.Value.String()) != "" {
+			explicitAuthFlags[name] = true
+		}
 	}
 
 	// 5. Read from the default context if config file was loaded

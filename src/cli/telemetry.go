@@ -103,7 +103,7 @@ func newTelemetryReporter() telemetryReporter {
 		return noopTelemetry{}
 	}
 
-	host, tenant, _, _, _, _ := resolveConfig()
+	host, tenant, _, _ := resolveConfig()
 	instanceConfig := fetchInstanceConfig()
 
 	phClient, err := posthogFactory(posthogToken, posthog.Config{
