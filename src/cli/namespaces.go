@@ -548,6 +548,12 @@ func newNamespacesInheritedVariablesCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "inherited-variables <namespace_id>",
 		Short: "List inherited variables for a namespace.",
+		Long: `List inherited variables for a namespace.
+
+The server merges the inheritance chain before answering, so the NAMESPACE
+column (and the "namespace" JSON field) is the namespace that was queried, not
+the parent namespace that defined each variable — that information is not part
+of the response.`,
 		Example: `  kestractl namespaces inherited-variables my.namespace
   kestractl namespaces inherited-variables my.namespace --output json`,
 		Args: cobra.ExactArgs(1),
@@ -610,14 +616,17 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 // fetchInheritedVariables reads a namespace's inherited variables with a direct
 // HTTP request instead of the SDK.
 //
-// The generated SDK types this endpoint's response as
-// map[string]map[string]interface{}, but both Kestra 1.3 and 2.0 answer with
-// the already-merged flat map of variable name to value — so any scalar value
-// fails the typed decode with "cannot unmarshal number into Go value of type
-// map[string]interface {}" and the command errors before rendering anything
-// (issue #128). Reading the body here also lets it be decoded with UseNumber,
-// which keeps integers above 2^53 exact rather than routing them through
-// float64.
+// Neither SDK client can be used as-is (issue #128). The generated client types
+// this endpoint's response as map[string]map[string]interface{}, but both Kestra
+// 1.3 and 2.0 answer with the already-merged flat map of variable name to value,
+// so any scalar value fails that typed decode with "cannot unmarshal number into
+// Go value of type map[string]interface {}" and the command errors before
+// rendering anything. The hand-written client
+// (client.Kestra.Namespaces().InheritedVariables) already has the right shape,
+// map[string]interface{}, but decodes with a plain json.Unmarshal: without
+// UseNumber every value goes through float64, which rounds integers above 2^53.
+// Reading the body here is what lets it be decoded with UseNumber, keeping a
+// variable's digits verbatim.
 //
 // The path mirrors the SDK's InheritedVariables endpoint.
 func fetchInheritedVariables(client *Client, id string) (map[string]any, error) {
@@ -631,9 +640,12 @@ func fetchInheritedVariables(client *Client, id string) (map[string]any, error) 
 // parseInheritedVariables decodes an inherited-variables body into a flat map,
 // preserving number literals as json.Number.
 //
-// A response that still uses the nested {namespace: {variable: value}} shape the
-// SDK models decodes into this map too: the inner object lands as the value and
-// renders as JSON, which is lossless, rather than being rejected.
+// A response using the nested {namespace: {variable: value}} shape the generated
+// SDK models decodes into this map too, rather than being rejected — but it is
+// not the intended shape: each namespace becomes a KEY and its whole variable
+// object is JSON-encoded into VALUE, so the variable names only survive inside
+// the value. That is readable but not what the columns promise. No supported
+// server version returns it; both Kestra 1.3 and 2.0 answer flat.
 func parseInheritedVariables(body []byte) (map[string]any, error) {
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) == 0 {
@@ -647,7 +659,17 @@ func parseInheritedVariables(body []byte) (map[string]any, error) {
 
 	var variables map[string]any
 	if err := decoder.Decode(&variables); err != nil {
-		return nil, fmt.Errorf("failed to parse inherited variables response: %w", err)
+		// A 2xx body that is not JSON is usually an SSO or reverse proxy
+		// answering with an HTML login page. Route that through
+		// formatErrorBody, whose HTML branch explains to check the host URL and
+		// authentication; an empty errMsg selects that hint instead of echoing
+		// the parser error. Any other unparseable body keeps the decode error,
+		// which says what is actually wrong with it.
+		const prefix = "failed to parse inherited variables response"
+		if trimmed[0] == '<' {
+			return nil, fmt.Errorf("%s: %w", prefix, formatErrorBody(trimmed, ""))
+		}
+		return nil, fmt.Errorf("%s: %w", prefix, err)
 	}
 	return variables, nil
 }

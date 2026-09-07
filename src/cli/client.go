@@ -284,10 +284,8 @@ func normalizeHost(host string) string {
 // namespace or flow id containing a slash or space cannot break out of its
 // position.
 //
-// Known limitation: --verbose is wired to the SDK's own debug logger inside
-// callAPI, so a request issued here does not appear in the verbose dump. That
-// has always been true of the webhook path; fixing it belongs in the shared
-// transport, not in each caller.
+// Because that HTTP client is the shared compat transport, a request issued here
+// gets the same --verbose masked dump as any SDK call.
 func (c *Client) doRawRequest(method string, segments ...string) ([]byte, error) {
 	cfg := c.API.GetConfig()
 

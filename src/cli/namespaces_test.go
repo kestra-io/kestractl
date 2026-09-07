@@ -682,3 +682,41 @@ func TestRunNamespacesInheritedVariables_ServerError(t *testing.T) {
 		t.Fatalf("expected the server message in the error, got: %v", err)
 	}
 }
+
+// An SSO or reverse proxy in front of Kestra can answer an unauthenticated GET
+// with a 200 login page. The decode failure must still surface the actionable
+// "check your host URL and authentication" hint rather than a raw parser error.
+func TestRunNamespacesInheritedVariables_HTMLResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<!doctype html><html><body>login</body></html>"))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected an error for an HTML response")
+	}
+	if !strings.Contains(err.Error(), "HTML response") {
+		t.Fatalf("expected the HTML hint in the error, got: %v", err)
+	}
+}
+
+// A 200 body that is neither JSON nor HTML must still name what failed.
+func TestRunNamespacesInheritedVariables_UnparseableResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not json at all"))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runNamespacesInheritedVariables(newTestClient(t, server.URL), "my.namespace", newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected an error for an unparseable response")
+	}
+	if !strings.Contains(err.Error(), "inherited variables") {
+		t.Fatalf("expected the error to name the failed parse, got: %v", err)
+	}
+}

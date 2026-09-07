@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -567,5 +568,48 @@ func TestIsProblemDocument_StatusNumberForms(t *testing.T) {
 				t.Fatal("expected a rendered problem message")
 			}
 		})
+	}
+}
+
+// doRawRequest sends through the shared compat transport, so --verbose dumps it
+// like any SDK call — with the same header masking (issue #119).
+func TestDoRawRequest_VerboseDumpGoesThroughCompatTransport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	httpClient, transport := newCompatHTTPClient()
+	transport.verbose = true
+	transport.logger = &out
+
+	cfg := kestra.NewConfiguration()
+	cfg.Servers = kestra.ServerConfigurations{{URL: server.URL}}
+	cfg.HTTPClient = httpClient
+	client := &Client{
+		API:    kestra.NewAPIClient(cfg),
+		Ctx:    context.WithValue(context.Background(), kestra.ContextAccessToken, "faketoken123"),
+		Tenant: "main",
+	}
+	transport.era = client.serverEra
+
+	if _, err := client.doRawRequest(http.MethodGet, "namespaces", "my.namespace", "inherited-variables"); err != nil {
+		t.Fatalf("doRawRequest error: %v", err)
+	}
+
+	dump := out.String()
+	for _, want := range []string{
+		"> GET " + server.URL + "/api/v1/main/namespaces/my.namespace/inherited-variables",
+		"< 200 OK",
+		`{"ok":true}`,
+	} {
+		if !strings.Contains(dump, want) {
+			t.Fatalf("expected %q in the verbose dump, got:\n%s", want, dump)
+		}
+	}
+	if strings.Contains(dump, "faketoken123") {
+		t.Fatalf("verbose dump leaked the token:\n%s", dump)
 	}
 }
