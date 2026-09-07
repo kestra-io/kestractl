@@ -51,6 +51,13 @@ release:
   # newest release of a major line itself), so this drives the GitHub UI badge
   # and the in-CLI update notifier, which reads /releases/latest.
   make_latest: "true"
+  # Makes a re-run of a partly-failed release converge instead of dying on the
+  # first asset. Without it an upload that hits the API's 422 "asset already
+  # exists" is treated as unrecoverable (goreleaser internal/client/github.go),
+  # so any release that got as far as uploading binaries could never be retried.
+  # The release object itself is already idempotent -- createOrUpdateRelease
+  # looks the release up and updates it -- so this was the only blocker.
+  replace_existing_artifacts: true
 
 changelog:
   sort: asc

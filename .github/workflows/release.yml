@@ -15,10 +15,20 @@ on:
         description: Tag to build and release.
         type: string
         required: true
-  # Dry run: builds the binaries and both container images and exercises the
-  # registry logins, but publishes nothing. Run it on a branch before tagging,
-  # or after touching anything Docker-related here.
+  # Manual entry point, doubling as the retry path. Leave `tag` empty for a dry
+  # run -- builds the binaries and both container images and exercises the
+  # registry logins, publishing nothing. Pass a tag to re-run a release that
+  # failed partway through (a registry blip, expired credentials, a Docker Hub
+  # outage): every publish step is idempotent, so re-running converges rather
+  # than double-publishing. This works the same whether the original release was
+  # auto-tagged or hand-cut, which "Re-run all jobs" on Auto Tag does not -- that
+  # re-runs the tagger, which finds the tag already present and skips the release.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v2.0.0-rc.5. Empty = dry run on the current ref."
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -48,16 +58,30 @@ jobs:
         id: target
         env:
           CALLER_REF: ${{ inputs.ref }}
+          INPUT_TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
           PUSHED_REF: ${{ github.ref }}
           PUSHED_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           if [ -n "$CALLER_REF" ]; then
-            tag="$CALLER_REF"; dry_run=false          # called by auto-tag.yml
+            # Called by auto-tag.yml. Matched first, which is what makes reading
+            # $EVENT below safe: past this branch we know we are not in a called
+            # workflow, so the event really is this workflow's own trigger.
+            tag="$CALLER_REF"; dry_run=false
+          elif [ "$EVENT" = "workflow_dispatch" ]; then
+            # Decided purely by the input, never by the ref: the dispatch UI lets
+            # you pick a tag, and inferring "real release" from that would quietly
+            # re-release whatever tag happened to be selected.
+            if [ -n "$INPUT_TAG" ]; then
+              tag="$INPUT_TAG"; dry_run=false        # manual retry
+            else
+              tag=""; dry_run=true                   # dry run
+            fi
           elif [ "${PUSHED_REF#refs/tags/}" != "$PUSHED_REF" ]; then
-            tag="$PUSHED_NAME"; dry_run=false         # hand-cut tag push
+            tag="$PUSHED_NAME"; dry_run=false        # hand-cut tag push
           else
-            tag=""; dry_run=true                     # workflow_dispatch on a branch
+            tag=""; dry_run=true
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "dry_run=$dry_run" >> "$GITHUB_OUTPUT"
