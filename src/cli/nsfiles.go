@@ -527,11 +527,12 @@ func runNamespaceFilesDelete(client *Client, namespace, targetPath string, recur
 		results = append(results, result)
 	}
 
-	// One request, so at most one failure — counting the reported rows instead
-	// would claim "6 error(s)" for a single 403 on a directory of five entries.
+	// The report is path-shaped: the one request removes or fails the whole
+	// subtree, so on failure every enumerated path is reported as not deleted
+	// and the error count matches the rows the report marks failed.
 	failed := 0
 	if deleteErr != nil {
-		failed = 1
+		failed = len(results)
 	}
 
 	if err := renderNamespaceFilesDeleteResults(results, renderer); err != nil {

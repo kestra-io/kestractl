@@ -405,11 +405,22 @@ func TestRunNamespaceFilesDelete_RecursiveIssuesOneDirectoryDelete(t *testing.T)
 			t.Errorf("expected %q in the delete report, got: %s", reported, out.String())
 		}
 	}
+
+	// The report is path-shaped: on success every enumerated path counts as
+	// deleted.
+	var summary namespaceFileDeleteSummary
+	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
+		t.Fatalf("could not decode the delete report: %v (%s)", err, out.String())
+	}
+	if summary.Total != 2 || summary.Success != 2 || summary.Failed != 0 {
+		t.Errorf("expected total 2 / success 2 / failed 0, got total %d / success %d / failed %d", summary.Total, summary.Success, summary.Failed)
+	}
 }
 
-// A recursive delete is one request, so a failure is one failure — however many
-// paths the report names.
-func TestRunNamespaceFilesDelete_RecursiveFailureCountsOnce(t *testing.T) {
+// The delete report is path-shaped and all-or-nothing: when the single DELETE
+// fails, every enumerated path is reported as not deleted and the returned
+// error counts the same paths.
+func TestRunNamespaceFilesDelete_RecursiveFailureIsConsistentAcrossReportAndError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodDelete:
@@ -437,17 +448,20 @@ func TestRunNamespaceFilesDelete_RecursiveFailureCountsOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when the DELETE fails")
 	}
-	if !strings.Contains(err.Error(), "1 error(s)") {
-		t.Errorf("expected the summary to report 1 error, got: %v", err)
+	if !strings.Contains(err.Error(), "3 error(s)") {
+		t.Errorf("expected the error to count the 3 undeleted paths, got: %v", err)
 	}
 
 	// Every reported row still carries the failure, so the report stays useful.
 	var summary namespaceFileDeleteSummary
-	if err := json.Unmarshal(out.Bytes(), &summary); err != nil {
-		t.Fatalf("could not decode the delete report: %v (%s)", err, out.String())
+	if jsonErr := json.Unmarshal(out.Bytes(), &summary); jsonErr != nil {
+		t.Fatalf("could not decode the delete report: %v (%s)", jsonErr, out.String())
 	}
 	if len(summary.Results) != 3 {
 		t.Fatalf("expected 3 reported rows, got %d: %s", len(summary.Results), out.String())
+	}
+	if summary.Total != 3 || summary.Success != 0 || summary.Failed != 3 {
+		t.Errorf("expected total 3 / success 0 / failed 3, got total %d / success %d / failed %d", summary.Total, summary.Success, summary.Failed)
 	}
 	for _, result := range summary.Results {
 		if result.Success {
