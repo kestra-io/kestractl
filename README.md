@@ -6,7 +6,7 @@ A Go-based command-line interface for managing Kestra flows, executions, trigger
 
 ### use convenience script installer
 
-Install the latest kestractl v2 release (prereleases included until 2.0.0 is GA). kestractl v2 targets Kestra 2.x and works against Kestra 1.3 for everyday commands (flows, executions, namespace files, KV, namespaces); features that only exist in Kestra 2.0 are refused with a clear error on a 1.x server.
+Install the latest kestractl v2 release. kestractl v2 targets Kestra 2.x and works against Kestra 1.3 for everyday commands (flows, executions, namespace files, KV, namespaces); features that only exist in Kestra 2.0 are refused with a clear error on a 1.x server.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
