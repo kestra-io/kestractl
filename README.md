@@ -24,6 +24,12 @@ Install a specific version or custom directory:
 curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | VERSION=1.18.1 INSTALL_DIR=~/.local/bin bash
 ```
 
+The script resolves the release through the GitHub REST API, which is rate-limited per IP for anonymous callers — shared CI egress IPs can hit that limit and fail with `HTTP 403`. Set `GITHUB_TOKEN` (or `GH_TOKEN`) and the API calls are authenticated instead; it is optional and no token is needed for a normal install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | GITHUB_TOKEN="$GITHUB_TOKEN" bash
+```
+
 ### or choose and download the proper binary for your OS/arch
 download the compressed or plain binary for your platform at https://github.com/kestra-io/kestractl/releases
 
