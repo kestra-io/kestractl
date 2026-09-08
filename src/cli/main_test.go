@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -22,12 +24,67 @@ import (
 // still passes, quietly making a real request, and only shows up later as a
 // flake on an offline machine or a rate-limited CI runner.
 //
-// So the dialer under the tests refuses anything that is not loopback. A missed
-// override fails with a message naming the address instead of succeeding by
-// accident.
+// So the dialer under the tests refuses anything that is not loopback. Blocking
+// the dial is not enough on its own: several of those fetches are best-effort
+// and swallow the client error (fetchPosthogConfig returns "", ""; the update
+// notifier just gives up), so the test that forgot its override would still
+// pass. Every blocked address is therefore recorded, and the run fails here
+// after m.Run() even if no assertion noticed.
 func TestMain(m *testing.M) {
 	blockExternalNetwork()
-	os.Exit(m.Run())
+	code := m.Run()
+
+	if blocked := blockedExternalDials(); len(blocked) > 0 {
+		fmt.Fprintf(os.Stderr, "\nunit tests must not reach the network, but %d external dial(s) were attempted:\n", len(blocked))
+		for _, address := range blocked {
+			fmt.Fprintf(os.Stderr, "  - %s\n", address)
+		}
+		fmt.Fprint(os.Stderr, "Point the relevant package var (telemetryConfigURL, newVersionCheckLatestReleaseURL, pluginsAPIBase, pluginsMavenBase, ...) at an httptest server.\n")
+		if code == 0 {
+			code = 1
+		}
+	}
+
+	os.Exit(code)
+}
+
+// guardSelfTestHost is the target of the guard's own self-test. It is blocked
+// like any other external address but deliberately left out of the report, so
+// the self-test does not fail the run it is verifying. `.invalid` is reserved by
+// RFC 2606 and never resolves, which keeps the self-test offline-safe: if the
+// guard ever regresses into a no-op, the request fails on DNS rather than
+// actually reaching a host we do not control.
+const guardSelfTestHost = "kestractl-network-guard.invalid"
+
+var (
+	blockedDialsMu sync.Mutex
+	blockedDials   = map[string]struct{}{}
+)
+
+func recordBlockedDial(address string) {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	if host == guardSelfTestHost {
+		return
+	}
+
+	blockedDialsMu.Lock()
+	defer blockedDialsMu.Unlock()
+	blockedDials[address] = struct{}{}
+}
+
+func blockedExternalDials() []string {
+	blockedDialsMu.Lock()
+	defer blockedDialsMu.Unlock()
+
+	addresses := make([]string, 0, len(blockedDials))
+	for address := range blockedDials {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	return addresses
 }
 
 // errExternalNetwork is returned for any non-loopback dial attempt.
@@ -56,6 +113,7 @@ func blockExternalNetwork() {
 	dialer := &net.Dialer{Timeout: 5 * time.Second}
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		if !isLoopbackAddress(address) {
+			recordBlockedDial(address)
 			return nil, &errExternalNetwork{network: network, address: address}
 		}
 		return dialer.DialContext(ctx, network, address)
@@ -84,9 +142,11 @@ func isLoopbackAddress(address string) bool {
 // client that builds its own — and nothing else in the suite would notice.
 //
 // The external case is itself hermetic: http.Transport hands the dialer the
-// hostname, so the guard rejects it before any DNS lookup happens.
+// hostname, so the guard rejects it before any DNS lookup happens, and the
+// hostname is an unresolvable `.invalid` one so a regressed guard fails offline
+// rather than reaching a real host.
 func TestNetworkGuard_BlocksExternalDialsAndAllowsLoopback(t *testing.T) {
-	if _, err := http.Get("https://api.github.com/repos/kestra-io/kestractl/releases/latest"); err == nil {
+	if _, err := http.Get("https://" + guardSelfTestHost + "/repos/kestra-io/kestractl/releases/latest"); err == nil {
 		t.Fatal("expected the external request to be blocked")
 	} else if !strings.Contains(err.Error(), "unit tests must not reach the network") {
 		t.Fatalf("expected the guard's error, got %v", err)
@@ -100,4 +160,34 @@ func TestNetworkGuard_BlocksExternalDialsAndAllowsLoopback(t *testing.T) {
 		t.Fatalf("loopback request must still work, got %v", err)
 	}
 	_ = res.Body.Close()
+}
+
+// TestNetworkGuard_ReportsBlockedDialsExceptTheSelfTest covers the reporting
+// half of the guard: a blocked address must land in the report TestMain reads,
+// while the self-test's own target must not.
+func TestNetworkGuard_ReportsBlockedDialsExceptTheSelfTest(t *testing.T) {
+	recordBlockedDial(guardSelfTestHost + ":443")
+	for _, address := range blockedExternalDials() {
+		if strings.HasPrefix(address, guardSelfTestHost) {
+			t.Fatalf("the self-test target must not be reported, got %q", address)
+		}
+	}
+
+	const sentinel = "api.example.test:443"
+	recordBlockedDial(sentinel)
+	defer func() {
+		blockedDialsMu.Lock()
+		delete(blockedDials, sentinel)
+		blockedDialsMu.Unlock()
+	}()
+
+	found := false
+	for _, address := range blockedExternalDials() {
+		if address == sentinel {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected %q in the blocked-dial report, got %v", sentinel, blockedExternalDials())
+	}
 }
