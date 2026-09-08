@@ -140,6 +140,14 @@ func RunCliCmd(t *testing.T, args ...string) (stdout string, stderr string, err 
 //
 // Pointing HOME at a per-test temp dir makes the suite hermetic. The KESTRACTL_*
 // credential variables are dropped for the same reason, minus the harness's own.
+//
+// Telemetry and the update notifier are switched off here too. Every CLI run
+// otherwise calls api.kestra.io for the PostHog config, ships an event to
+// PostHog, and asks api.github.com for the latest release — third-party hosts
+// this suite has no business depending on, and real telemetry from a test run
+// lands in the production project. Note the KESTRACTL_* filter below drops
+// these if they come in from the ambient environment, so they are set after it,
+// not before.
 func isolatedEnv(t *testing.T) []string {
 	t.Helper()
 
@@ -162,7 +170,10 @@ func isolatedEnv(t *testing.T) []string {
 		}
 		env = append(env, kv)
 	}
-	return env
+	return append(env,
+		"KESTRACTL_TELEMETRY_DISABLED=true",
+		"KESTRACTL_VERSION_CHECK_DISABLED=true",
+	)
 }
 
 func cliExeName() string {
