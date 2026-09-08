@@ -9,6 +9,12 @@ INSTALL_DIR="${INSTALL_DIR:-}"
 # VERSION=1 selects the legacy v1 line, VERSION=x.y.z an exact release.
 DEFAULT_MAJOR="2"
 VERSION="${VERSION:-}"
+# Release metadata comes from the GitHub REST API, which is rate-limited per IP
+# for anonymous callers. CI runners share egress IPs and do hit that limit
+# (HTTP 403), so the API calls are authenticated whenever a token is available.
+# Both names GitHub Actions exposes are accepted; without either one the calls
+# stay anonymous and the script works exactly as before.
+GITHUB_API_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 
 err() {
   printf "Error: %s\n" "$1" >&2
@@ -23,9 +29,20 @@ download() {
   local url="$1"
   local output="$2"
   local http_code
+  local token=""
+
+  # Only api.github.com is authenticated: it is the rate-limited endpoint, while
+  # release assets are public and served from another host that rejects GitHub
+  # tokens. The header is built as an array so the token is never word-split nor
+  # echoed; ${a[@]+"${a[@]}"} keeps an empty array safe under `set -u` on bash 3.2.
+  case "$url" in
+    https://api.github.com/*) token="$GITHUB_API_TOKEN" ;;
+  esac
 
   if command -v curl >/dev/null 2>&1; then
-    http_code="$(curl -sSL -w "%{http_code}" -o "$output" "$url" || true)"
+    local auth=()
+    [ -z "$token" ] || auth=(-H "Authorization: Bearer $token")
+    http_code="$(curl -sSL ${auth[@]+"${auth[@]}"} -w "%{http_code}" -o "$output" "$url" || true)"
     if [ -z "$http_code" ]; then
       rm -f "$output"
       err "Download failed: $url"
@@ -39,7 +56,9 @@ download() {
       err "Download failed (HTTP $http_code): $url"
     fi
   elif command -v wget >/dev/null 2>&1; then
-    http_code="$(wget -q --server-response --spider "$url" 2>&1 | awk '/^  HTTP/{code=$2} END{print code}')"
+    local auth=()
+    [ -z "$token" ] || auth=(--header="Authorization: Bearer $token")
+    http_code="$(wget -q --server-response --spider ${auth[@]+"${auth[@]}"} "$url" 2>&1 | awk '/^  HTTP/{code=$2} END{print code}')"
     if [ -z "$http_code" ]; then
       err "Download failed: $url"
     fi
@@ -49,7 +68,7 @@ download() {
     if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 400 ]; then
       err "Download failed (HTTP $http_code): $url"
     fi
-    if ! wget -qO "$output" "$url"; then
+    if ! wget ${auth[@]+"${auth[@]}"} -qO "$output" "$url"; then
       err "Download failed: $url"
     fi
   else
