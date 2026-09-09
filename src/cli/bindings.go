@@ -363,9 +363,18 @@ func runBindingsBulkCreate(client *Client, path string, renderer *Renderer) erro
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	var requests interface{}
+	// A slice of maps rather than the SDK's generated request model: the fields
+	// are forwarded to the API verbatim, so a server that accepts a key this
+	// SDK build does not model still works. It is also not a bare interface{} —
+	// that would accept any JSON at all (an object, a bare string, a number)
+	// and defer the complaint to an opaque server-side error, when --file is
+	// documented as an array of binding requests.
+	var requests []map[string]any
 	if err := json.Unmarshal(data, &requests); err != nil {
-		return fmt.Errorf("failed to parse JSON file: %w", err)
+		return fmt.Errorf("failed to parse JSON file: %w (expected a JSON array of binding requests)", err)
+	}
+	if len(requests) == 0 {
+		return fmt.Errorf("no binding requests found in %s: expected a non-empty JSON array", path)
 	}
 
 	bindings, err := client.Kestra.Bindings().BulkCreateBinding(client.Ctx, client.Tenant, requests)
