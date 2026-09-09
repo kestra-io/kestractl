@@ -3,10 +3,13 @@ package cli
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"os"
@@ -27,6 +30,33 @@ var errRateLimited = errors.New("rate limited by repository (429)")
 // rateLimitWaits defines the back-off delays between successive 429 retries.
 // Exposed as a var so tests can override it to avoid sleeping.
 var rateLimitWaits = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second}
+
+// checksumAlgorithm describes one of the checksum files a Maven repository
+// publishes alongside an artifact.
+type checksumAlgorithm struct {
+	ext    string // checksum file extension, without the dot
+	name   string // human-readable name, for log messages
+	hexLen int    // length of the hex-encoded digest
+	new    func() hash.Hash
+}
+
+// checksumAlgorithms lists the checksum files we accept, strongest first.
+//
+// SHA-1 is not collision resistant, so it is the last resort rather than the
+// only option: a repository that publishes .sha512 or .sha256 gets verified
+// with that instead. It cannot simply be dropped — Maven Central has only
+// published the stronger sums since 2020, and private repositories (including
+// the ones an EE install is usually pointed at) frequently carry .sha1 alone,
+// where refusing it would mean no verification at all.
+//
+// Note this is defence against a corrupted or substituted artifact, not against
+// a hostile repository: the checksum comes from the same host as the JAR, so an
+// attacker who controls the response controls both.
+var checksumAlgorithms = []checksumAlgorithm{
+	{ext: "sha512", name: "SHA-512", hexLen: 128, new: sha512.New},
+	{ext: "sha256", name: "SHA-256", hexLen: 64, new: sha256.New},
+	{ext: "sha1", name: "SHA-1", hexLen: 40, new: sha1.New},
+}
 
 // pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
 var (
@@ -651,21 +681,13 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, true, nil
 		}
 	}
-	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	algo, expectedSum, err := fetchExpectedChecksum(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
 	if err != nil {
 		if errors.Is(err, errRateLimited) {
 			return 0, false, err
 		}
-		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
-		expectedSHA1 = ""
-	} else if expectedSHA1 != "" {
-		if len(expectedSHA1) != 40 {
-			logf("  [WARN] expected SHA-1 for %s has invalid length (%d), proceeding without checksum validation\n", label, len(expectedSHA1))
-			expectedSHA1 = ""
-		} else if _, hexErr := hex.DecodeString(expectedSHA1); hexErr != nil {
-			logf("  [WARN] expected SHA-1 for %s is not valid hex, proceeding without checksum validation\n", label)
-			expectedSHA1 = ""
-		}
+		logf("  [WARN] failed to fetch a checksum for %s: %v, proceeding without checksum validation\n", label, err)
+		expectedSum = ""
 	}
 
 	for attempt := 0; ; attempt++ {
@@ -737,43 +759,85 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
 		}
 
-		if expectedSHA1 != "" {
-			actualSHA1, hashErr := fileSHA1(destPath)
+		if expectedSum != "" {
+			actualSum, hashErr := fileChecksum(destPath, algo)
 			if hashErr != nil {
 				os.Remove(destPath)
-				return 0, false, fmt.Errorf("failed to compute SHA-1 of downloaded file: %w", hashErr)
+				return 0, false, fmt.Errorf("failed to compute %s of downloaded file: %w", algo.name, hashErr)
 			}
-			if actualSHA1 != expectedSHA1 {
+			if actualSum != expectedSum {
 				os.Remove(destPath)
-				return 0, false, fmt.Errorf("checksum mismatch for %s: expected %s, got %s", label, expectedSHA1, actualSHA1)
+				return 0, false, fmt.Errorf("checksum mismatch (%s) for %s: expected %s, got %s", algo.name, label, expectedSum, actualSum)
 			}
 		}
 		return n, false, nil
 	}
 }
 
-// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the
-// given path.
-func fileSHA1(path string) (string, error) {
+// fileChecksum computes and returns the hex-encoded digest of the file at the
+// given path, using the given algorithm.
+func fileChecksum(path string, algo checksumAlgorithm) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("cannot open file: %w", err)
 	}
 	defer f.Close()
-	hasher := sha1.New()
+	hasher := algo.new()
 	if _, err := io.Copy(hasher, f); err != nil {
 		return "", fmt.Errorf("cannot read file: %w", err)
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-// fetchExpectedSHA1 retrieves the expected SHA-1 checksum for a given Maven artifact URL.
-// It executes a retriable HTTP request using the provided credentials and headers and limits the
-// response read to 256 bytes, handles both types of hash files
-// (just the plain hash, or the hash followed by a filename)
-func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (string, error) {
+// fetchExpectedChecksum negotiates the strongest checksum the repository
+// publishes for a given Maven artifact URL, returning the algorithm and its
+// expected hex digest. It returns an empty digest when the repository publishes
+// none of them, which leaves the download unverified — the pre-existing
+// behaviour when no .sha1 was available.
+func fetchExpectedChecksum(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (checksumAlgorithm, string, error) {
+	var tried []string
+	for _, algo := range checksumAlgorithms {
+		tried = append(tried, "."+algo.ext)
+
+		sum, err := fetchChecksumFile(ctx, logf, jarURL, label, algo, mavenUsername, mavenPassword, headers)
+		if err != nil {
+			// A back-off signal is about the repository, not this algorithm, so
+			// it must reach the caller rather than fall through to a weaker one.
+			if errors.Is(err, errRateLimited) {
+				return checksumAlgorithm{}, "", err
+			}
+			// Any other failure on a stronger algorithm is worth reporting only
+			// if the weaker ones fail too; keep trying.
+			if algo.ext == checksumAlgorithms[len(checksumAlgorithms)-1].ext {
+				return checksumAlgorithm{}, "", err
+			}
+			continue
+		}
+		if sum != "" {
+			return algo, sum, nil
+		}
+	}
+
+	logf("  [warn] no checksum published for %s (tried %s) — skipping checksum verification\n", label, strings.Join(tried, ", "))
+	return checksumAlgorithm{}, "", nil
+}
+
+// fetchChecksumFile retrieves one checksum file (`<jarURL>.<ext>`) for a Maven
+// artifact. It executes a retriable HTTP request using the provided credentials
+// and headers, limits the response read to 256 bytes, and handles both types of
+// hash files (just the plain hash, or the hash followed by a filename).
+//
+// An empty return with a nil error means "this repository does not publish this
+// checksum", so the caller can fall through to a weaker algorithm. That covers
+// a 404 and, deliberately, a response whose body is not a digest of the
+// expected width: repositories and caching proxies are known to answer a
+// missing checksum file with 200 and the artifact itself, or with an HTML error
+// page, and treating either as a checksum would fail every download.
+func fetchChecksumFile(ctx context.Context, logf func(string, ...any), jarURL string, label string, algo checksumAlgorithm, mavenUsername string, mavenPassword string, headers map[string]string) (string, error) {
+	checksumURL := jarURL + "." + algo.ext
+
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jarURL+".sha1", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, checksumURL, nil)
 		if err != nil {
 			return "", fmt.Errorf("failed to build checksum request: %w", err)
 		}
@@ -795,7 +859,7 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 				return "", errRateLimited
 			}
 			wait := rateLimitWaits[attempt]
-			logf("  [429] rate limited on %s (SHA-1) — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
+			logf("  [429] rate limited on %s (%s) — waiting %s (retry %d/%d)\n", label, algo.name, wait, attempt+1, len(rateLimitWaits))
 			select {
 			case <-time.After(wait):
 			case <-ctx.Done():
@@ -806,10 +870,9 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
 				return "", nil
 			}
-			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
+			return "", fmt.Errorf("checksum file returned HTTP %d at %s", resp.StatusCode, checksumURL)
 		}
 
 		body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
@@ -820,10 +883,17 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 
 		fields := strings.Fields(string(body))
 		if len(fields) == 0 {
-			return "", fmt.Errorf("checksum file is empty")
+			return "", nil
 		}
 
-		return strings.ToLower(fields[0]), nil
+		sum := strings.ToLower(fields[0])
+		if len(sum) != algo.hexLen {
+			return "", nil
+		}
+		if _, err := hex.DecodeString(sum); err != nil {
+			return "", nil
+		}
+		return sum, nil
 	}
 }
 

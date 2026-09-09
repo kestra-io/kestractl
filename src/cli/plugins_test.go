@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +48,34 @@ const pluginListPayload = `[
 // mockJARBody is the dummy JAR content returned by the mock Maven server.
 const mockJARBody = "PK\x03\x04"
 
+// mockJARSHA512 is the SHA-512 of mockJARBody. Downloads verify against the
+// strongest checksum the repository publishes, so this is the one that matters.
+const mockJARSHA512 = "421785ff9c6212492d19d5f9e213197f130daaf721051b4f5b208dca8f86c94a4b56d3e232fc0b191d06f18e5a96be4691a295417e82d3a3f0d83c1f5846d1b8"
+
+// serveMavenChecksum answers a Maven checksum request the way a real repository
+// does: the strong sums are published, the weaker ones need not be. It reports
+// whether it handled the request, so a handler can fall through to serving the
+// JAR itself.
+//
+// Pass an empty sha512Hex to model a repository that publishes no checksum at
+// all, or a wrong one to model a corrupted artifact.
+func serveMavenChecksum(w http.ResponseWriter, r *http.Request, sha512Hex string) bool {
+	for _, ext := range []string{".sha512", ".sha256", ".sha1"} {
+		if !strings.HasSuffix(r.URL.Path, ext) {
+			continue
+		}
+		if ext == ".sha512" && sha512Hex != "" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, sha512Hex)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+		return true
+	}
+	return false
+}
+
 // newMockServers sets up:
 //   - apiServer: returns pluginListPayload for any request
 //   - mavenServer: returns a dummy JAR body for .jar requests and its SHA-1 for .sha1 requests
@@ -61,10 +91,7 @@ func newMockServers(t *testing.T, apiStatus int, apiBody string) (apiServer, mav
 	}))
 
 	mavenServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -637,10 +664,7 @@ func TestRunPluginsInstall_429RetryThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -736,9 +760,7 @@ func TestRunPluginsInstall_CustomMavenRepository(t *testing.T) {
 	var capturedHost string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedHost = r.Host
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -776,9 +798,7 @@ func TestRunPluginsInstall_MavenBasicAuth(t *testing.T) {
 	var capturedAuth string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -953,14 +973,10 @@ func TestRunPluginsInstall_ExplicitPlugins(t *testing.T) {
 	// Capture which paths the maven server was asked for.
 	var requestedPaths []string
 	mavenServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, ".sha1") {
-			requestedPaths = append(requestedPaths, r.URL.Path)
-		} else {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
+		requestedPaths = append(requestedPaths, r.URL.Path)
 		w.Header().Set("Content-Type", "application/java-archive")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, mockJARBody)
@@ -1312,9 +1328,7 @@ func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
 		}
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("76e434ca252434fe7f7aa2adb7b4ff7c34aae7ea"))
+		if serveMavenChecksum(w, r, "45e77ee45bdbd95cc150b7fa5c410920341f94ca0bfeb7c7c365c6319ae014be7a7057570de2678df6a39392275b9aa9f6d5ba82002159c784ffecb01e126210") {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1336,9 +1350,7 @@ func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
 	var capturedAuth string
 	customMaven := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		capturedAuth = r.Header.Get("Authorization")
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd")
+		if serveMavenChecksum(w, r, mockJARSHA512) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -1427,10 +1439,7 @@ func TestRunPluginsInstall_RedownloadsIfChecksumMismatches(t *testing.T) {
 
 func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
 	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.Header().Set("Content-Type", "text/plain")
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, strings.Repeat("0", 40))
+		if serveMavenChecksum(w, r, strings.Repeat("0", 128)) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/java-archive")
@@ -1469,10 +1478,9 @@ func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
 	}
 }
 
-func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
+func TestRunPluginsGet_MissingChecksumWarnsAndSkipsVerification(t *testing.T) {
 	mavenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".sha1") {
-			w.WriteHeader(http.StatusNotFound)
+		if serveMavenChecksum(w, r, "") {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -1488,7 +1496,168 @@ func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if !strings.Contains(out.String(), "[warn] no .sha1 published") {
-		t.Errorf("expected warning about missing .sha1, got:\n%s", out.String())
+	if !strings.Contains(out.String(), "[warn] no checksum published") {
+		t.Errorf("expected warning about a missing checksum, got:\n%s", out.String())
+	}
+}
+
+// --- checksum algorithm negotiation ---------------------------------------
+//
+// Downloads verify against the strongest checksum the repository publishes.
+// SHA-1 remains accepted as a last resort, because private Maven repositories
+// frequently publish nothing else.
+
+// recordingMavenServer serves mockJARBody and records every path requested,
+// answering checksum requests from the supplied extension -> body map. An
+// extension absent from the map is a 404.
+func recordingMavenServer(t *testing.T, checksums map[string]string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var paths []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+
+		for _, ext := range []string{".sha512", ".sha256", ".sha1"} {
+			if !strings.HasSuffix(r.URL.Path, ext) {
+				continue
+			}
+			body, ok := checksums[ext]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, body)
+			return
+		}
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &paths
+}
+
+func requestedChecksumExts(paths []string) []string {
+	var exts []string
+	for _, p := range paths {
+		for _, ext := range []string{".sha512", ".sha256", ".sha1"} {
+			if strings.HasSuffix(p, ext) {
+				exts = append(exts, ext)
+			}
+		}
+	}
+	return exts
+}
+
+func TestPluginsChecksum_PrefersSHA512AndSkipsWeakerFiles(t *testing.T) {
+	srv, paths := recordingMavenServer(t, map[string]string{
+		".sha512": mockJARSHA512,
+		".sha1":   "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, srv.URL, "", "", 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := requestedChecksumExts(*paths)
+	if len(got) != 1 || got[0] != ".sha512" {
+		t.Errorf("expected only .sha512 to be fetched, got %v", got)
+	}
+}
+
+func TestPluginsChecksum_FallsBackToSHA1WhenStrongSumsAbsent(t *testing.T) {
+	srv, paths := recordingMavenServer(t, map[string]string{
+		".sha1": "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, srv.URL, "", "", 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{".sha512", ".sha256", ".sha1"}
+	if got := requestedChecksumExts(*paths); !reflect.DeepEqual(got, want) {
+		t.Errorf("expected the full ladder %v, got %v", want, got)
+	}
+	if strings.Contains(out.String(), "no checksum published") {
+		t.Errorf("expected the .sha1 fallback to verify, got:\n%s", out.String())
+	}
+}
+
+// A repository or caching proxy that answers a missing checksum file with 200
+// and the artifact itself (or an HTML error page) must not be mistaken for a
+// published checksum — otherwise every download would fail verification.
+func TestPluginsChecksum_IgnoresNonDigestBodyAndFallsBack(t *testing.T) {
+	srv, paths := recordingMavenServer(t, map[string]string{
+		".sha512": "<!DOCTYPE html><html><body>404 Not Found</body></html>",
+		".sha256": mockJARBody,
+		".sha1":   "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, srv.URL, "", "", 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := []string{".sha512", ".sha256", ".sha1"}
+	if got := requestedChecksumExts(*paths); !reflect.DeepEqual(got, want) {
+		t.Errorf("expected the full ladder %v, got %v", want, got)
+	}
+}
+
+func TestPluginsChecksum_SHA512MismatchIsRejected(t *testing.T) {
+	srv, _ := recordingMavenServer(t, map[string]string{
+		// A valid-looking digest of the wrong content: the JAR is corrupt.
+		".sha512": strings.Repeat("a", 128),
+		// Correct, but never consulted — the strong sum already decided.
+		".sha1": "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, srv.URL, "", "", 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected a checksum mismatch error, got nil")
+	}
+	if !strings.Contains(err.Error(), "checksum mismatch (SHA-512)") {
+		t.Errorf("expected a SHA-512 mismatch error, got: %v", err)
+	}
+
+	entries, readErr := os.ReadDir(tmpDir)
+	if readErr != nil {
+		t.Fatalf("failed to read temp dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected the corrupt download to be cleaned up, found %d entries", len(entries))
+	}
+}
+
+func TestFileChecksum_MatchesEachAlgorithm(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "artifact.jar")
+	if err := os.WriteFile(path, []byte(mockJARBody), 0o600); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	want := map[string]string{
+		"sha512": mockJARSHA512,
+		"sha256": "8dcc7e601606217f3b754766511182a916b17e9a26a94c9d887104eba92e9bb2",
+		"sha1":   "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	}
+	for _, algo := range checksumAlgorithms {
+		got, err := fileChecksum(path, algo)
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", algo.name, err)
+		}
+		if got != want[algo.ext] {
+			t.Errorf("%s: got %s, want %s", algo.name, got, want[algo.ext])
+		}
+		if len(got) != algo.hexLen {
+			t.Errorf("%s: digest length %d does not match declared hexLen %d", algo.name, len(got), algo.hexLen)
+		}
 	}
 }
