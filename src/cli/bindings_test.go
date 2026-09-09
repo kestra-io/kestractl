@@ -343,3 +343,33 @@ func TestRunBindingsBulkCreate(t *testing.T) {
 		t.Errorf("expected binding ID in output, got:\n%s", buf.String())
 	}
 }
+
+func TestRunBindingsBulkCreate_RejectsNonArrayFile(t *testing.T) {
+	cases := map[string]string{
+		"a single object": `{"type":"USER","externalId":"u1","roleId":"r1"}`,
+		"a bare string":   `"USER"`,
+		"an empty array":  `[]`,
+		"malformed JSON":  `[{"type":`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			f, err := os.CreateTemp("", "bindings-*.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer os.Remove(f.Name())
+			f.WriteString(body)
+			f.Close()
+
+			// No server: a shape this wrong must fail before any request.
+			var buf bytes.Buffer
+			err = runBindingsBulkCreate(newTestClient(t, "http://127.0.0.1:1"), f.Name(), newTableRenderer(&buf))
+			if err == nil {
+				t.Fatalf("expected an error for %s, got nil", name)
+			}
+			if !strings.Contains(err.Error(), "JSON array") {
+				t.Errorf("expected the error to explain the expected shape, got: %v", err)
+			}
+		})
+	}
+}
