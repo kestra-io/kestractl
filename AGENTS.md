@@ -120,7 +120,9 @@ Each auto-tagged release is what a default `curl … | bash` install resolves to
 
 ### Container images
 
-Every release also publishes a multi-arch (`linux/amd64` + `linux/arm64`) image, built by GoReleaser from the same tag (`dockers_v2` in `.goreleaser.yml`) and pushed to both `kestra/kestractl` and `ghcr.io/kestra-io/kestractl`, in two variants: Alpine (default tag) and distroless (`-static`).
+Every release also publishes a multi-arch (`linux/amd64` + `linux/arm64`) image, built by GoReleaser from the same tag (`dockers_v2` in `.goreleaser.yml`) and pushed to `ghcr.io/kestra-io/kestractl`, in two variants: Alpine (default tag) and distroless (`-static`).
+
+**Docker Hub is currently disabled.** `kestra/kestractl` is commented out of `images:` in `.goreleaser.yml`: the CI token authenticates but the push is refused with "access token has insufficient scopes", and the repository does not exist for the push to auto-create. Because `dockers_v2` publishes *before* the GitHub release pipe, that failure aborted the whole `v2.1.0` release — binaries included, so `install.sh` kept serving `v2.0.0` and the `v2.1.0` tag is orphaned with no release behind it. Re-enabling means creating the repo, granting the token Read & Write, then uncommenting the line in **both** `dockers_v2` entries *and* adding the repo back to the `for repo in …` loop in `release.yml` — a registry in one but not the other either skips its rolling tags or fails `regctl` on a missing source.
 
 Four things to know before touching this:
 

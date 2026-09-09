@@ -83,7 +83,16 @@ dockers_v2:
     ids: [kestractl]
     dockerfile: Dockerfile
     images:
-      - kestra/kestractl
+      # Docker Hub is disabled until the CI token can push to kestra/kestractl.
+      # It authenticates fine but the push is refused with "access token has
+      # insufficient scopes", and the repository does not exist for the push to
+      # auto-create -- a repository-scoped token cannot create one. Because
+      # dockers_v2 publishes before the GitHub release pipe, that failure took
+      # the whole v2.1.0 release down with it, binaries included.
+      # To re-enable: create kestra/kestractl in the kestra org, give the token
+      # behind DOCKERHUB_USERNAME Read & Write on it, then uncomment the line
+      # below in BOTH entries and update README.md + AGENTS.md.
+      # - kestra/kestractl
       - ghcr.io/kestra-io/kestractl
     tags:
       - "{{ .Version }}"
@@ -105,7 +114,16 @@ dockers_v2:
     ids: [kestractl]
     dockerfile: Dockerfile.static
     images:
-      - kestra/kestractl
+      # Docker Hub is disabled until the CI token can push to kestra/kestractl.
+      # It authenticates fine but the push is refused with "access token has
+      # insufficient scopes", and the repository does not exist for the push to
+      # auto-create -- a repository-scoped token cannot create one. Because
+      # dockers_v2 publishes before the GitHub release pipe, that failure took
+      # the whole v2.1.0 release down with it, binaries included.
+      # To re-enable: create kestra/kestractl in the kestra org, give the token
+      # behind DOCKERHUB_USERNAME Read & Write on it, then uncomment the line
+      # below in BOTH entries and update README.md + AGENTS.md.
+      # - kestra/kestractl
       - ghcr.io/kestra-io/kestractl
     tags:
       - "{{ .Version }}-static"
