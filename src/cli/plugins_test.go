@@ -1661,3 +1661,152 @@ func TestFileChecksum_MatchesEachAlgorithm(t *testing.T) {
 		}
 	}
 }
+
+// countingMavenServer serves mockJARBody and counts how many times each
+// checksum extension is requested. Extensions absent from publish are 404s.
+func countingMavenServer(t *testing.T, publish map[string]string) (*httptest.Server, func(string) int) {
+	t.Helper()
+	var mu sync.Mutex
+	counts := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, ext := range []string{".sha512", ".sha256", ".sha1"} {
+			if !strings.HasSuffix(r.URL.Path, ext) {
+				continue
+			}
+			mu.Lock()
+			counts[ext]++
+			mu.Unlock()
+			body, ok := publish[ext]
+			if !ok {
+				// Central answers a missing checksum with an HTML 404 body.
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, "<html><head><title>404 Not Found</title></head></html>")
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, body)
+			return
+		}
+		mu.Lock()
+		counts[".jar"]++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/java-archive")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, mockJARBody)
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func(ext string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[ext]
+	}
+}
+
+func explicitPlugins(n int) []pluginArtifact {
+	out := make([]pluginArtifact, n)
+	for i := range out {
+		out[i] = pluginArtifact{GroupID: "io.kestra.plugin", ArtifactID: fmt.Sprintf("plugin-p%d", i), Version: "1.0.0"}
+	}
+	return out
+}
+
+// Maven Central publishes no .sha512 or .sha256 for io.kestra.* artifacts, so
+// without a per-run cache every plugin would re-probe both and 404 twice before
+// falling back. The 1.3.9 compatibility set is 214 plugins, which made that 428
+// wasted requests against a rate-limiting registry.
+func TestPluginsChecksum_NegotiatesOncePerRepositoryNotPerArtifact(t *testing.T) {
+	srv, count := countingMavenServer(t, map[string]string{
+		".sha1": "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "", t.TempDir(), 1, false, "", false, 5*time.Minute, srv.URL, "", "", nil, explicitPlugins(10)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := count(".jar"); got != 10 {
+		t.Fatalf("expected 10 JAR downloads, got %d", got)
+	}
+	// One probe apiece for the whole run, not one per plugin.
+	if got := count(".sha512"); got != 1 {
+		t.Errorf("expected .sha512 to be probed once for the run, got %d", got)
+	}
+	if got := count(".sha256"); got != 1 {
+		t.Errorf("expected .sha256 to be probed once for the run, got %d", got)
+	}
+	// The weakest sum is still fetched per artifact: it is the one that verifies.
+	if got := count(".sha1"); got != 10 {
+		t.Errorf("expected .sha1 to be fetched per artifact, got %d", got)
+	}
+}
+
+// The cache must not cost the repositories it is meant to leave alone: where
+// strong sums exist, every artifact is verified with them.
+func TestPluginsChecksum_StrongSumUsedForEveryArtifact(t *testing.T) {
+	srv, count := countingMavenServer(t, map[string]string{
+		".sha512": mockJARSHA512,
+		".sha1":   "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "", t.TempDir(), 1, false, "", false, 5*time.Minute, srv.URL, "", "", nil, explicitPlugins(10)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := count(".sha512"); got != 10 {
+		t.Errorf("expected every artifact to be verified with .sha512, got %d", got)
+	}
+	if got := count(".sha1"); got != 0 {
+		t.Errorf("expected .sha1 never to be consulted, got %d", got)
+	}
+}
+
+// The negotiator is shared by every download worker, so --concurrency > 1 must
+// not race. Meaningful under -race.
+func TestPluginsChecksum_NegotiatorIsConcurrencySafe(t *testing.T) {
+	srv, count := countingMavenServer(t, map[string]string{
+		".sha1": "fb467bb25be45fcf0c84c03ce5801abd5a28c1fd",
+	})
+
+	var out bytes.Buffer
+	if err := runPluginsInstall(&out, "", t.TempDir(), 8, false, "", false, 5*time.Minute, srv.URL, "", "", nil, explicitPlugins(24)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := count(".jar"); got != 24 {
+		t.Errorf("expected 24 JAR downloads, got %d", got)
+	}
+	// Workers can race to the same first probe, so allow one per worker but
+	// require far fewer than one per artifact.
+	if got := count(".sha512"); got > 8 {
+		t.Errorf("expected at most one .sha512 probe per worker, got %d", got)
+	}
+}
+
+func TestChecksumNegotiator_CachesPerRepositoryAndExtension(t *testing.T) {
+	n := newChecksumNegotiator()
+	if n.isMissing("https://repo.example/maven2", "sha512") {
+		t.Error("a fresh negotiator should know nothing")
+	}
+
+	n.markMissing("https://repo.example/maven2", "sha512")
+
+	if !n.isMissing("https://repo.example/maven2", "sha512") {
+		t.Error("expected the absence to be remembered")
+	}
+	if n.isMissing("https://repo.example/maven2", "sha256") {
+		t.Error("a different extension must not be affected")
+	}
+	if n.isMissing("https://other.example/maven2", "sha512") {
+		t.Error("a different repository must not be affected")
+	}
+
+	// A nil negotiator is inert rather than a panic, so downloadJAR can be
+	// called without one.
+	var nilNeg *checksumNegotiator
+	if nilNeg.isMissing("https://repo.example/maven2", "sha512") {
+		t.Error("a nil negotiator should report nothing missing")
+	}
+	nilNeg.markMissing("https://repo.example/maven2", "sha512")
+}

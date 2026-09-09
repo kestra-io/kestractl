@@ -58,6 +58,52 @@ var checksumAlgorithms = []checksumAlgorithm{
 	{ext: "sha1", name: "SHA-1", hexLen: 40, new: sha1.New},
 }
 
+// checksumNegotiator remembers which checksum files a repository turned out not
+// to publish, for the lifetime of one command.
+//
+// Without it, every artifact re-probes the whole ladder. That is not
+// hypothetical: Maven Central publishes no .sha512 or .sha256 for io.kestra.*
+// artifacts, and the 1.3.9 compatibility set is 214 plugins, so a plain
+// `plugins install` would spend 428 extra requests and about 30 seconds
+// (concurrency defaults to 1) discovering the same two 404s over and over
+// before settling on the same .sha1 it would have used anyway — against a
+// registry that rate limits, which is why downloadJAR carries 429 back-off.
+//
+// Only absences are cached, and only per repository base URL, so a repository
+// that does publish a strong sum still gets it for every artifact. The trade-off
+// is a host with mixed availability — Central serves .sha512 for some
+// publishers and not others — where one artifact's 404 makes the rest of the
+// run fall back to .sha1. That is the pre-existing behaviour rather than a
+// downgrade, and a single run downloads a single publisher's artifacts.
+type checksumNegotiator struct {
+	mu      sync.Mutex
+	missing map[string]bool // "<base>\x00<ext>" -> known absent
+}
+
+func newChecksumNegotiator() *checksumNegotiator {
+	return &checksumNegotiator{missing: map[string]bool{}}
+}
+
+func (n *checksumNegotiator) key(base, ext string) string { return base + "\x00" + ext }
+
+func (n *checksumNegotiator) isMissing(base, ext string) bool {
+	if n == nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.missing[n.key(base, ext)]
+}
+
+func (n *checksumNegotiator) markMissing(base, ext string) {
+	if n == nil {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.missing[n.key(base, ext)] = true
+}
+
 // pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
 var (
 	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
@@ -402,6 +448,10 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 		index  int
 		plugin pluginArtifact
 	}
+	// One negotiator for the whole run, shared by the workers: the repository's
+	// checksum layout is discovered once, not once per plugin.
+	negotiator := newChecksumNegotiator()
+
 	jobs := make(chan job, len(plugins))
 	for i, p := range plugins {
 		jobs <- job{i, p}
@@ -422,7 +472,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 					continue
 				default:
 				}
-				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders, negotiator)
 				results <- downloadResult{index: j.index, plugin: j.plugin, bytes: n, err: err, skipped: skipped}
 			}
 		}()
@@ -524,7 +574,7 @@ func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRed
 
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
-	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders, newChecksumNegotiator())
 
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", label, err)
@@ -671,7 +721,7 @@ func pluginFileName(p pluginArtifact) string {
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
 }
 
-func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
+func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string, negotiator *checksumNegotiator) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
 	url := mavenJARURL(p, mavenBase)
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
@@ -681,7 +731,7 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, true, nil
 		}
 	}
-	algo, expectedSum, err := fetchExpectedChecksum(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	algo, expectedSum, err := fetchExpectedChecksum(ctx, logf, url, label, mavenBase, mavenUsername, mavenPassword, headers, negotiator)
 	if err != nil {
 		if errors.Is(err, errRateLimited) {
 			return 0, false, err
@@ -794,9 +844,16 @@ func fileChecksum(path string, algo checksumAlgorithm) (string, error) {
 // expected hex digest. It returns an empty digest when the repository publishes
 // none of them, which leaves the download unverified — the pre-existing
 // behaviour when no .sha1 was available.
-func fetchExpectedChecksum(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenUsername string, mavenPassword string, headers map[string]string) (checksumAlgorithm, string, error) {
+func fetchExpectedChecksum(ctx context.Context, logf func(string, ...any), jarURL string, label string, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string, negotiator *checksumNegotiator) (checksumAlgorithm, string, error) {
 	var tried []string
 	for _, algo := range checksumAlgorithms {
+		// The weakest algorithm is never skipped: with every stronger one known
+		// absent it is the only thing left to try, and a repository that
+		// publishes nothing must still reach the "no checksum" warning below.
+		isLast := algo.ext == checksumAlgorithms[len(checksumAlgorithms)-1].ext
+		if !isLast && negotiator.isMissing(mavenBase, algo.ext) {
+			continue
+		}
 		tried = append(tried, "."+algo.ext)
 
 		sum, err := fetchChecksumFile(ctx, logf, jarURL, label, algo, mavenUsername, mavenPassword, headers)
@@ -807,8 +864,10 @@ func fetchExpectedChecksum(ctx context.Context, logf func(string, ...any), jarUR
 				return checksumAlgorithm{}, "", err
 			}
 			// Any other failure on a stronger algorithm is worth reporting only
-			// if the weaker ones fail too; keep trying.
-			if algo.ext == checksumAlgorithms[len(checksumAlgorithms)-1].ext {
+			// if the weaker ones fail too; keep trying. It is deliberately not
+			// cached as an absence — a transport error says nothing about what
+			// the repository publishes.
+			if isLast {
 				return checksumAlgorithm{}, "", err
 			}
 			continue
@@ -816,6 +875,8 @@ func fetchExpectedChecksum(ctx context.Context, logf func(string, ...any), jarUR
 		if sum != "" {
 			return algo, sum, nil
 		}
+		// This repository does not publish this checksum; do not ask again.
+		negotiator.markMissing(mavenBase, algo.ext)
 	}
 
 	logf("  [warn] no checksum published for %s (tried %s) — skipping checksum verification\n", label, strings.Join(tried, ", "))
