@@ -87,11 +87,26 @@ Five automated pieces, modelled on `kestra-io/kestra`'s setup and adapted to Go:
 - **`vulnerabilities-check.yml`** — `govulncheck` on both Go modules (the Go analogue of kestra's OWASP `dependencyCheckAggregate`; it reports only vulnerabilities reachable from our code, so it needs no NVD API key), plus a daily Trivy scan of the published `kestra/kestractl:latest` and `:latest-static` images.
 - **`dependency-submission.yml`** — submits the resolved `go mod graph` to GitHub's dependency graph on every push to `main`. Without it, Dependabot alerts only see `go.mod`'s direct requirements, so an advisory against a transitive module never fires.
 
-Four things to know before touching this:
+Five things to know before touching this:
 
 - **A security bump releases; a routine bump does not.** `main` auto-releases off the squashed merge subject, which GitHub takes from the PR title. Every ecosystem in `dependabot.yml` therefore uses `ci(deps)`, which scores no bump — a routine version update is not urgent and rides along with the next real change. Security updates are the exception, and Dependabot has one `commit-message.prefix` per ecosystem with no way to vary it by update type, so `dependabot-security-prefix.yml` promotes those to `fix(deps)` (→ patch) off the advisory metadata. The two files are coupled: change a prefix in `dependabot.yml` and the promotion step fails loudly on the next security PR rather than silently scoring it `none`.
 - **That promotion workflow runs on `pull_request_target` and must never check out the PR.** A `pull_request` token is read-only on a Dependabot PR, so it cannot retitle; `pull_request_target` gets a writable token, which is only safe because the job reads advisory metadata and calls the API, never the branch's code.
 - **Neither scanner is a job in `Tests`, deliberately.** `auto-tag.yml` releases on a green `Tests` run, so a CVE published against an already-released dependency, or a newly shipped CodeQL rule, would otherwise freeze the release line on work unrelated to the merge.
+- **A Dependabot run gets no Actions secrets, on `push` as well as `pull_request`.** GitHub executes any workflow whose actor is `dependabot[bot]` in a restricted context that resolves `secrets.*` from the *Dependabot* secrets store rather than the Actions one, so the EE license, `GCP_SERVICE_ACCOUNT` and `SLACK_WEBHOOK_URL` all come back as empty strings. Unguarded, `e2e-tests` writes an empty `application-secrets.yml` and every matrix leg dies on `KestraLicenseException: No license information configured` — a secrets failure that reads like a real regression in the bumped dependency. The restriction keys off the **actor, not the event**, so testing `github.event_name` or the head ref does not catch it; the guards in `tests.yml` test `github.actor != 'dependabot[bot]'`. Skipping loses no coverage, because the merge to `main` runs the full suite on `push` and that is the run `auto-tag.yml` gates the release on. Mirroring the secrets into the Dependabot store would make e2e run, at the cost of exposing the EE license and a GCP service account to a run whose dependency tree was just changed from outside — which is why this repo skips instead.
+
+  **To actually get an e2e result for a Dependabot PR, dispatch the suite yourself** — the actor
+  is then you, not the bot, so the Actions secrets resolve normally:
+
+  ```bash
+  gh workflow run tests.yml --repo kestra-io/kestractl --ref <dependabot-branch>
+  ```
+
+  Two caveats. The run's check-runs are registered against the PR's head SHA, but GitHub's PR
+  `statusCheckRollup` only surfaces runs from PR-associated events, so a `workflow_dispatch`
+  result does **not** turn the PR's checks green — open the run to read it. And the guard above
+  is deliberately compatible with this: it tests the actor, so it suppresses only the
+  automatic, doomed run and never a human dispatch. `main` has no branch protection, so the
+  red rollup blocks nothing.
 - **`govulncheck` runs on `stable` Go, not `go.mod`'s version.** govulncheck v1.8+ needs Go >= 1.26 to build at all. That means it scans the standard library of the current toolchain while releases are still built with the `go-version: "1.25"` pins in `tests.yml` and `release.yml` — bump those together, or the scan and the shipped binary disagree about which stdlib CVEs apply.
 
 Already enabled repo-side and needing no file here: secret scanning, push protection, and Dependabot security updates.
