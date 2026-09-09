@@ -1,0 +1,64 @@
+# CodeQL static analysis. Mirrors kestra-io/kestra's codeql-analysis.yml, with
+# `go` as the only language — this repo is a single Go module plus a second one
+# under e2e_tests/, both of which CodeQL's Go extractor picks up on its own.
+name: "CodeQL"
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+  push:
+    branches: ["main"]
+    paths-ignore:
+      - "**.md"
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch: {}
+
+# Deliberately not part of the `Tests` workflow: `auto-tag.yml` releases on a
+# green `Tests` run, and a newly published CodeQL rule must not be able to
+# freeze the release line.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["go"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

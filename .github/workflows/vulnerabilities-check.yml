@@ -1,0 +1,131 @@
+# Vulnerability scanning. The Go analogue of kestra-io/kestra's
+# vulnerabilities-check.yml: `govulncheck` replaces the OWASP Gradle dependency
+# check (it reports only vulnerabilities actually reachable from our code, so it
+# needs no NVD API key and produces few false positives), and Trivy scans the
+# published container images exactly as it does there.
+#
+# Deliberately a workflow of its own rather than a job in `Tests`:
+# `auto-tag.yml` releases on a green `Tests` run, and a CVE published against an
+# already-released dependency must not be able to freeze the release line.
+name: Vulnerabilities Checks
+
+on:
+  pull_request:
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "e2e_tests/go.mod"
+      - "e2e_tests/go.sum"
+      - "Dockerfile*"
+      - ".github/workflows/vulnerabilities-check.yml"
+  push:
+    branches: ["main"]
+    paths:
+      - "go.mod"
+      - "go.sum"
+      - "e2e_tests/go.mod"
+      - "e2e_tests/go.sum"
+      - "Dockerfile*"
+  schedule:
+    - cron: "0 0 * * *" # Every day
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: Go Vulnerability Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both Go modules in the repo. See "E2E Tests" in AGENTS.md.
+        include:
+          - module: "."
+            name: kestractl
+          - module: "e2e_tests"
+            name: e2e-tests
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # `stable`, not go.mod's `go 1.25.0`: govulncheck v1.8+ itself requires Go
+      # >= 1.26 to build. Note this scans the standard library of the *current*
+      # toolchain, while releases are still built with 1.25 (see the `go-version`
+      # pins in tests.yml and release.yml) — worth keeping those in step.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            e2e_tests/go.sum
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # SARIF first so the findings reach the Security tab even when the
+      # human-readable run below fails the job.
+      - name: Run govulncheck (SARIF)
+        working-directory: ${{ matrix.module }}
+        run: govulncheck -format sarif ./... > "${RUNNER_TEMP}/govulncheck.sarif"
+
+      - name: Upload govulncheck results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: ${{ always() }}
+        with:
+          sarif_file: ${{ runner.temp }}/govulncheck.sarif
+          category: govulncheck-${{ matrix.name }}
+
+      - name: Run govulncheck
+        working-directory: ${{ matrix.module }}
+        run: govulncheck ./...
+
+  image-check:
+    name: Image Check (${{ matrix.image }})
+    # The images are built by GoReleaser at release time, so there is nothing to
+    # scan on a pull request.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # The two variants published for every release: Alpine (default tag) and
+        # distroless (`-static`). See "Container images" in AGENTS.md.
+        image: ["kestra/kestractl:latest", "kestra/kestractl:latest-static"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Pinned by digest, same pin as kestra-io/kestra uses.
+      - name: Docker Vulnerabilities Check
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # 0.36.0
+        with:
+          image-ref: ${{ matrix.image }}
+          format: "sarif"
+          scanners: vuln
+          severity: "CRITICAL,HIGH"
+          output: "trivy-results.sarif"
+
+      - name: Upload Trivy scan results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: ${{ always() }}
+        with:
+          sarif_file: "trivy-results.sarif"
+          category: docker-${{ matrix.image }}

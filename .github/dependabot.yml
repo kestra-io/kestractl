@@ -1,0 +1,94 @@
+# See GitHub's docs for more information on this file:
+# https://docs.github.com/en/free-pro-team@latest/github/administering-a-repository/configuration-options-for-dependency-updates
+
+# Commit-message prefixes are deliberate, not cosmetic: `main` auto-releases, and
+# `.github/scripts/next-version.sh` derives the version bump from the squashed
+# merge subject, which GitHub takes from the PR title.
+#
+# Every ecosystem here uses `ci(deps)`, which scores no bump: a routine version
+# update is not worth a release on its own, and they accumulate until the next
+# real change ships them. Security updates are the exception, and are handled
+# without a prefix of their own — Dependabot has no per-update-type prefix, so
+# `dependabot-security-prefix.yml` retitles a security PR to `fix(deps)`
+# (-> patch) once it can see the advisory metadata.
+#
+# See "Dependencies & Security Scanning" in AGENTS.md.
+version: 2
+
+updates:
+  # GitHub Actions.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    commit-message:
+      prefix: "ci(deps)"
+      prefix-development: "ci(deps)"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      timezone: "Europe/Paris"
+      time: "08:00"
+    open-pull-requests-limit: 50
+    labels: ["dependency-upgrade", "area/devops"]
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  # Go modules for the CLI itself.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    commit-message:
+      prefix: "ci(deps)"
+      prefix-development: "ci(deps)"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      timezone: "Europe/Paris"
+      time: "08:00"
+    open-pull-requests-limit: 50
+    labels: ["dependency-upgrade"]
+    groups:
+      # Everything but the SDK moves together; the SDK is the API contract with
+      # Kestra itself and is reviewed on its own.
+      go-minor-and-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["github.com/kestra-io/client-sdk/*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      # The Go SDK major axis tracks the Kestra major line this branch targets
+      # (v2 here). A major bump is a deliberate migration, never a dep PR.
+      - dependency-name: "github.com/kestra-io/client-sdk/go-sdk/*"
+        update-types: ["version-update:semver-major"]
+
+  # e2e_tests is a separate Go module.
+  - package-ecosystem: "gomod"
+    directory: "/e2e_tests"
+    commit-message:
+      prefix: "ci(deps)"
+      prefix-development: "ci(deps)"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      timezone: "Europe/Paris"
+      time: "08:00"
+    open-pull-requests-limit: 50
+    labels: ["dependency-upgrade", "area/qa"]
+    groups:
+      e2e:
+        applies-to: version-updates
+        patterns: ["*"]
+
+  # Base images for the released containers (Dockerfile + Dockerfile.static).
+  - package-ecosystem: "docker"
+    directory: "/"
+    commit-message:
+      prefix: "ci(deps)"
+      prefix-development: "ci(deps)"
+    schedule:
+      interval: "weekly"
+      day: "wednesday"
+      timezone: "Europe/Paris"
+      time: "08:00"
+    open-pull-requests-limit: 50
+    labels: ["dependency-upgrade", "area/devops"]
