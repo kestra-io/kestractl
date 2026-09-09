@@ -1,0 +1,38 @@
+# Submits the resolved Go build list to GitHub's dependency graph, the Go
+# analogue of kestra-io/kestra's Gradle `dependency-submission.yml`.
+#
+# Why it matters here: Dependabot alerts are raised against the dependency
+# graph. Without a submission, GitHub infers the graph from go.mod alone, which
+# omits transitive modules pulled in only via go.sum — so an alert on one of
+# those would never fire. This makes the graph the real `go mod graph` output.
+name: Dependency Submission
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-submission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Generate and submit dependency graph
+        uses: actions/go-dependency-submission@v2
+        with:
+          go-mod-path: go.mod
+          go-build-target: .

@@ -1,0 +1,75 @@
+# Retitles a Dependabot *security* PR from `ci(deps)` to `fix(deps)`, and labels
+# it `kind/security`.
+#
+# Why this exists: `main` auto-releases off the squashed merge subject, which
+# GitHub takes from the PR title, and `.github/scripts/next-version.sh` scores
+# `ci` as no bump and `fix` as a patch. That is the behaviour we want — a routine
+# version bump should not cut a release, a security fix should ship immediately —
+# but Dependabot has a single `commit-message.prefix` per ecosystem and no way to
+# vary it by update type. So `dependabot.yml` sets the release-neutral prefix and
+# this promotes the security ones.
+#
+# `pull_request_target` is required: on a PR from Dependabot the `pull_request`
+# token is read-only, so it cannot retitle. That is safe here only because this
+# workflow never checks out or executes the PR's code — it reads advisory
+# metadata and calls the API. Keep it that way.
+name: Dependabot Security Prefix
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    if: ${{ github.actor == 'dependabot[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Fetch Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # `ghsa-id` is empty on a plain version update and set on a security one.
+      - name: Promote the title to fix(deps)
+        if: ${{ steps.metadata.outputs.ghsa-id != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          TITLE: ${{ github.event.pull_request.title }}
+          GHSA: ${{ steps.metadata.outputs.ghsa-id }}
+          CVE: ${{ steps.metadata.outputs.cve-id }}
+        run: |
+          set -euo pipefail
+
+          case "$TITLE" in
+            fix\(deps\):*)
+              echo "Already promoted: $TITLE"
+              exit 0
+              ;;
+            ci\(deps\):*)
+              new="fix(deps):${TITLE#ci\(deps\):}"
+              ;;
+            *)
+              # An unexpected prefix means dependabot.yml and this workflow have
+              # drifted apart. Fail loudly rather than release-scoring a security
+              # fix as `none` in silence.
+              echo "::error::Unrecognised Dependabot title prefix: $TITLE" >&2
+              echo "::error::Expected 'ci(deps):' — check .github/dependabot.yml." >&2
+              exit 1
+              ;;
+          esac
+
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --title "$new"
+          gh pr edit "$PR" --repo "$GITHUB_REPOSITORY" --add-label kind/security
+          printf '%s\n' \
+            "Retitled to: $new" \
+            "Advisory: ${GHSA}${CVE:+ / $CVE}" \
+            >> "$GITHUB_STEP_SUMMARY"

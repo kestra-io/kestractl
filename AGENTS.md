@@ -77,6 +77,25 @@ In addition to `Common pitfalls` above, check for:
 
 **Known EE gotcha:** a superadmin configured with only `kestra.security.super-admin.username`/`password` never gets a tenant or `ADMIN` role bound, so every API call 403s even though login succeeds. Fix is setting `kestra.security.super-admin.tenant-admin-access: [<tenant-id>]` (e.g. `[main]`) too, which triggers tenant auto-creation and binds the built-in `ADMIN` role on startup. Check for this config before assuming a kestractl auth/permission bug.
 
+## Dependencies & Security Scanning
+
+Five automated pieces, modelled on `kestra-io/kestra`'s setup and adapted to Go:
+
+- **`.github/dependabot.yml`** — weekly updates (Wednesday 08:00 Europe/Paris, matching the other repos) for GitHub Actions, the root Go module, the `e2e_tests` Go module, and the Docker base images.
+- **`dependabot-security-prefix.yml`** — retitles a Dependabot *security* PR to `fix(deps)` so it releases, and labels it `kind/security`.
+- **`codeql-analysis.yml`** — CodeQL for `go` with the `security-and-quality` query pack, on PRs to `main` and weekly.
+- **`vulnerabilities-check.yml`** — `govulncheck` on both Go modules (the Go analogue of kestra's OWASP `dependencyCheckAggregate`; it reports only vulnerabilities reachable from our code, so it needs no NVD API key), plus a daily Trivy scan of the published `kestra/kestractl:latest` and `:latest-static` images.
+- **`dependency-submission.yml`** — submits the resolved `go mod graph` to GitHub's dependency graph on every push to `main`. Without it, Dependabot alerts only see `go.mod`'s direct requirements, so an advisory against a transitive module never fires.
+
+Four things to know before touching this:
+
+- **A security bump releases; a routine bump does not.** `main` auto-releases off the squashed merge subject, which GitHub takes from the PR title. Every ecosystem in `dependabot.yml` therefore uses `ci(deps)`, which scores no bump — a routine version update is not urgent and rides along with the next real change. Security updates are the exception, and Dependabot has one `commit-message.prefix` per ecosystem with no way to vary it by update type, so `dependabot-security-prefix.yml` promotes those to `fix(deps)` (→ patch) off the advisory metadata. The two files are coupled: change a prefix in `dependabot.yml` and the promotion step fails loudly on the next security PR rather than silently scoring it `none`.
+- **That promotion workflow runs on `pull_request_target` and must never check out the PR.** A `pull_request` token is read-only on a Dependabot PR, so it cannot retitle; `pull_request_target` gets a writable token, which is only safe because the job reads advisory metadata and calls the API, never the branch's code.
+- **Neither scanner is a job in `Tests`, deliberately.** `auto-tag.yml` releases on a green `Tests` run, so a CVE published against an already-released dependency, or a newly shipped CodeQL rule, would otherwise freeze the release line on work unrelated to the merge.
+- **`govulncheck` runs on `stable` Go, not `go.mod`'s version.** govulncheck v1.8+ needs Go >= 1.26 to build at all. That means it scans the standard library of the current toolchain while releases are still built with the `go-version: "1.25"` pins in `tests.yml` and `release.yml` — bump those together, or the scan and the shipped binary disagree about which stdlib CVEs apply.
+
+Already enabled repo-side and needing no file here: secret scanning, push protection, and Dependabot security updates.
+
 ## Branching & Releases
 
 Two long-lived branches, two release lines:
