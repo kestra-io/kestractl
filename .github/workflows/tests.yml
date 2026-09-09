@@ -32,10 +32,17 @@ jobs:
       - name: Run tests
         run: go test ./src/...
 
-      - name: Test the release automation scripts
+      - name: Test the automation scripts
         run: |
           .github/scripts/next-version_test.sh
           .github/scripts/check-sdk-pin_test.sh
+          .github/scripts/render-compat-badges_test.sh
+
+      # COMPATIBLE_KESTRA_VERSION.properties drives both the e2e matrix below and
+      # the README badges. Fail loudly rather than let the badges drift from the
+      # versions actually tested; the diff and the fix command are in the output.
+      - name: Check the README compatibility badges are up to date
+        run: .github/scripts/render-compat-badges.sh --check
 
       # GITHUB_TOKEN: the installer reads release metadata from the GitHub REST API,
       # which is rate-limited per IP for anonymous callers. Runners share egress IPs,

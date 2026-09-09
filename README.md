@@ -1,6 +1,13 @@
 # kestractl
 
+<!-- compat-badges:start -->
+[![Compatible Kestra versions](https://img.shields.io/badge/Kestra-2.0%20%7C%201.3%20%7C%201.2%20%7C%201.1%20%7C%201.0-8405FF?style=for-the-badge&labelColor=15112B)](COMPATIBLE_KESTRA_VERSION.properties)
+[![Kestra develop](https://img.shields.io/badge/develop-tracked-6B4BA8?style=for-the-badge&labelColor=15112B)](COMPATIBLE_KESTRA_VERSION.properties)
+<!-- compat-badges:end -->
+
 A Go-based command-line interface for managing Kestra flows, executions, triggers, namespaces, key-value store, namespace files, apps, dashboards, assets, blueprints, test suites, IAM users, groups, roles, service accounts, bindings, and invitations.
+
+Every version in the badges above is exercised by the e2e matrix on each run. The source of truth is [`COMPATIBLE_KESTRA_VERSION.properties`](COMPATIBLE_KESTRA_VERSION.properties) — edit that file, then run `.github/scripts/render-compat-badges.sh` to regenerate the badges (CI checks they are in sync).
 
 ## Installation
 

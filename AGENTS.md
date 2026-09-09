@@ -54,6 +54,13 @@ See `CONTRIBUTING.md` for the full checklist. Key points:
 
 `e2e_tests/` is a **separate Go module**. It builds the `kestractl` binary, then uses `os/exec` to run real CLI commands against a live Kestra EE instance. Compatible versions are listed in `COMPATIBLE_KESTRA_VERSION.properties`. Docker setup lives in `e2e_tests/docker-setup/`.
 
+`COMPATIBLE_KESTRA_VERSION.properties` has two consumers, so it is the single source of truth for "which Kestra versions does this support":
+
+- `.github/workflows/list-versions.yml` turns it into the e2e matrix.
+- `.github/scripts/render-compat-badges.sh` renders the README's compatibility badges between the `<!-- compat-badges:start -->` / `end` markers. Numeric lines are grouped into one badge, newest first; anything else (`develop`) gets its own dimmed "tracked" badge. Run it after editing the properties file — `--check` runs in the `Tests` workflow and fails with the diff if the README drifted.
+
+Keep the properties file in **ascending** order: the badge script renders newest-first by reversing it rather than version-sorting, deliberately, because no shell sort is semver-correct on prerelease suffixes (see the release traps above).
+
 ## Code Review & QA
 
 In addition to `Common pitfalls` above, check for:
