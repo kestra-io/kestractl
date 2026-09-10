@@ -175,8 +175,8 @@ func runTestSuitesGet(client *Client, namespace, id string, renderer *Renderer) 
 
 func newTestSuitesDeleteCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "delete <namespace> <id>",
-		Short: "Delete a test suite.",
+		Use:     "delete <namespace> <id>",
+		Short:   "Delete a test suite.",
 		Example: `  kestractl test-suites delete my.namespace my-test-suite`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

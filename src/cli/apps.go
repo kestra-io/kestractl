@@ -213,9 +213,9 @@ func newAppsUpdateCommand() *cobra.Command {
 	var filePath string
 
 	cmd := &cobra.Command{
-		Use:   "update <uid>",
-		Short: "Update an existing app from a YAML file.",
-		Args:  cobra.ExactArgs(1),
+		Use:     "update <uid>",
+		Short:   "Update an existing app from a YAML file.",
+		Args:    cobra.ExactArgs(1),
 		Example: `  kestractl apps update <uid> --file my-app.yml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filePath == "" {
@@ -370,9 +370,9 @@ func newAppsExportCommand() *cobra.Command {
 	var outputFile string
 
 	cmd := &cobra.Command{
-		Use:   "export",
-		Short: "Export all apps as a ZIP archive.",
-		Long:  "Export all apps as a ZIP archive. The file is written to stdout or --output-file.",
+		Use:     "export",
+		Short:   "Export all apps as a ZIP archive.",
+		Long:    "Export all apps as a ZIP archive. The file is written to stdout or --output-file.",
 		Example: `  kestractl apps export --output-file apps.zip`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newClientFunc()
@@ -717,10 +717,10 @@ func newAppsFileMetaCommand() *cobra.Command {
 	var path string
 
 	cmd := &cobra.Command{
-		Use:   "file-meta <id>",
-		Short: "Get metadata for a file produced by an app execution.",
-		Long:  "Get metadata (e.g. size) for a file referenced by an app execution view.",
-		Args:  cobra.ExactArgs(1),
+		Use:     "file-meta <id>",
+		Short:   "Get metadata for a file produced by an app execution.",
+		Long:    "Get metadata (e.g. size) for a file referenced by an app execution view.",
+		Args:    cobra.ExactArgs(1),
 		Example: `  kestractl apps file-meta <view-id> --path /path/to/file`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if path == "" {
