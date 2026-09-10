@@ -1,0 +1,375 @@
+package cli
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
+)
+
+// validateByQueryServer stands in for a Kestra instance: it serves an export
+// archive, a validate endpoint driven by the caller, and a flow inventory.
+type validateByQueryServer struct {
+	archive   []byte
+	violate   func(body string) []map[string]any
+	inventory []map[string]any
+
+	mu     sync.Mutex
+	bodies []string
+}
+
+func (s *validateByQueryServer) start(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/flows/export/by-query"):
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(s.archive)
+		case strings.HasSuffix(r.URL.Path, "/flows/validate"):
+			buf := new(bytes.Buffer)
+			_, _ = buf.ReadFrom(r.Body)
+
+			s.mu.Lock()
+			s.bodies = append(s.bodies, buf.String())
+			s.mu.Unlock()
+
+			var violations []map[string]any
+			if s.violate != nil {
+				violations = s.violate(buf.String())
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(violations)
+		case strings.HasSuffix(r.URL.Path, "/flows/search"):
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"results": s.inventory,
+				"total":   len(s.inventory),
+			})
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func (s *validateByQueryServer) requestBodies() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.bodies...)
+}
+
+func flowSource(id string) string {
+	return "id: " + id + "\nnamespace: company.team\ntasks: []\n"
+}
+
+func TestFlowSourcesFromZip_KeepsEntryNames(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{
+		"company.team/first.yaml": flowSource("first"),
+		"company.team/second.yml": flowSource("second"),
+		"company.team/README.md":  "not a flow",
+		"company.team/nested/":    "",
+		"company.team/notes.txt":  "not a flow either",
+	})
+
+	entries, skipped, err := flowSourcesFromZip(archive)
+	if err != nil {
+		t.Fatalf("flowSourcesFromZip error: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("expected no skipped entries, got %d", skipped)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected the 2 YAML entries, got %d: %+v", len(entries), entries)
+	}
+
+	byName := map[string]string{}
+	for _, entry := range entries {
+		byName[entry.Name] = entry.Source
+	}
+	if byName["company.team/first.yaml"] != flowSource("first") {
+		t.Errorf("first.yaml source not preserved: %q", byName["company.team/first.yaml"])
+	}
+	if _, ok := byName["company.team/second.yml"]; !ok {
+		t.Errorf("second.yml missing from %v", byName)
+	}
+}
+
+func TestFlowsFromZip_WrapperStillReturnsSourcesOnly(t *testing.T) {
+	archive := buildFlowZip(t, map[string]string{
+		"company.team/only.yaml": flowSource("only"),
+	})
+
+	sources, skipped, err := flowsFromZip(archive)
+	if err != nil {
+		t.Fatalf("flowsFromZip error: %v", err)
+	}
+	if skipped != 0 {
+		t.Errorf("expected no skipped entries, got %d", skipped)
+	}
+	if len(sources) != 1 || sources[0] != flowSource("only") {
+		t.Errorf("unexpected sources: %+v", sources)
+	}
+}
+
+func TestFlowIdentityFromZipEntry(t *testing.T) {
+	cases := []struct {
+		entry     string
+		namespace string
+		flowID    string
+	}{
+		{"company.team/my-flow.yaml", "company.team", "my-flow"},
+		{"company/team/my-flow.yml", "company.team", "my-flow"},
+		{"/company.team/my-flow.yaml", "company.team", "my-flow"},
+		{"my-flow.yaml", "", "my-flow"},
+	}
+
+	for _, tc := range cases {
+		namespace, flowID := flowIdentityFromZipEntry(tc.entry)
+		if namespace != tc.namespace || flowID != tc.flowID {
+			t.Errorf("flowIdentityFromZipEntry(%q) = (%q, %q), want (%q, %q)",
+				tc.entry, namespace, flowID, tc.namespace, tc.flowID)
+		}
+	}
+}
+
+// TestValidateSourcesInBatches_OffsetsViolationIndices is the regression test
+// for the batching: the endpoint numbers violations from zero within each
+// request, so without the offset a violation lands on the wrong flow.
+func TestValidateSourcesInBatches_OffsetsViolationIndices(t *testing.T) {
+	sources := make([]string, 7)
+	for i := range sources {
+		sources[i] = flowSource(fmt.Sprintf("flow-%d", i))
+	}
+
+	server := &validateByQueryServer{
+		violate: func(body string) []map[string]any {
+			// Fail the second flow of every batch, which is index 1 locally
+			// and 1, 4 and (in the final 1-source batch) nothing globally.
+			if strings.Count(body, "\n---\n") < 1 {
+				return nil
+			}
+			return []map[string]any{
+				{"index": 1, "constraints": "boom", "flow": "x", "namespace": "company.team"},
+			}
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	violations, err := validateSourcesInBatches(client, sources, 3)
+	if err != nil {
+		t.Fatalf("validateSourcesInBatches error: %v", err)
+	}
+
+	bodies := server.requestBodies()
+	if len(bodies) != 3 {
+		t.Fatalf("expected 3 batches for 7 sources at batch size 3, got %d", len(bodies))
+	}
+	if got := strings.Count(bodies[0], "\n---\n"); got != 2 {
+		t.Errorf("expected 3 sources in the first batch, got %d separators", got)
+	}
+	if strings.Contains(bodies[2], "\n---\n") {
+		t.Errorf("expected a single source in the last batch, got: %q", bodies[2])
+	}
+
+	got := make([]int32, 0, len(violations))
+	for _, violation := range violations {
+		got = append(got, violation.GetIndex())
+	}
+	want := []int32{1, 4}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("violation indices = %v, want %v", got, want)
+	}
+}
+
+func TestValidateSourcesInBatches_SingleRequestWhenBatchIsLarger(t *testing.T) {
+	server := &validateByQueryServer{}
+	client := newTestClient(t, server.start(t))
+
+	if _, err := validateSourcesInBatches(client, []string{flowSource("a"), flowSource("b")}, 100); err != nil {
+		t.Fatalf("validateSourcesInBatches error: %v", err)
+	}
+	if bodies := server.requestBodies(); len(bodies) != 1 {
+		t.Fatalf("expected exactly 1 request, got %d", len(bodies))
+	}
+}
+
+func TestBuildValidateResults_MapsViolationsOntoSeeds(t *testing.T) {
+	seeds := []ValidateResult{
+		{FilePath: "a.yaml", Success: true},
+		{FilePath: "b.yaml", Success: true},
+	}
+	violations := []kestra.ValidateConstraintViolation{
+		newViolation(1, "invalid task", []string{"deprecated"}),
+	}
+
+	results, failed := buildValidateResults(violations, seeds)
+	if failed != 1 {
+		t.Fatalf("expected 1 failure, got %d", failed)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if !results[0].Success {
+		t.Errorf("a.yaml should have passed: %+v", results[0])
+	}
+	if results[1].Success || len(results[1].Constraints) != 1 {
+		t.Errorf("b.yaml should have failed with one constraint: %+v", results[1])
+	}
+	if len(results[1].Warnings) != 1 {
+		t.Errorf("expected the warning to be kept: %+v", results[1])
+	}
+	// A warning alone must never fail validation.
+	if _, failedOnWarning := buildValidateResults(
+		[]kestra.ValidateConstraintViolation{newViolation(0, "", []string{"deprecated"})},
+		seeds,
+	); failedOnWarning != 0 {
+		t.Errorf("a warning must not fail validation, got %d failures", failedOnWarning)
+	}
+}
+
+func TestBuildValidateResults_OutOfRangeIndexGetsItsOwnRow(t *testing.T) {
+	seeds := []ValidateResult{{FilePath: "a.yaml", Success: true}}
+	results, failed := buildValidateResults(
+		[]kestra.ValidateConstraintViolation{newViolation(9, "boom", nil)},
+		seeds,
+	)
+
+	if failed != 1 {
+		t.Fatalf("expected 1 failure, got %d", failed)
+	}
+	if len(results) != 2 || results[1].FilePath != "<index 9>" {
+		t.Fatalf("expected a synthetic <index 9> row, got %+v", results)
+	}
+	if !results[0].Success {
+		t.Errorf("the seeded row must be untouched: %+v", results[0])
+	}
+}
+
+func TestRunFlowsValidateByQuery_ReportsConstraintsAndExceptions(t *testing.T) {
+	server := &validateByQueryServer{
+		archive: buildFlowZip(t, map[string]string{
+			"company.team/good.yaml": flowSource("good"),
+			"company.team/bad.yaml":  flowSource("bad"),
+		}),
+		violate: func(body string) []map[string]any {
+			index := 0
+			// The archive order is not guaranteed, so key off the source.
+			if strings.Index(body, "id: bad") > strings.Index(body, "id: good") {
+				index = 1
+			}
+			return []map[string]any{
+				{"index": index, "constraints": "tasks: must not be empty", "flow": "bad", "namespace": "company.team"},
+			}
+		},
+		inventory: []map[string]any{
+			{"id": "good", "namespace": "company.team", "revision": 1},
+			{"id": "bad", "namespace": "company.team", "revision": 1},
+			{"id": "broken", "namespace": "company.team", "revision": 1,
+				"exception": "Invalid type: io.kestra.core.tasks.flows.EachSequential"},
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	var out bytes.Buffer
+	err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out))
+	if err == nil {
+		t.Fatal("expected a non-nil error so the command exits non-zero")
+	}
+	if !strings.Contains(err.Error(), "validation failed for 2 flow(s)") {
+		t.Errorf("expected 2 failures in the error, got: %v", err)
+	}
+
+	rendered := out.String()
+	if !strings.HasPrefix(strings.TrimSpace(rendered), "FLOW") {
+		t.Errorf("expected the table to be keyed by FLOW, got:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "tasks: must not be empty") {
+		t.Errorf("expected the constraint in the output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "cannot be deserialized") ||
+		!strings.Contains(rendered, "company.team/broken") {
+		t.Errorf("expected the undeserializable flow to be reported:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "1 valid flow(s), 2 failed") {
+		t.Errorf("expected the 1/2 summary, got:\n%s", rendered)
+	}
+}
+
+func TestRunFlowsValidateByQuery_AllValid(t *testing.T) {
+	server := &validateByQueryServer{
+		archive: buildFlowZip(t, map[string]string{
+			"company.team/good.yaml": flowSource("good"),
+		}),
+		inventory: []map[string]any{
+			{"id": "good", "namespace": "company.team", "revision": 1},
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	var out bytes.Buffer
+	if err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out)); err != nil {
+		t.Fatalf("expected no error for a clean instance, got: %v", err)
+	}
+	if !strings.Contains(out.String(), "1 valid flow(s), 0 failed") {
+		t.Errorf("unexpected output:\n%s", out.String())
+	}
+}
+
+// The inventory is a cross-check, not the main event: losing it degrades into
+// a warning so the exported sources are still validated.
+func TestRunFlowsValidateByQuery_InventoryFailureDegradesToWarning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/flows/export/by-query"):
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(buildFlowZip(t, map[string]string{
+				"company.team/good.yaml": flowSource("good"),
+			}))
+		case strings.HasSuffix(r.URL.Path, "/flows/validate"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"no permission to list flows"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	var out, errOut bytes.Buffer
+	renderer := newTableRenderer(&out).WithErrWriter(&errOut)
+	if err := runFlowsValidateByQuery(newTestClient(t, server.URL), nil, validateBatchSize, renderer); err != nil {
+		t.Fatalf("an unreadable inventory must not fail the command, got: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "undeserializable-flow check was skipped") {
+		t.Errorf("expected a warning on stderr, got: %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), "1 valid flow(s), 0 failed") {
+		t.Errorf("the exported sources should still have been validated:\n%s", out.String())
+	}
+}
+
+func TestFlowsValidateByQueryCommand_RejectsPositionalArgs(t *testing.T) {
+	cmd := newFlowsValidateByQueryCommand()
+	if _, err := executeCommand(cmd, "./flows/"); err == nil {
+		t.Fatal("expected validate-by-query to reject a path argument")
+	}
+}
+
+func newViolation(index int32, constraints string, warnings []string) kestra.ValidateConstraintViolation {
+	violation := kestra.NewValidateConstraintViolation(index)
+	if constraints != "" {
+		violation.SetConstraints(constraints)
+	}
+	if len(warnings) > 0 {
+		violation.SetWarnings(warnings)
+	}
+	return *violation
+}
