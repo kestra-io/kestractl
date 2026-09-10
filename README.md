@@ -355,10 +355,10 @@ kestractl flows usage-report
 kestractl flows validate-by-query
 ```
 
-`validate-by-query` exits non-zero when any flow has constraint violations or
-when the server cannot deserialize a stored flow source at all — the failure
-mode a plain export-then-validate round-trip misses, because such a flow is
-absent from the export. That makes it usable as a CI gate:
+`validate-by-query` exits non-zero when any flow has constraint violations, and
+also cross-checks the flow inventory so a flow the server cannot deserialize at
+all is reported even when the export could not produce it. That makes it usable
+as a CI gate:
 
 ```bash
 kestractl flows validate-by-query --namespace my.namespace --output json

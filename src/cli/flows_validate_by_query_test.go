@@ -119,24 +119,43 @@ func TestFlowsFromZip_WrapperStillReturnsSourcesOnly(t *testing.T) {
 	}
 }
 
-func TestFlowIdentityFromZipEntry(t *testing.T) {
+func TestFlowIdentityFromSource(t *testing.T) {
 	cases := []struct {
-		entry     string
+		name      string
+		source    string
 		namespace string
 		flowID    string
 	}{
-		{"company.team/my-flow.yaml", "company.team", "my-flow"},
-		{"company/team/my-flow.yml", "company.team", "my-flow"},
-		{"/company.team/my-flow.yaml", "company.team", "my-flow"},
-		{"my-flow.yaml", "", "my-flow"},
+		{
+			name:      "a flow with a hyphen in both halves",
+			source:    "id: my-flow\nnamespace: company.team-eu\ntasks: []\n",
+			namespace: "company.team-eu",
+			flowID:    "my-flow",
+		},
+		{
+			name:      "key order does not matter",
+			source:    "namespace: company.team\nid: my-flow\n",
+			namespace: "company.team",
+			flowID:    "my-flow",
+		},
+		{
+			name:   "a source that does not parse leaves it to the server",
+			source: "id: [unterminated\n",
+		},
+		{
+			name:   "an empty source",
+			source: "",
+		},
 	}
 
 	for _, tc := range cases {
-		namespace, flowID := flowIdentityFromZipEntry(tc.entry)
-		if namespace != tc.namespace || flowID != tc.flowID {
-			t.Errorf("flowIdentityFromZipEntry(%q) = (%q, %q), want (%q, %q)",
-				tc.entry, namespace, flowID, tc.namespace, tc.flowID)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			namespace, flowID := flowIdentityFromSource(tc.source)
+			if namespace != tc.namespace || flowID != tc.flowID {
+				t.Errorf("flowIdentityFromSource(%q) = (%q, %q), want (%q, %q)",
+					tc.source, namespace, flowID, tc.namespace, tc.flowID)
+			}
+		})
 	}
 }
 
@@ -256,8 +275,8 @@ func TestBuildValidateResults_OutOfRangeIndexGetsItsOwnRow(t *testing.T) {
 func TestRunFlowsValidateByQuery_ReportsConstraintsAndExceptions(t *testing.T) {
 	server := &validateByQueryServer{
 		archive: buildFlowZip(t, map[string]string{
-			"company.team/good.yaml": flowSource("good"),
-			"company.team/bad.yaml":  flowSource("bad"),
+			"company.team-good.yml": flowSource("good"),
+			"company.team-bad.yml":  flowSource("bad"),
 		}),
 		violate: func(body string) []map[string]any {
 			index := 0
@@ -272,6 +291,8 @@ func TestRunFlowsValidateByQuery_ReportsConstraintsAndExceptions(t *testing.T) {
 		inventory: []map[string]any{
 			{"id": "good", "namespace": "company.team", "revision": 1},
 			{"id": "bad", "namespace": "company.team", "revision": 1},
+			// Absent from the archive above: only such a flow is reported by
+			// the cross-check, the rest come back from the validate endpoint.
 			{"id": "broken", "namespace": "company.team", "revision": 1,
 				"exception": "Invalid type: io.kestra.core.tasks.flows.EachSequential"},
 		},
@@ -306,7 +327,7 @@ func TestRunFlowsValidateByQuery_ReportsConstraintsAndExceptions(t *testing.T) {
 func TestRunFlowsValidateByQuery_AllValid(t *testing.T) {
 	server := &validateByQueryServer{
 		archive: buildFlowZip(t, map[string]string{
-			"company.team/good.yaml": flowSource("good"),
+			"company.team-good.yml": flowSource("good"),
 		}),
 		inventory: []map[string]any{
 			{"id": "good", "namespace": "company.team", "revision": 1},
@@ -331,7 +352,7 @@ func TestRunFlowsValidateByQuery_InventoryFailureDegradesToWarning(t *testing.T)
 		case strings.HasSuffix(r.URL.Path, "/flows/export/by-query"):
 			w.Header().Set("Content-Type", "application/zip")
 			_, _ = w.Write(buildFlowZip(t, map[string]string{
-				"company.team/good.yaml": flowSource("good"),
+				"company.team-good.yml": flowSource("good"),
 			}))
 		case strings.HasSuffix(r.URL.Path, "/flows/validate"):
 			w.Header().Set("Content-Type", "application/json")
@@ -372,4 +393,47 @@ func newViolation(index int32, constraints string, warnings []string) kestra.Val
 		violation.SetWarnings(warnings)
 	}
 	return *violation
+}
+
+// TestRunFlowsValidateByQuery_DoesNotDoubleCountExportedBrokenFlows is the
+// regression test for what live QA against a migrated 1.3.37 -> 2.0.0 instance
+// turned up: an undeserializable flow is usually still in the export, because
+// the export writes the stored source text back out without deserializing it.
+// Reporting it from both the validate endpoint and the inventory counted one
+// broken flow twice.
+func TestRunFlowsValidateByQuery_DoesNotDoubleCountExportedBrokenFlows(t *testing.T) {
+	server := &validateByQueryServer{
+		archive: buildFlowZip(t, map[string]string{
+			"company.team-legacy.yml": "id: legacy\nnamespace: company.team\ntasks:\n  - id: loop\n    type: io.kestra.plugin.core.flow.EachSequential\n",
+		}),
+		violate: func(string) []map[string]any {
+			return []map[string]any{
+				{"index": 0, "constraints": "Invalid type: io.kestra.plugin.core.flow.EachSequential",
+					"flow": "legacy", "namespace": "company.team"},
+			}
+		},
+		// The same flow, also flagged by the inventory.
+		inventory: []map[string]any{
+			{"id": "legacy", "namespace": "company.team", "revision": 1,
+				"exception": "Could not resolve type id 'io.kestra.plugin.core.flow.EachSequential'"},
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	var out bytes.Buffer
+	err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out))
+	if err == nil {
+		t.Fatal("expected the broken flow to fail validation")
+	}
+	if !strings.Contains(err.Error(), "validation failed for 1 flow(s)") {
+		t.Errorf("the flow must be counted once, got: %v", err)
+	}
+
+	rendered := out.String()
+	if got := strings.Count(rendered, "company.team/legacy"); got != 1 {
+		t.Errorf("expected exactly 1 row for the flow, got %d:\n%s", got, rendered)
+	}
+	if !strings.Contains(rendered, "0 valid flow(s), 1 failed") {
+		t.Errorf("unexpected summary:\n%s", rendered)
+	}
 }
