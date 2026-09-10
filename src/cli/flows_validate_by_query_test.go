@@ -16,9 +16,12 @@ import (
 // validateByQueryServer stands in for a Kestra instance: it serves an export
 // archive, a validate endpoint driven by the caller, and a flow inventory.
 type validateByQueryServer struct {
-	archive   []byte
-	violate   func(body string) []map[string]any
-	inventory []map[string]any
+	archive []byte
+	violate func(body string) []map[string]any
+
+	// searched records a hit on /flows/search, which this command must never
+	// make: it validates what the export gives it and nothing else.
+	searched bool
 
 	mu     sync.Mutex
 	bodies []string
@@ -46,11 +49,11 @@ func (s *validateByQueryServer) start(t *testing.T) string {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(violations)
 		case strings.HasSuffix(r.URL.Path, "/flows/search"):
+			s.mu.Lock()
+			s.searched = true
+			s.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"results": s.inventory,
-				"total":   len(s.inventory),
-			})
+			_ = json.NewEncoder(w).Encode(map[string]any{"results": []any{}, "total": 0})
 		default:
 			t.Errorf("unexpected request to %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
@@ -272,66 +275,11 @@ func TestBuildValidateResults_OutOfRangeIndexGetsItsOwnRow(t *testing.T) {
 	}
 }
 
-func TestRunFlowsValidateByQuery_ReportsConstraintsAndExceptions(t *testing.T) {
-	server := &validateByQueryServer{
-		archive: buildFlowZip(t, map[string]string{
-			"company.team-good.yml": flowSource("good"),
-			"company.team-bad.yml":  flowSource("bad"),
-		}),
-		violate: func(body string) []map[string]any {
-			index := 0
-			// The archive order is not guaranteed, so key off the source.
-			if strings.Index(body, "id: bad") > strings.Index(body, "id: good") {
-				index = 1
-			}
-			return []map[string]any{
-				{"index": index, "constraints": "tasks: must not be empty", "flow": "bad", "namespace": "company.team"},
-			}
-		},
-		inventory: []map[string]any{
-			{"id": "good", "namespace": "company.team", "revision": 1},
-			{"id": "bad", "namespace": "company.team", "revision": 1},
-			// Absent from the archive above: only such a flow is reported by
-			// the cross-check, the rest come back from the validate endpoint.
-			{"id": "broken", "namespace": "company.team", "revision": 1,
-				"exception": "Invalid type: io.kestra.core.tasks.flows.EachSequential"},
-		},
-	}
-	client := newTestClient(t, server.start(t))
-
-	var out bytes.Buffer
-	err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out))
-	if err == nil {
-		t.Fatal("expected a non-nil error so the command exits non-zero")
-	}
-	if !strings.Contains(err.Error(), "validation failed for 2 flow(s)") {
-		t.Errorf("expected 2 failures in the error, got: %v", err)
-	}
-
-	rendered := out.String()
-	if !strings.HasPrefix(strings.TrimSpace(rendered), "FLOW") {
-		t.Errorf("expected the table to be keyed by FLOW, got:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "tasks: must not be empty") {
-		t.Errorf("expected the constraint in the output:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "cannot be deserialized") ||
-		!strings.Contains(rendered, "company.team/broken") {
-		t.Errorf("expected the undeserializable flow to be reported:\n%s", rendered)
-	}
-	if !strings.Contains(rendered, "1 valid flow(s), 2 failed") {
-		t.Errorf("expected the 1/2 summary, got:\n%s", rendered)
-	}
-}
-
 func TestRunFlowsValidateByQuery_AllValid(t *testing.T) {
 	server := &validateByQueryServer{
 		archive: buildFlowZip(t, map[string]string{
 			"company.team-good.yml": flowSource("good"),
 		}),
-		inventory: []map[string]any{
-			{"id": "good", "namespace": "company.team", "revision": 1},
-		},
 	}
 	client := newTestClient(t, server.start(t))
 
@@ -341,39 +289,6 @@ func TestRunFlowsValidateByQuery_AllValid(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "1 valid flow(s), 0 failed") {
 		t.Errorf("unexpected output:\n%s", out.String())
-	}
-}
-
-// The inventory is a cross-check, not the main event: losing it degrades into
-// a warning so the exported sources are still validated.
-func TestRunFlowsValidateByQuery_InventoryFailureDegradesToWarning(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/flows/export/by-query"):
-			w.Header().Set("Content-Type", "application/zip")
-			_, _ = w.Write(buildFlowZip(t, map[string]string{
-				"company.team-good.yml": flowSource("good"),
-			}))
-		case strings.HasSuffix(r.URL.Path, "/flows/validate"):
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`[]`))
-		default:
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"message":"no permission to list flows"}`))
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	var out, errOut bytes.Buffer
-	renderer := newTableRenderer(&out).WithErrWriter(&errOut)
-	if err := runFlowsValidateByQuery(newTestClient(t, server.URL), nil, validateBatchSize, renderer); err != nil {
-		t.Fatalf("an unreadable inventory must not fail the command, got: %v", err)
-	}
-	if !strings.Contains(errOut.String(), "undeserializable-flow check was skipped") {
-		t.Errorf("expected a warning on stderr, got: %q", errOut.String())
-	}
-	if !strings.Contains(out.String(), "1 valid flow(s), 0 failed") {
-		t.Errorf("the exported sources should still have been validated:\n%s", out.String())
 	}
 }
 
@@ -395,27 +310,27 @@ func newViolation(index int32, constraints string, warnings []string) kestra.Val
 	return *violation
 }
 
-// TestRunFlowsValidateByQuery_DoesNotDoubleCountExportedBrokenFlows is the
-// regression test for what live QA against a migrated 1.3.37 -> 2.0.0 instance
-// turned up: an undeserializable flow is usually still in the export, because
-// the export writes the stored source text back out without deserializing it.
-// Reporting it from both the validate endpoint and the inventory counted one
-// broken flow twice.
-func TestRunFlowsValidateByQuery_DoesNotDoubleCountExportedBrokenFlows(t *testing.T) {
+// TestRunFlowsValidateByQuery_ReportsBrokenStoredFlows covers what live QA on
+// an instance migrated in place from 1.3.37 to 2.0.0 actually produces: the
+// export copies the stored source text without parsing it, so a flow whose
+// task type no longer exists still reaches the validate endpoint and is
+// reported there — once.
+func TestRunFlowsValidateByQuery_ReportsBrokenStoredFlows(t *testing.T) {
+	legacy := "id: legacy\nnamespace: company.team\ntasks:\n  - id: loop\n    type: io.kestra.plugin.core.flow.EachSequential\n"
 	server := &validateByQueryServer{
 		archive: buildFlowZip(t, map[string]string{
-			"company.team-legacy.yml": "id: legacy\nnamespace: company.team\ntasks:\n  - id: loop\n    type: io.kestra.plugin.core.flow.EachSequential\n",
+			"company.team-legacy.yml": legacy,
+			"company.team-good.yml":   flowSource("good"),
 		}),
-		violate: func(string) []map[string]any {
+		violate: func(body string) []map[string]any {
+			index := 0
+			if strings.Index(body, "id: legacy") > strings.Index(body, "id: good") {
+				index = 1
+			}
 			return []map[string]any{
-				{"index": 0, "constraints": "Invalid type: io.kestra.plugin.core.flow.EachSequential",
+				{"index": index, "constraints": "Validation error: Invalid type: io.kestra.plugin.core.flow.EachSequential",
 					"flow": "legacy", "namespace": "company.team"},
 			}
-		},
-		// The same flow, also flagged by the inventory.
-		inventory: []map[string]any{
-			{"id": "legacy", "namespace": "company.team", "revision": 1,
-				"exception": "Could not resolve type id 'io.kestra.plugin.core.flow.EachSequential'"},
 		},
 	}
 	client := newTestClient(t, server.start(t))
@@ -423,17 +338,26 @@ func TestRunFlowsValidateByQuery_DoesNotDoubleCountExportedBrokenFlows(t *testin
 	var out bytes.Buffer
 	err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out))
 	if err == nil {
-		t.Fatal("expected the broken flow to fail validation")
+		t.Fatal("expected a non-nil error so the command exits non-zero")
 	}
 	if !strings.Contains(err.Error(), "validation failed for 1 flow(s)") {
-		t.Errorf("the flow must be counted once, got: %v", err)
+		t.Errorf("the broken flow must be counted once, got: %v", err)
 	}
 
 	rendered := out.String()
 	if got := strings.Count(rendered, "company.team/legacy"); got != 1 {
-		t.Errorf("expected exactly 1 row for the flow, got %d:\n%s", got, rendered)
+		t.Errorf("expected exactly 1 row for the broken flow, got %d:\n%s", got, rendered)
 	}
-	if !strings.Contains(rendered, "0 valid flow(s), 1 failed") {
+	if !strings.Contains(rendered, "Invalid type: io.kestra.plugin.core.flow.EachSequential") {
+		t.Errorf("expected the server's message in the output:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, "1 valid flow(s), 1 failed") {
 		t.Errorf("unexpected summary:\n%s", rendered)
+	}
+
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.searched {
+		t.Error("validate-by-query must not call /flows/search")
 	}
 }

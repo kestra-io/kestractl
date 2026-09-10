@@ -559,25 +559,15 @@ func listAllFlows(client *Client) ([]parsedFlow, error) {
 // listAllFlowsForTenant pages through every flow of the given tenant. Commands
 // that scan more than the configured tenant call it directly.
 func listAllFlowsForTenant(client *Client, tenant string) ([]parsedFlow, error) {
-	return listAllFlowsForTenantFiltered(client, tenant, nil)
-}
-
-// listAllFlowsForTenantFiltered is listAllFlowsForTenant narrowed to the flows
-// matching the shared *-by-query filters. Nil filters means the whole tenant,
-// which is what the endpoint does by default.
-func listAllFlowsForTenantFiltered(client *Client, tenant string, filters []kestra.QueryFilter) ([]parsedFlow, error) {
 	const pageSize int32 = 1000
 	page := int32(1)
 	results := make([]parsedFlow, 0)
 
 	for {
-		req := client.API.FlowsAPI.SearchFlows(client.Ctx, tenant).
+		resp, _, err := client.API.FlowsAPI.SearchFlows(client.Ctx, tenant).
 			Page(page).
-			Size(pageSize)
-		if len(filters) > 0 {
-			req = req.Filters(filters)
-		}
-		resp, _, err := req.Execute()
+			Size(pageSize).
+			Execute()
 
 		var batch []parsedFlow
 		var total int64
@@ -615,11 +605,6 @@ type parsedFlow struct {
 	Description string
 	Revision    int32
 	Source      string
-	// Exception is set when the server could not deserialize the stored flow
-	// source and answered with a FlowWithException. Such a flow exists in the
-	// inventory but is absent from an export, so it is invisible to any check
-	// that only reads exported sources.
-	Exception string
 }
 
 // parsedFlowFromFlow normalizes a decoded SDK Flow into a parsedFlow.
@@ -629,24 +614,7 @@ func parsedFlowFromFlow(f kestra.Flow) parsedFlow {
 		Namespace:   f.GetNamespace(),
 		Description: f.GetDescription(),
 		Revision:    f.GetRevision(),
-		// "exception" is not in the generated Flow model; the SDK keeps such
-		// fields in AdditionalProperties.
-		Exception: flowException(f.AdditionalProperties),
 	}
-}
-
-// flowException reads the "exception" field the server adds to a flow it could
-// not deserialize. It is a string in practice, but the field is untyped, so
-// anything else is rendered rather than dropped.
-func flowException(m map[string]any) string {
-	value, ok := m["exception"]
-	if !ok || value == nil {
-		return ""
-	}
-	if s, ok := value.(string); ok {
-		return strings.TrimSpace(s)
-	}
-	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // parsedFlowFromMap extracts flow fields from a raw JSON object. Labels are
@@ -669,7 +637,6 @@ func parsedFlowFromMap(m map[string]any) parsedFlow {
 	if v, ok := m["revision"].(float64); ok {
 		f.Revision = int32(v)
 	}
-	f.Exception = flowException(m)
 	return f
 }
 
