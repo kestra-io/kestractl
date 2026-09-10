@@ -11,6 +11,7 @@ import (
 func newFlowsValidateByQueryCommand() *cobra.Command {
 	var filterFlags byQueryFilterFlags
 	var batchSize int
+	var all bool
 
 	cmd := &cobra.Command{
 		Use:          "validate-by-query",
@@ -22,8 +23,10 @@ them to disk first. This is the post-migration check: 'flows validate <path>'
 answers "are my local files valid?", this answers "is what is on the instance
 valid?".
 
-Without a selection flag every flow of the tenant is validated. --namespace,
---flow and --filter narrow it down, exactly as they do for 'flows export-by-query'.
+A selection is required. --namespace, --flow and --filter narrow it down,
+exactly as they do for 'flows export-by-query'; --all validates every flow of
+the tenant and cannot be combined with the other three. Validating a whole
+instance is deliberately something you have to ask for by name.
 
 This catches both a flow with constraint violations and one whose stored source
 the server can no longer deserialize at all (e.g. a task type removed in 2.0):
@@ -36,14 +39,14 @@ deprecations and outdated flags are reported but do not fail.
 Drafts are not covered: the export the sources are read from deliberately skips
 them, so a draft-headed flow is validated at its last saved revision and a
 draft-only flow is not validated at all.`,
-		Example: `  # Validate every flow stored on the instance
-	  kestractl flows validate-by-query
-
-	  # Scope to one namespace
+		Example: `  # Scope to one namespace
 	  kestractl flows validate-by-query --namespace company.team
 
+	  # Every flow stored on the instance
+	  kestractl flows validate-by-query --all
+
 	  # Gate a migration in CI (exits non-zero when anything fails)
-	  kestractl flows validate-by-query --output json`,
+	  kestractl flows validate-by-query --all --output json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
 				return err
@@ -59,6 +62,19 @@ draft-only flow is not validated at all.`,
 				return err
 			}
 
+			// A missing selection is a usage mistake, not a failed run, so it
+			// is the one error here that prints the help. SilenceUsage stays on
+			// for everything else: a flow that fails validation must not bury
+			// the report under the flag list.
+			switch {
+			case all && len(filters) > 0:
+				cmd.SilenceUsage = false
+				return fmt.Errorf("--all validates every flow of the tenant and cannot be combined with --namespace, --flow or --filter")
+			case !all && len(filters) == 0:
+				cmd.SilenceUsage = false
+				return fmt.Errorf("a selection is required: use --namespace, --flow or --filter to scope the run, or --all to validate every flow of the tenant")
+			}
+
 			client, err := newClientFunc()
 			if err != nil {
 				return err
@@ -68,6 +84,8 @@ draft-only flow is not validated at all.`,
 		},
 	}
 
+	cmd.Flags().BoolVar(&all, "all", false,
+		"Validate every flow of the tenant (mutually exclusive with --namespace, --flow and --filter)")
 	cmd.Flags().IntVar(&batchSize, "batch-size", validateBatchSize,
 		"Number of flow sources sent per validation request")
 	addByQueryFilterFlags(cmd, &filterFlags)

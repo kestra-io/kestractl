@@ -361,3 +361,45 @@ func TestRunFlowsValidateByQuery_ReportsBrokenStoredFlows(t *testing.T) {
 		t.Error("validate-by-query must not call /flows/search")
 	}
 }
+
+// Validating a whole instance has to be asked for by name, so a bare
+// invocation is a usage mistake and prints the help.
+func TestFlowsValidateByQueryCommand_RequiresASelection(t *testing.T) {
+	cmd := newFlowsValidateByQueryCommand()
+	out, err := executeCommand(cmd)
+	if err == nil {
+		t.Fatal("expected a bare validate-by-query to be rejected")
+	}
+	if !strings.Contains(err.Error(), "a selection is required") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if cmd.SilenceUsage {
+		t.Error("a usage mistake must print the help")
+	}
+	if !strings.Contains(out, "--all") {
+		t.Errorf("the help should point at --all, got:\n%s", out)
+	}
+}
+
+func TestFlowsValidateByQueryCommand_AllIsExclusive(t *testing.T) {
+	for _, flag := range []string{"--namespace=company.team", "--flow=my-flow", "--filter=NAMESPACE:EQUALS:x"} {
+		cmd := newFlowsValidateByQueryCommand()
+		if _, err := executeCommand(cmd, "--all", flag); err == nil {
+			t.Errorf("expected --all %s to be rejected", flag)
+		} else if !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("--all %s: unexpected error: %v", flag, err)
+		}
+	}
+}
+
+// The counterpart to the two above: a run that reaches the server must not
+// bury its report under the flag list, whatever the outcome.
+func TestFlowsValidateByQueryCommand_KeepsUsageSilencedOnceRunning(t *testing.T) {
+	cmd := newFlowsValidateByQueryCommand()
+	if _, err := executeCommand(cmd, "--all"); err == nil {
+		t.Fatal("expected the run to fail without a reachable server")
+	}
+	if !cmd.SilenceUsage {
+		t.Error("a failure past the selection check must not print the help")
+	}
+}
