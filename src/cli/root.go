@@ -64,7 +64,13 @@ func NewRootCommand() *cobra.Command {
 		Long: `kestractl is a command-line tool for managing Kestra workflows.
 
 It provides commands to manage flows, namespaces, and executions,
-with support for multiple authentication contexts and output formats.`,
+with support for multiple authentication contexts and output formats.
+
+Compatibility:
+  This build is compatible with Kestra 1.x and 2.x. It targets 2.x, and
+  works against a 1.x server on a best-effort basis: commands that rely
+  on a feature only Kestra 2.0 introduced report that explicitly instead
+  of appearing to succeed against an older server.`,
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Annotations[AnnotationOffline] == "true" {
 				return nil
