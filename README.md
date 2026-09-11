@@ -281,6 +281,10 @@ kestractl flows deploy ./flows/ --fail-fast
 kestractl flows validate path/to/flow.yaml
 kestractl flows validate ./flows/
 
+# Validate the flows already stored on the instance (no local copy needed)
+kestractl flows validate-by-query --namespace my.namespace
+kestractl flows validate-by-query --all
+
 # Validate a task or trigger definition inline
 kestractl flows validate-task --namespace my.namespace --flow my-flow --task-id my-task
 kestractl flows validate-trigger --namespace my.namespace --flow my-flow --trigger-id my-trigger
@@ -337,6 +341,34 @@ kestractl flows delete-revisions my.namespace my-flow --before-revision 5
 kestractl flows concurrency-limits my.namespace my-flow
 kestractl flows update-concurrency my.namespace my-flow --limit 10
 ```
+
+#### Verifying a migration
+
+After upgrading an instance and migrating flow definitions, two commands answer
+"did that work?" without exporting anything to disk:
+
+```bash
+# What does this instance use, and what needs attention for a 1.x -> 2.0 upgrade?
+kestractl flows usage-report
+
+# Are the flows now stored on the instance actually valid?
+kestractl flows validate-by-query --all
+```
+
+A selection is required: `--namespace`, `--flow` or `--filter` to scope the run,
+or `--all` for every flow of the tenant. Validating a whole instance is
+deliberately something you ask for by name.
+
+`validate-by-query` exits non-zero when any flow has constraint violations,
+which makes it usable as a CI gate:
+
+```bash
+kestractl flows validate-by-query --all --output json
+```
+
+Drafts are not covered: the export the sources are read from deliberately skips
+them, so a draft-headed flow is validated at its last saved revision and a
+draft-only flow is not validated at all.
 
 ### Executions
 

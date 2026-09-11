@@ -71,6 +71,7 @@ func newFlowsCommand() *cobra.Command {
 	cmd.AddCommand(newFlowsEnableByQueryCommand())
 	cmd.AddCommand(newFlowsExportByIdsCommand())
 	cmd.AddCommand(newFlowsExportByQueryCommand())
+	cmd.AddCommand(newFlowsValidateByQueryCommand())
 	cmd.AddCommand(newFlowsGenerateGraphFromSourceCommand())
 	cmd.AddCommand(newFlowsGenerateGraphCommand())
 	cmd.AddCommand(newFlowsTaskCommand())
@@ -1059,26 +1060,124 @@ func runFlowsValidate(client *Client, path string, recursive bool, renderer *Ren
 		contents = append(contents, string(data))
 	}
 
-	body := strings.Join(contents, "\n---\n")
-
-	violations, _, err := client.API.FlowsAPI.ValidateFlows(client.Ctx, client.Tenant).
-		Body(body).
-		Execute()
+	violations, err := validateSourcesInBatches(client, contents, validateBatchSize)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
 	return formatValidateResults(violations, files, renderer)
 }
 
-func formatValidateResults(violations []kestra.ValidateConstraintViolation, files []string, renderer *Renderer) error {
-	results := make([]ValidateResult, len(files))
-	for i, file := range files {
-		results[i] = ValidateResult{
-			FilePath: file,
-			Success:  true,
+// validateBatchSize bounds how many flow sources go into a single validate
+// request. The endpoint takes one multi-document YAML body, so an unbatched
+// run sends every source of a large directory — or of a whole instance — in
+// one request.
+const validateBatchSize = 100
+
+// validateSourcesInBatches validates sources in fixed-size batches and returns
+// the violations of all of them, re-indexed against the full source list.
+//
+// A violation identifies its source by position within the request body, so
+// every batch after the first comes back numbered from zero; the offset below
+// is what keeps a violation attached to the flow it actually belongs to.
+func validateSourcesInBatches(client *Client, sources []string, batchSize int) ([]kestra.ValidateConstraintViolation, error) {
+	if batchSize < 1 {
+		batchSize = validateBatchSize
+	}
+
+	violations := make([]kestra.ValidateConstraintViolation, 0, len(sources))
+
+	for start := 0; start < len(sources); start += batchSize {
+		end := min(start+batchSize, len(sources))
+		count := end - start
+
+		documents := make([]string, 0, count)
+		for _, source := range sources[start:end] {
+			documents = append(documents, trimDocumentMarkers(source))
+		}
+
+		body := strings.Join(documents, "\n---\n")
+		batch, _, err := client.API.FlowsAPI.ValidateFlows(client.Ctx, client.Tenant).
+			Body(body).
+			Execute()
+		if err != nil {
+			return nil, formatSDKError(err)
+		}
+
+		for _, violation := range batch {
+			index := violation.GetIndex()
+			// The server numbered a document this batch did not send, which
+			// means the body split into more documents than it has sources.
+			// Every index in the batch is then suspect, so report nothing
+			// rather than attach results to the wrong flows.
+			if index < 0 || int(index) >= count {
+				return nil, fmt.Errorf(
+					"cannot map validation results back to flows: the server reported document %d of a %d-document request, "+
+						"which happens when a flow source contains its own YAML document separator; "+
+						"re-run with --batch-size 1 to validate one flow per request",
+					index, count)
+			}
+			violation.SetIndex(index + int32(start))
+			violations = append(violations, violation)
 		}
 	}
+
+	return violations, nil
+}
+
+// trimDocumentMarkers strips the YAML document markers around a single flow
+// source so that joining sources with "\n---\n" yields exactly one document
+// per source.
+//
+// A stored flow source keeps whatever the author wrote, and a leading "---" is
+// ordinary YAML style. Joined as-is it produces "---\n---", i.e. an empty
+// document, which shifts every later index in the batch by one and makes a
+// valid flow fail with "No content to map due to end-of-input".
+func trimDocumentMarkers(source string) string {
+	lines := strings.Split(source, "\n")
+
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start < len(lines) && strings.TrimRight(lines[start], " \t") == "---" {
+		start++
+	}
+
+	end := len(lines)
+	for end > start {
+		last := strings.TrimRight(lines[end-1], " \t")
+		if last == "" || last == "---" || last == "..." {
+			end--
+			continue
+		}
+		break
+	}
+
+	return strings.Join(lines[start:end], "\n")
+}
+
+// formatValidateResults renders the violations of a local `flows validate`
+// run, one row per validated file.
+func formatValidateResults(violations []kestra.ValidateConstraintViolation, files []string, renderer *Renderer) error {
+	seeds := make([]ValidateResult, len(files))
+	for i, file := range files {
+		seeds[i] = ValidateResult{FilePath: file, Success: true}
+	}
+
+	results, failed := buildValidateResults(violations, seeds)
+	return renderValidateResults(results, failed, "FILE", renderer)
+}
+
+// buildValidateResults maps the server's violations back onto the seeded
+// results. A violation carries the positional index of the source it belongs
+// to within the validated batch, so seeds must be in the order the sources
+// were sent; an index outside that range lands in a synthetic row rather than
+// being dropped. A result fails only on a constraint — warnings, infos,
+// deprecations and the outdated flag are reported but never fail validation.
+func buildValidateResults(violations []kestra.ValidateConstraintViolation, seeds []ValidateResult) ([]ValidateResult, int) {
+	results := make([]ValidateResult, len(seeds))
+	copy(results, seeds)
 
 	unknownResults := make([]ValidateResult, 0)
 
@@ -1149,10 +1248,18 @@ func formatValidateResults(violations []kestra.ValidateConstraintViolation, file
 		}
 	}
 
-	valid := len(allResults) - failed
-	if err := renderer.Render(allResults, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "FILE\tSTATUS\tCONSTRAINTS\tWARNINGS\tINFOS\tOUTDATED\tDEPRECATIONS")
-		for _, result := range allResults {
+	return allResults, failed
+}
+
+// renderValidateResults writes the result table and returns a non-nil error
+// when anything failed, which main.go turns into a non-zero exit code.
+// labelHeader names the first column: the local path for `flows validate`, the
+// flow identity for `flows validate-by-query`.
+func renderValidateResults(results []ValidateResult, failed int, labelHeader string, renderer *Renderer) error {
+	valid := len(results) - failed
+	if err := renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "%s\tSTATUS\tCONSTRAINTS\tWARNINGS\tINFOS\tOUTDATED\tDEPRECATIONS\n", labelHeader)
+		for _, result := range results {
 			status := "OK"
 			constraints := "-"
 			if len(result.Constraints) > 0 {

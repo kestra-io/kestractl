@@ -1449,16 +1449,41 @@ func (m *markdownWriter) printf(format string, args ...any) {
 // rather than buffered.
 const maxZipEntrySize = 10 << 20 // 10 MiB
 
+// zipFlowSource is one flow source read out of an export archive, together
+// with its archive entry name. A Kestra export is flat: entries are named
+// "<namespace>-<flow-id>.yml", which cannot be split back into the two halves
+// because either may contain a hyphen. The name is therefore only good as a
+// last-resort label — read the identity from the source instead.
+type zipFlowSource struct {
+	Name   string
+	Source string
+}
+
 // flowsFromZip reads the YAML sources out of a flow export archive entirely in
 // memory — the archive never touches disk. It returns the sources plus the
 // number of entries that were skipped (oversized or unreadable).
 func flowsFromZip(data []byte) ([]string, int, error) {
+	entries, skipped, err := flowSourcesFromZip(data)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	sources := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		sources = append(sources, entry.Source)
+	}
+	return sources, skipped, nil
+}
+
+// flowSourcesFromZip is flowsFromZip keeping the archive entry names, which
+// the caller needs when it has to label a flow it has no violation for.
+func flowSourcesFromZip(data []byte) ([]zipFlowSource, int, error) {
 	reader, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to read the flow export archive: %w", err)
 	}
 
-	sources := make([]string, 0, len(reader.File))
+	sources := make([]zipFlowSource, 0, len(reader.File))
 	skipped := 0
 
 	for _, entry := range reader.File {
@@ -1475,7 +1500,7 @@ func flowsFromZip(data []byte) ([]string, int, error) {
 			skipped++
 			continue
 		}
-		sources = append(sources, source)
+		sources = append(sources, zipFlowSource{Name: entry.Name, Source: source})
 	}
 
 	return sources, skipped, nil
