@@ -1450,9 +1450,10 @@ func (m *markdownWriter) printf(format string, args ...any) {
 const maxZipEntrySize = 10 << 20 // 10 MiB
 
 // zipFlowSource is one flow source read out of an export archive, together
-// with its archive entry name. Kestra names the entries
-// "<namespace>/<flow-id>.yaml", which is the only identity an OK flow has
-// before the server has said anything about it.
+// with its archive entry name. A Kestra export is flat: entries are named
+// "<namespace>-<flow-id>.yml", which cannot be split back into the two halves
+// because either may contain a hyphen. The name is therefore only good as a
+// last-resort label — read the identity from the source instead.
 type zipFlowSource struct {
 	Name   string
 	Source string

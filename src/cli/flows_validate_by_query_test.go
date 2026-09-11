@@ -75,11 +75,11 @@ func flowSource(id string) string {
 
 func TestFlowSourcesFromZip_KeepsEntryNames(t *testing.T) {
 	archive := buildFlowZip(t, map[string]string{
-		"company.team/first.yaml": flowSource("first"),
-		"company.team/second.yml": flowSource("second"),
-		"company.team/README.md":  "not a flow",
-		"company.team/nested/":    "",
-		"company.team/notes.txt":  "not a flow either",
+		"company.team-first.yml":   flowSource("first"),
+		"company.team-second.yaml": flowSource("second"),
+		"company.team-README.md":   "not a flow",
+		"nested/":                  "",
+		"company.team-notes.txt":   "not a flow either",
 	})
 
 	entries, skipped, err := flowSourcesFromZip(archive)
@@ -97,17 +97,17 @@ func TestFlowSourcesFromZip_KeepsEntryNames(t *testing.T) {
 	for _, entry := range entries {
 		byName[entry.Name] = entry.Source
 	}
-	if byName["company.team/first.yaml"] != flowSource("first") {
-		t.Errorf("first.yaml source not preserved: %q", byName["company.team/first.yaml"])
+	if byName["company.team-first.yml"] != flowSource("first") {
+		t.Errorf("first.yml source not preserved: %q", byName["company.team-first.yml"])
 	}
-	if _, ok := byName["company.team/second.yml"]; !ok {
-		t.Errorf("second.yml missing from %v", byName)
+	if _, ok := byName["company.team-second.yaml"]; !ok {
+		t.Errorf("second.yaml missing from %v", byName)
 	}
 }
 
 func TestFlowsFromZip_WrapperStillReturnsSourcesOnly(t *testing.T) {
 	archive := buildFlowZip(t, map[string]string{
-		"company.team/only.yaml": flowSource("only"),
+		"company.team-only.yml": flowSource("only"),
 	})
 
 	sources, skipped, err := flowsFromZip(archive)
@@ -401,5 +401,129 @@ func TestFlowsValidateByQueryCommand_KeepsUsageSilencedOnceRunning(t *testing.T)
 	}
 	if !cmd.SilenceUsage {
 		t.Error("a failure past the selection check must not print the help")
+	}
+}
+
+// TestTrimDocumentMarkers covers the join hazard: a stored flow source keeps
+// whatever the author wrote, and a leading "---" is ordinary YAML style.
+func TestTrimDocumentMarkers(t *testing.T) {
+	cases := []struct {
+		name   string
+		source string
+		want   string
+	}{
+		{"plain source is untouched", "id: a\nnamespace: n", "id: a\nnamespace: n"},
+		{"leading separator", "---\nid: a", "id: a"},
+		{"leading separator after a blank line", "\n---\nid: a", "id: a"},
+		{"trailing separator", "id: a\n---", "id: a"},
+		{"trailing end-of-document marker", "id: a\n...", "id: a"},
+		{"trailing newline", "id: a\n", "id: a"},
+		{"both ends", "---\nid: a\n...\n", "id: a"},
+		{"a --- inside a string is not a marker", "id: a\nmessage: \"---\"", "id: a\nmessage: \"---\""},
+		{"an indented --- is not a marker", "id: a\nmessage: |\n  ---", "id: a\nmessage: |\n  ---"},
+		{"only a separator", "---", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := trimDocumentMarkers(tc.source); got != tc.want {
+				t.Errorf("trimDocumentMarkers(%q) = %q, want %q", tc.source, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestValidateSourcesInBatches_StripsSeparatorsSoIndicesLineUp is the
+// regression test for the live failure: two valid flows, the second written
+// with a leading "---", produced a spurious "No content to map due to
+// end-of-input" on the second flow plus a phantom <index 2> row, because the
+// joined body split into three documents instead of two.
+func TestValidateSourcesInBatches_StripsSeparatorsSoIndicesLineUp(t *testing.T) {
+	var got string
+	server := &validateByQueryServer{
+		violate: func(body string) []map[string]any {
+			got = body
+			return nil
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	sources := []string{"id: first\nnamespace: n\n", "---\nid: second\nnamespace: n\n"}
+	if _, err := validateSourcesInBatches(client, sources, 10); err != nil {
+		t.Fatalf("validateSourcesInBatches error: %v", err)
+	}
+
+	if strings.Contains(got, "---\n---") {
+		t.Errorf("the joined body must not contain an empty document:\n%s", got)
+	}
+	if want := "id: first\nnamespace: n\n---\nid: second\nnamespace: n"; got != want {
+		t.Errorf("joined body =\n%q\nwant\n%q", got, want)
+	}
+}
+
+// A source can still hold a document separator we cannot strip — one in the
+// middle. Guessing which flow a shifted index belongs to would silently
+// mis-report, so the run fails instead.
+func TestValidateSourcesInBatches_RefusesToMapAnOutOfRangeIndex(t *testing.T) {
+	for _, index := range []int{2, -1} {
+		server := &validateByQueryServer{
+			violate: func(string) []map[string]any {
+				return []map[string]any{{"index": index, "constraints": "boom"}}
+			},
+		}
+		client := newTestClient(t, server.start(t))
+
+		_, err := validateSourcesInBatches(client, []string{"id: a\n", "id: b\n"}, 10)
+		if err == nil {
+			t.Fatalf("index %d: expected the desync to be reported", index)
+		}
+		if !strings.Contains(err.Error(), "cannot map validation results back to flows") {
+			t.Errorf("index %d: unexpected error: %v", index, err)
+		}
+	}
+}
+
+// The server's identity wins over what we parsed out of the source, so a row
+// is labelled correctly even when the source could not be read.
+func TestRunFlowsValidateByQuery_LabelsFromServerIdentity(t *testing.T) {
+	server := &validateByQueryServer{
+		// A source our own YAML read cannot get an id out of.
+		archive: buildFlowZip(t, map[string]string{
+			"company.team-mystery.yml": "id: [unterminated\n",
+		}),
+		violate: func(string) []map[string]any {
+			return []map[string]any{
+				{"index": 0, "constraints": "Illegal Flow source", "flow": "mystery", "namespace": "company.team"},
+			}
+		},
+	}
+	client := newTestClient(t, server.start(t))
+
+	var out bytes.Buffer
+	if err := runFlowsValidateByQuery(client, nil, validateBatchSize, newTableRenderer(&out)); err == nil {
+		t.Fatal("expected the unreadable flow to fail validation")
+	}
+	if !strings.Contains(out.String(), "company.team/mystery") {
+		t.Errorf("expected the server's identity as the label, got:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "company.team-mystery.yml") {
+		t.Errorf("the archive entry name should have been replaced:\n%s", out.String())
+	}
+}
+
+func TestFlowsValidateByQueryCommand_RejectsANonPositiveBatchSize(t *testing.T) {
+	for _, size := range []string{"0", "-5"} {
+		cmd := newFlowsValidateByQueryCommand()
+		_, err := executeCommand(cmd, "--all", "--batch-size", size)
+		if err == nil {
+			t.Errorf("--batch-size %s should be rejected", size)
+			continue
+		}
+		if !strings.Contains(err.Error(), "--batch-size must be at least 1") {
+			t.Errorf("--batch-size %s: unexpected error: %v", size, err)
+		}
+		if cmd.SilenceUsage {
+			t.Errorf("--batch-size %s: a flag mistake should print the help", size)
+		}
 	}
 }

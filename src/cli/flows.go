@@ -1089,8 +1089,14 @@ func validateSourcesInBatches(client *Client, sources []string, batchSize int) (
 
 	for start := 0; start < len(sources); start += batchSize {
 		end := min(start+batchSize, len(sources))
+		count := end - start
 
-		body := strings.Join(sources[start:end], "\n---\n")
+		documents := make([]string, 0, count)
+		for _, source := range sources[start:end] {
+			documents = append(documents, trimDocumentMarkers(source))
+		}
+
+		body := strings.Join(documents, "\n---\n")
 		batch, _, err := client.API.FlowsAPI.ValidateFlows(client.Ctx, client.Tenant).
 			Body(body).
 			Execute()
@@ -1099,12 +1105,56 @@ func validateSourcesInBatches(client *Client, sources []string, batchSize int) (
 		}
 
 		for _, violation := range batch {
-			violation.SetIndex(violation.GetIndex() + int32(start))
+			index := violation.GetIndex()
+			// The server numbered a document this batch did not send, which
+			// means the body split into more documents than it has sources.
+			// Every index in the batch is then suspect, so report nothing
+			// rather than attach results to the wrong flows.
+			if index < 0 || int(index) >= count {
+				return nil, fmt.Errorf(
+					"cannot map validation results back to flows: the server reported document %d of a %d-document request, "+
+						"which happens when a flow source contains its own YAML document separator; "+
+						"re-run with --batch-size 1 to validate one flow per request",
+					index, count)
+			}
+			violation.SetIndex(index + int32(start))
 			violations = append(violations, violation)
 		}
 	}
 
 	return violations, nil
+}
+
+// trimDocumentMarkers strips the YAML document markers around a single flow
+// source so that joining sources with "\n---\n" yields exactly one document
+// per source.
+//
+// A stored flow source keeps whatever the author wrote, and a leading "---" is
+// ordinary YAML style. Joined as-is it produces "---\n---", i.e. an empty
+// document, which shifts every later index in the batch by one and makes a
+// valid flow fail with "No content to map due to end-of-input".
+func trimDocumentMarkers(source string) string {
+	lines := strings.Split(source, "\n")
+
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	if start < len(lines) && strings.TrimRight(lines[start], " \t") == "---" {
+		start++
+	}
+
+	end := len(lines)
+	for end > start {
+		last := strings.TrimRight(lines[end-1], " \t")
+		if last == "" || last == "---" || last == "..." {
+			end--
+			continue
+		}
+		break
+	}
+
+	return strings.Join(lines[start:end], "\n")
 }
 
 // formatValidateResults renders the violations of a local `flows validate`
@@ -1128,9 +1178,6 @@ func formatValidateResults(violations []kestra.ValidateConstraintViolation, file
 func buildValidateResults(violations []kestra.ValidateConstraintViolation, seeds []ValidateResult) ([]ValidateResult, int) {
 	results := make([]ValidateResult, len(seeds))
 	copy(results, seeds)
-	for i := range results {
-		results[i].Success = true
-	}
 
 	unknownResults := make([]ValidateResult, 0)
 

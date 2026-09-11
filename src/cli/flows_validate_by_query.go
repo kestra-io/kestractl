@@ -73,6 +73,9 @@ draft-only flow is not validated at all.`,
 			case !all && len(filters) == 0:
 				cmd.SilenceUsage = false
 				return fmt.Errorf("a selection is required: use --namespace, --flow or --filter to scope the run, or --all to validate every flow of the tenant")
+			case batchSize < 1:
+				cmd.SilenceUsage = false
+				return fmt.Errorf("--batch-size must be at least 1, got %d", batchSize)
 			}
 
 			client, err := newClientFunc()
@@ -128,12 +131,25 @@ func runFlowsValidateByQuery(client *Client, filters []kestra.QueryFilter, batch
 	}
 
 	results, failed := buildValidateResults(violations, seeds)
+	relabelFromServerIdentity(results)
 
 	if len(results) == 0 {
 		fmt.Fprintln(renderer.ErrWriter(), "no flows matched the query")
 	}
 
 	return renderValidateResults(results, failed, "FLOW", renderer)
+}
+
+// relabelFromServerIdentity rewrites each row's label from the identity the
+// validate endpoint returned. The seed label is parsed out of the source, so
+// it is only as good as our own YAML read of it; the server's answer is
+// authoritative and covers a source we could not parse at all.
+func relabelFromServerIdentity(results []ValidateResult) {
+	for i := range results {
+		if results[i].Namespace != "" && results[i].FlowID != "" {
+			results[i].FilePath = results[i].Namespace + "/" + results[i].FlowID
+		}
+	}
 }
 
 // flowLabel names a row in the result table. A stored flow has no path, so it
@@ -155,9 +171,9 @@ func flowLabel(namespace, flowID, fallback string) string {
 // hyphen, that name cannot be split back apart unambiguously. The source is
 // authoritative anyway.
 //
-// This is only a seed. The validate endpoint returns the identity of every
-// source it was given, valid ones included, and that overwrites what is set
-// here; this is what a row falls back to if the server ever omits one.
+// This is only a seed: relabelFromServerIdentity replaces it with the identity
+// the validate endpoint returns, which is authoritative. It is what a row
+// falls back to when the server omits one.
 func flowIdentityFromSource(source string) (namespace, flowID string) {
 	var root struct {
 		ID        string `yaml:"id"`
