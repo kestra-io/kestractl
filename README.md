@@ -737,6 +737,39 @@ kestractl apps file-preview <view-id> --path /path/to/file --max-rows 50
 kestractl apps logs <view-id> --min-level ERROR --output-file app.log
 ```
 
+### Reusable Inputs (Enterprise Edition)
+
+A reusable inputs block is a named set of flow input definitions that flows reference through a `REUSABLE_INPUTS` input. Requires a Kestra EE **2.0.1 or later** server — earlier ones have no reusable-inputs routes and answer 404.
+
+`list` and `get` resolve namespace inheritance — a block defined in a parent namespace is visible from its children. `revisions`, `create`, `update` and `delete` do not: they act on the exact namespace given. So `update` on a namespace that only inherits a block creates a shadowing copy there instead of saving a new revision of the parent's — update the namespace `get --output json` reports.
+
+```bash
+# List the blocks visible from a namespace (alias: ls)
+kestractl reusable-inputs list my.namespace
+kestractl reusable-inputs list my.namespace --page 2 --size 20 --output json
+
+# Print a block's YAML source (aliases: show, describe)
+kestractl reusable-inputs get my.namespace my-block
+
+# Pin an older revision, with the server-managed fields
+kestractl reusable-inputs get my.namespace my-block --revision 1 --output json
+
+# List a block's revisions
+kestractl reusable-inputs revisions my.namespace my-block
+
+# Create a block (fails if it already exists)
+kestractl reusable-inputs create my.namespace my-block --file my-block.yaml
+
+# Save a new revision
+kestractl reusable-inputs update my.namespace my-block --file my-block.yaml
+
+# Delete a block (alias: rm)
+kestractl reusable-inputs delete my.namespace my-block --yes
+
+# List the namespaces that define at least one block
+kestractl reusable-inputs namespaces
+```
+
 ### Assets (Enterprise Edition)
 
 ```bash
