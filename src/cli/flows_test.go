@@ -858,6 +858,16 @@ func TestFlowsBulkUpdateCommand_MissingFile(t *testing.T) {
 	}
 }
 
+func TestFlowsBulkUpdateCommand_DeleteIsOptIn(t *testing.T) {
+	deleteFlag := newFlowsBulkUpdateCommand().Flags().Lookup("delete")
+	if deleteFlag == nil {
+		t.Fatal("expected --delete flag to exist")
+	}
+	if deleteFlag.DefValue != "false" {
+		t.Errorf("expected --delete to default to false, got %q", deleteFlag.DefValue)
+	}
+}
+
 func TestFlowsBulkUpdateCommand_ClientError(t *testing.T) {
 	f, err := os.CreateTemp("", "flows-*.yaml")
 	if err != nil {
