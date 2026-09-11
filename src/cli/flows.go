@@ -1731,8 +1731,8 @@ func newFlowsBulkUpdateCommand() *cobra.Command {
 		Use:   "bulk-update",
 		Short: "Update multiple flows from a YAML file (flows separated by ---).",
 		Long: `Create or update all flows defined in a multi-document YAML file.
-Flows already existing in the namespace but not present in the file will be deleted
-if --delete is set (default true).`,
+Flows already existing in the namespace but not present in the file can optionally
+be deleted with --delete.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
 				return err
@@ -1758,7 +1758,7 @@ if --delete is set (default true).`,
 
 	cmd.Flags().StringVarP(&filePath, "file", "f", "", "Path to YAML file with flows separated by --- (required)")
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Target namespace for all flows")
-	cmd.Flags().BoolVar(&deleteUnlisted, "delete", true, "Delete flows not present in the file")
+	cmd.Flags().BoolVar(&deleteUnlisted, "delete", false, "Delete flows not present in the file")
 	cmd.Flags().BoolVar(&allowNamespaceChild, "allow-namespace-child", false, "Allow updating flows in child namespaces")
 
 	return cmd
