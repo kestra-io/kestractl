@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 const testReusableInputsYAML = `id: my-block
@@ -77,6 +79,63 @@ func TestReusableInputsGetCommand_WrongArgCount(t *testing.T) {
 	}
 }
 
+func TestReusableInputsSaveCommands_MissingFileFlag(t *testing.T) {
+	for name, newCmd := range map[string]func() *cobra.Command{
+		"create": newReusableInputsCreateCommand,
+		"update": newReusableInputsUpdateCommand,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := executeCommand(newCmd(), "my.namespace", "my-block")
+			if err == nil {
+				t.Fatal("expected error when --file is missing")
+			}
+			if !strings.Contains(err.Error(), "--file is required") {
+				t.Fatalf("expected --file error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestReusableInputs_RefusedOnALegacyServer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/configs" {
+			t.Errorf("a 1.x server must not be called for reusable inputs, got %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"1.3.35"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	const want = "reusable inputs is only available on Kestra 2.0 or later (the server runs 1.3.35)"
+	client := newTestClient(t, server.URL)
+
+	var buf bytes.Buffer
+	calls := map[string]func() error{
+		"list": func() error { return runReusableInputsList(client, "my.namespace", 1, 100, newTableRenderer(&buf)) },
+		"get": func() error {
+			return runReusableInputsGet(client, "my.namespace", "my-block", nil, newTableRenderer(&buf))
+		},
+		"revisions": func() error {
+			return runReusableInputsRevisions(client, "my.namespace", "my-block", newTableRenderer(&buf))
+		},
+		"save": func() error {
+			return runReusableInputsSave(client, "my.namespace", "my-block", "unused.yaml", true, newTableRenderer(&buf))
+		},
+		"namespaces": func() error { return runReusableInputsNamespaces(client, newTableRenderer(&buf)) },
+		"delete": func() error {
+			return runReusableInputsDelete(client, "my.namespace", "my-block", false, strings.NewReader("y\n"), newTableRenderer(&buf))
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			err := call()
+			if err == nil || err.Error() != want {
+				t.Fatalf("got %v, want %q", err, want)
+			}
+		})
+	}
+}
+
 func TestRunReusableInputsList(t *testing.T) {
 	server, recorded := reusableInputsServer(t, http.StatusOK, `{"results":[
 		{"id":"child-block","namespace":"my.namespace","revision":2,"inputs":[{"id":"name","type":"STRING"}],"description":"Shared inputs"},
@@ -106,6 +165,20 @@ func TestRunReusableInputsList(t *testing.T) {
 	}
 	if !hasRowEndingWith(out, "parent-block", "-") {
 		t.Errorf("expected a dash for the missing description:\n%s", out)
+	}
+}
+
+func TestRunReusableInputsList_JSONRendersAnEmptyArrayForNoResults(t *testing.T) {
+	server, _ := reusableInputsServer(t, http.StatusOK, `{"results":null,"total":0}`)
+
+	var buf bytes.Buffer
+	if err := runReusableInputsList(newTestClient(t, server.URL), "my.namespace", 1, 100, newJSONRenderer(&buf)); err != nil {
+		t.Fatalf("runReusableInputsList error: %v", err)
+	}
+
+	// A null `results` must not surface as a JSON null.
+	if got := strings.TrimSpace(buf.String()); got != "[]" {
+		t.Errorf("output = %q, want %q", got, "[]")
 	}
 }
 
@@ -288,9 +361,13 @@ func TestRunReusableInputsDelete(t *testing.T) {
 }
 
 func TestRunReusableInputsDelete_CancelledPromptSkipsTheCall(t *testing.T) {
-	called := false
+	// Only DELETEs are counted: the Kestra 2.0 guard probes the configuration
+	// endpoint before the prompt, so any-request counting would always trip.
+	deleted := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called = true
+		if r.Method == http.MethodDelete {
+			deleted = true
+		}
 	}))
 	t.Cleanup(server.Close)
 
@@ -298,7 +375,7 @@ func TestRunReusableInputsDelete_CancelledPromptSkipsTheCall(t *testing.T) {
 	if err := runReusableInputsDelete(newTestClient(t, server.URL), "my.namespace", "my-block", false, strings.NewReader("n\n"), newTableRenderer(&buf)); err != nil {
 		t.Fatalf("runReusableInputsDelete error: %v", err)
 	}
-	if called {
+	if deleted {
 		t.Error("the API must not be called when the prompt is declined")
 	}
 	if !strings.Contains(buf.String(), "Cancelled.") {

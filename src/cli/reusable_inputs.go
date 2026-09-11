@@ -19,11 +19,12 @@ func newReusableInputsCommand() *cobra.Command {
 		Long: `Manage namespace-scoped reusable inputs blocks.
 
 A reusable inputs block is a named set of flow input definitions that flows
-reference through a REUSABLE_INPUTS input. Requires Kestra Enterprise Edition.
+reference through a REUSABLE_INPUTS input. Requires Kestra Enterprise Edition
+2.0.1 or later — earlier servers have no reusable-inputs routes.
 
 'list' and 'get' resolve namespace inheritance — a block defined in a parent
-namespace is visible from its children. 'revisions' and 'delete' do not: the
-block must live in the exact namespace given.`,
+namespace is visible from its children. 'revisions', 'create', 'update' and
+'delete' do not: they act on the exact namespace given.`,
 	}
 
 	cmd.AddCommand(newReusableInputsListCommand())
@@ -77,6 +78,9 @@ included — check the NAMESPACE column to see which namespace owns each block.`
 }
 
 func runReusableInputsList(client *Client, namespace string, page, size int, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	resp, err := client.Kestra.ReusableInputs().ListReusableInputs(client.Ctx, namespace, client.Tenant, &page, &size)
 	if err != nil {
 		return formatSDKError(err)
@@ -146,6 +150,9 @@ parent namespace — use --output json to see its owning namespace and revision.
 }
 
 func runReusableInputsGet(client *Client, namespace, id string, revision *int, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	block, err := client.Kestra.ReusableInputs().ReusableInputs(client.Ctx, namespace, id, client.Tenant, revision)
 	if err != nil {
 		return formatSDKError(err)
@@ -195,6 +202,9 @@ namespace given.`,
 }
 
 func runReusableInputsRevisions(client *Client, namespace, id string, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	revisions, err := client.Kestra.ReusableInputs().ListReusableInputsRevisions(client.Ctx, namespace, id, client.Tenant)
 	if err != nil {
 		return formatSDKError(err)
@@ -226,7 +236,12 @@ func newReusableInputsCreateCommand() *cobra.Command {
 		Short: "Create a reusable inputs block from a YAML file.",
 		Long: `Create a reusable inputs block from a YAML definition file.
 
-Fails if the block already exists — use 'update' to save a new revision.`,
+Fails if the block already exists in this exact namespace — use 'update' to
+save a new revision.
+
+Writes are not inheritance-resolved: a block inherited from a parent namespace
+does not count as existing here, so creating under the same id shadows it for
+this namespace and its children.`,
 		Example: `  kestractl reusable-inputs create my.namespace my-block --file my-block.yaml`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -257,7 +272,11 @@ func newReusableInputsUpdateCommand() *cobra.Command {
 		Short: "Update a reusable inputs block from a YAML file.",
 		Long: `Save a new revision of a reusable inputs block from a YAML definition file.
 
-The block is created if it does not exist yet.`,
+The block is created if it does not exist yet.
+
+Writes are not inheritance-resolved, unlike 'get': updating a namespace that
+only inherits a block creates a shadowing copy there rather than saving a new
+revision of the parent's. Update the namespace 'get --output json' reports.`,
 		Example: `  kestractl reusable-inputs update my.namespace my-block --file my-block.yaml`,
 		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -281,6 +300,9 @@ The block is created if it does not exist yet.`,
 }
 
 func runReusableInputsSave(client *Client, namespace, id, filePath string, failIfExists bool, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	// Sent verbatim: the server stores the bytes as the block's source, so a YAML round trip would reorder keys.
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -334,6 +356,9 @@ namespace given.`,
 }
 
 func runReusableInputsDelete(client *Client, namespace, id string, skipConfirm bool, in io.Reader, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	if !skipConfirm {
 		confirmed, err := confirm(in, os.Stderr,
 			fmt.Sprintf("Are you sure you want to delete reusable inputs block '%s' in namespace '%s'? [y/N]: ", id, namespace))
@@ -376,6 +401,9 @@ func newReusableInputsNamespacesCommand() *cobra.Command {
 }
 
 func runReusableInputsNamespaces(client *Client, renderer *Renderer) error {
+	if err := requireKestra2(client, "reusable inputs"); err != nil {
+		return err
+	}
 	namespaces, err := client.Kestra.ReusableInputs().ListReusableInputsNamespaces(client.Ctx, client.Tenant)
 	if err != nil {
 		return formatSDKError(err)

@@ -739,9 +739,9 @@ kestractl apps logs <view-id> --min-level ERROR --output-file app.log
 
 ### Reusable Inputs (Enterprise Edition)
 
-A reusable inputs block is a named set of flow input definitions that flows reference through a `REUSABLE_INPUTS` input.
+A reusable inputs block is a named set of flow input definitions that flows reference through a `REUSABLE_INPUTS` input. Requires a Kestra EE **2.0.1 or later** server — earlier ones have no reusable-inputs routes and answer 404.
 
-`list` and `get` resolve namespace inheritance — a block defined in a parent namespace is visible from its children. `revisions` and `delete` do not: the block must live in the exact namespace given.
+`list` and `get` resolve namespace inheritance — a block defined in a parent namespace is visible from its children. `revisions`, `create`, `update` and `delete` do not: they act on the exact namespace given. So `update` on a namespace that only inherits a block creates a shadowing copy there instead of saving a new revision of the parent's — update the namespace `get --output json` reports.
 
 ```bash
 # List the blocks visible from a namespace (alias: ls)
