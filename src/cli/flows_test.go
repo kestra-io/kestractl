@@ -858,6 +858,17 @@ func TestFlowsBulkUpdateCommand_MissingFile(t *testing.T) {
 	}
 }
 
+func TestFlowsBulkUpdateCommand_DeleteDefaultFalse(t *testing.T) {
+	cmd := newFlowsBulkUpdateCommand()
+	defaultVal, err := cmd.Flags().GetBool("delete")
+	if err != nil {
+		t.Fatalf("get delete flag: %v", err)
+	}
+	if defaultVal {
+		t.Fatal("bulk-update --delete should default to false (match namespace-sync)")
+	}
+}
+
 func TestFlowsBulkUpdateCommand_ClientError(t *testing.T) {
 	f, err := os.CreateTemp("", "flows-*.yaml")
 	if err != nil {
