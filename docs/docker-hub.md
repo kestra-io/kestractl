@@ -20,7 +20,7 @@ Source, full command reference and issue tracker:
 **[github.com/kestra-io/kestractl](https://github.com/kestra-io/kestractl)**
 
 ```bash
-docker run --rm kestra/kestractl:2 --help
+docker run --rm kestra/kestractl:latest --help
 ```
 
 ## Supported tags
@@ -30,18 +30,21 @@ variants:
 
 | Tag | Contents |
 | --- | --- |
-| `latest`, `2`, `2.0`, `2.0.0` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
-| `latest-static`, `2-static`, `2.0-static`, `2.0.0-static` | distroless, no shell — smallest surface, runs `kestractl` only |
+| `latest`, `X`, `X.Y`, `X.Y.Z` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
+| `latest-static`, `X-static`, `X.Y-static`, `X.Y.Z-static` | distroless, no shell — smallest surface, runs `kestractl` only |
 
-`latest`, `X` and `X.Y` follow the newest stable release. Pin `X.Y.Z` in CI if you want a
-release to stay put; a prerelease, should one be published, only ever moves `X`.
+`latest`, `X` and `X.Y` follow the newest stable release, so `:3` tracks the 3.x line and
+`:3.1` the 3.1 patches. Pin the full `X.Y.Z` in CI if you want a release to stay put; a
+prerelease, should one be published, only ever moves `X`.
+
+The full list of published tags is on the **Tags** tab above.
 
 The same images are published to GitHub Container Registry as
 `ghcr.io/kestra-io/kestractl`, with identical tags and digests.
 
 ## Kestra compatibility
 
-kestractl v2 targets Kestra 2.x and works against Kestra 1.3 for everyday commands
+The current major targets Kestra 2.x and works against Kestra 1.3 for everyday commands
 (flows, executions, namespace files, KV, namespaces); features that only exist in
 Kestra 2.0 are refused with a clear error on a 1.x server. Every supported version is
 exercised by the end-to-end test matrix on each run — the authoritative list lives in
@@ -60,7 +63,7 @@ docker run --rm \
   -e KESTRACTL_TENANT=main \
   -e KESTRACTL_USERNAME=admin@example.com \
   -e KESTRACTL_PASSWORD='...' \
-  kestra/kestractl:2 flows list
+  kestra/kestractl:latest flows list
 ```
 
 or mount a config file. The images run as a non-root user, so mount it at that user's
@@ -70,7 +73,7 @@ home: `/home/kestractl/.kestractl` (Alpine) or `/home/nonroot/.kestractl` (`-sta
 docker run --rm \
   -v ~/.kestractl:/home/kestractl/.kestractl:ro \
   -v "$PWD/flows:/flows:ro" \
-  kestra/kestractl:2 flows deploy /flows
+  kestra/kestractl:latest flows deploy /flows
 ```
 
 Settings resolve highest-to-lowest as command-line flags → `KESTRACTL_*` environment
@@ -85,7 +88,7 @@ Common variables: `KESTRACTL_HOST`, `KESTRACTL_TENANT`, `KESTRACTL_TOKEN`,
 
 ```yaml
 deploy-flows:
-  image: kestra/kestractl:2
+  image: kestra/kestractl:3
   variables:
     KESTRACTL_HOST: https://kestra.example.com
     KESTRACTL_TENANT: main
