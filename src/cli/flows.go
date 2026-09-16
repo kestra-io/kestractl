@@ -1550,21 +1550,173 @@ func parseFlowYAML(content string) (string, string, error) {
 	return namespace, flowID, nil
 }
 
-// replaceNamespaceInYAML modifies the namespace field in YAML content.
+// plainScalarStyle is an unquoted, unstyled scalar. yaml.Style's constants are
+// bit flags starting at 1, so the plain style has no name of its own.
+const plainScalarStyle yaml.Style = 0
+
+// errNamespaceSpan means the namespace value was found in the parsed document
+// but could not be pinned to an exact range of source text, so rewriting it
+// would be a guess.
+var errNamespaceSpan = errors.New("could not isolate the 'namespace' field in the flow YAML")
+
+// replaceNamespaceInYAML sets the top-level namespace field in YAML content.
+// It rewrites only the span of that one value, so key order, comments, blank
+// lines and indentation elsewhere in the document survive byte-for-byte — the
+// server persists whatever we send as the flow's source.
 func replaceNamespaceInYAML(content string, newNamespace string) (string, error) {
-	var payload map[string]any
-	if err := yaml.Unmarshal([]byte(content), &payload); err != nil {
+	encoded, err := encodeYAMLScalar(newNamespace)
+	if err != nil {
+		return "", err
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
 		return "", fmt.Errorf("invalid YAML content: %w", err)
 	}
 
-	payload["namespace"] = newNamespace
-
-	modified, err := yaml.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal modified YAML: %w", err)
+	root := yamlDocumentRoot(&doc)
+	if root == nil {
+		// Empty document: the namespace field is all there is to write.
+		return appendNamespaceLine(content, encoded), nil
+	}
+	if root.Kind != yaml.MappingNode {
+		return "", errors.New("flow YAML must be a mapping")
 	}
 
-	return string(modified), nil
+	// Only the top-level key: nested ones belong to tasks such as Subflow.
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "namespace" {
+			return spliceYAMLScalar(content, root.Content[i+1], encoded)
+		}
+	}
+
+	if root.Style&yaml.FlowStyle != 0 {
+		return "", errors.New("cannot add a 'namespace' field to a flow-style YAML mapping")
+	}
+	return appendNamespaceLine(content, encoded), nil
+}
+
+// encodeYAMLScalar renders value as a single-line YAML scalar, quoting it when
+// YAML syntax requires it.
+func encodeYAMLScalar(value string) (string, error) {
+	out, err := yaml.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("failed to encode namespace: %w", err)
+	}
+	encoded := strings.TrimSuffix(string(out), "\n")
+	if strings.ContainsAny(encoded, "\n\r") {
+		return "", fmt.Errorf("namespace %q cannot be written on a single line", value)
+	}
+	return encoded, nil
+}
+
+// yamlDocumentRoot unwraps a decoded document to its top-level node, returning
+// nil when the input held no document at all.
+func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
+	if node.Kind == yaml.DocumentNode {
+		if len(node.Content) == 0 {
+			return nil
+		}
+		return node.Content[0]
+	}
+	if node.Kind == 0 {
+		// Unmarshal left the node untouched: the input was empty or comments.
+		return nil
+	}
+	return node
+}
+
+// spliceYAMLScalar replaces the source text of node with encoded, leaving every
+// other byte of content — including the rest of node's own line — untouched.
+func spliceYAMLScalar(content string, node *yaml.Node, encoded string) (string, error) {
+	if node.Kind != yaml.ScalarNode {
+		return "", errors.New("flow YAML must contain a scalar 'namespace' field")
+	}
+
+	lines := strings.Split(content, "\n")
+	if node.Line < 1 || node.Line > len(lines) {
+		return "", errNamespaceSpan
+	}
+	line := lines[node.Line-1]
+	start := node.Column - 1
+	if start < 0 || start >= len(line) {
+		return "", errNamespaceSpan
+	}
+
+	end, err := yamlScalarEnd(line, start, node)
+	if err != nil {
+		return "", err
+	}
+	// Never rewrite on a guess at where the token ended: the span has to parse
+	// back to the very scalar the document decoded.
+	if !isYAMLScalar(line[start:end], node.Value) {
+		return "", errNamespaceSpan
+	}
+
+	lines[node.Line-1] = line[:start] + encoded + line[end:]
+	return strings.Join(lines, "\n"), nil
+}
+
+// yamlScalarEnd returns the index just past the scalar that node occupies,
+// which begins at start on line.
+func yamlScalarEnd(line string, start int, node *yaml.Node) (int, error) {
+	switch node.Style {
+	case plainScalarStyle:
+		// A plain scalar is its own source text, minus the trailing whitespace
+		// the parser stripped; overrunning the line means it spanned lines.
+		end := start + len(node.Value)
+		if end > len(line) {
+			return 0, errNamespaceSpan
+		}
+		return end, nil
+	case yaml.SingleQuotedStyle, yaml.DoubleQuotedStyle:
+		return quotedScalarEnd(line, start)
+	default:
+		// Literal and folded scalars span lines by definition.
+		return 0, errors.New("unsupported style for the 'namespace' field")
+	}
+}
+
+// quotedScalarEnd returns the index just past the closing quote of the quoted
+// scalar starting at start. Inside single quotes a doubled quote escapes one;
+// inside double quotes a backslash escapes the next character.
+func quotedScalarEnd(line string, start int) (int, error) {
+	quote := line[start]
+	for i := start + 1; i < len(line); i++ {
+		switch {
+		case quote == '"' && line[i] == '\\':
+			i++ // skip the escaped character
+		case line[i] == quote:
+			if quote == '\'' && i+1 < len(line) && line[i+1] == '\'' {
+				i++ // an escaped quote, not the end of the scalar
+				continue
+			}
+			return i + 1, nil
+		}
+	}
+	return 0, errors.New("unterminated 'namespace' field")
+}
+
+// isYAMLScalar reports whether text parses to exactly the scalar value want.
+func isYAMLScalar(text string, want string) bool {
+	var node yaml.Node
+	if err := yaml.Unmarshal([]byte(text), &node); err != nil {
+		return false
+	}
+	root := yamlDocumentRoot(&node)
+	return root != nil && root.Kind == yaml.ScalarNode && root.Value == want
+}
+
+// appendNamespaceLine adds a top-level namespace key to a document lacking one.
+func appendNamespaceLine(content string, encoded string) string {
+	line := "namespace: " + encoded + "\n"
+	if content == "" {
+		return line
+	}
+	if strings.HasSuffix(content, "\n") {
+		return content + line
+	}
+	return content + "\n" + line
 }
 
 func parseFlowIds(args []string) ([]kestra.IdWithNamespace, error) {
