@@ -52,17 +52,18 @@ Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to bo
 Docker Hub and GitHub Container Registry:
 
 ```bash
-docker run --rm kestra/kestractl:2 --help
-docker run --rm ghcr.io/kestra-io/kestractl:2 --help
+docker run --rm kestra/kestractl:latest --help
+docker run --rm ghcr.io/kestra-io/kestractl:latest --help
 ```
 
 | Tag | Contents |
 | --- | --- |
-| `latest`, `2`, `2.0`, `2.0.0` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
-| `latest-static`, `2-static`, `2.0-static`, `2.0.0-static` | distroless, no shell — smallest surface, runs `kestractl` only |
+| `latest`, `X`, `X.Y`, `X.Y.Z` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
+| `latest-static`, `X-static`, `X.Y-static`, `X.Y.Z-static` | distroless, no shell — smallest surface, runs `kestractl` only |
 
-`latest`, `X` and `X.Y` follow the newest stable release. Pin `X.Y.Z` in CI if you want a
-release to stay put; a prerelease, should one be published, only ever moves `X`.
+`latest`, `X` and `X.Y` follow the newest stable release, so `:3` tracks the 3.x line and
+`:3.1` the 3.1 patches. Pin the full `X.Y.Z` in CI if you want a release to stay put; a
+prerelease, should one be published, only ever moves `X`.
 
 Configure it either with `KESTRACTL_*` environment variables:
 
@@ -72,7 +73,7 @@ docker run --rm \
   -e KESTRACTL_TENANT=main \
   -e KESTRACTL_USERNAME=admin@example.com \
   -e KESTRACTL_PASSWORD='...' \
-  kestra/kestractl:2 flows list
+  kestra/kestractl:latest flows list
 ```
 
 or by mounting a config file. The images run as a non-root user, so mount it at that
@@ -83,14 +84,14 @@ user's home: `/home/kestractl/.kestractl` (Alpine) or `/home/nonroot/.kestractl`
 docker run --rm \
   -v ~/.kestractl:/home/kestractl/.kestractl:ro \
   -v "$PWD/flows:/flows:ro" \
-  kestra/kestractl:2 flows deploy /flows
+  kestra/kestractl:latest flows deploy /flows
 ```
 
 Deploying flows from GitLab CI:
 
 ```yaml
 deploy-flows:
-  image: kestra/kestractl:2
+  image: kestra/kestractl:3
   variables:
     KESTRACTL_HOST: https://kestra.example.com
     KESTRACTL_TENANT: main
