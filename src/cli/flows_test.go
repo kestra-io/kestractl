@@ -924,6 +924,14 @@ func TestReplaceNamespaceInYAML_PreservesSource(t *testing.T) {
 			want:         "id: my-flow\nnamespace: new.ns\n",
 		},
 		{
+			// Guards the FlowStyle bit test: a tag is a style flag too, but a
+			// tagged mapping is still block style and can take a new line.
+			name:         "adds the key to a tagged block mapping",
+			yaml:         "!!map\nid: my-flow\n",
+			newNamespace: "new.ns",
+			want:         "!!map\nid: my-flow\nnamespace: new.ns\n",
+		},
+		{
 			name:         "adds the key to a document with no trailing newline",
 			yaml:         "id: my-flow",
 			newNamespace: "new.ns",
