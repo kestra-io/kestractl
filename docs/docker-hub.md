@@ -1,3 +1,14 @@
+<!--
+  Source text for the Docker Hub *Overview* of kestra/kestractl.
+
+  Nothing syncs this file to Docker Hub. After editing it, paste the whole file
+  into the Overview field at https://hub.docker.com/repository/docker/kestra/kestractl/general
+  (repository admin rights required). Keep every link absolute -- relative paths
+  404 there -- and the file under 25,000 characters, Docker Hub's cap.
+
+  This comment does not render, so it is safe to paste along with the rest.
+-->
+
 # kestractl
 
 The official command-line interface for [Kestra](https://kestra.io) — manage flows,
