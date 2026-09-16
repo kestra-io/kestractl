@@ -138,6 +138,7 @@ jobs:
         uses: regclient/actions/regctl-installer@main
 
       - name: Add rolling Docker tags
+        id: rolling
         if: steps.target.outputs.dry_run == 'false'
         env:
           TAG: ${{ steps.target.outputs.tag }}
@@ -148,6 +149,7 @@ jobs:
 
           if ! printf '%s' "$triple" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::notice::$TAG is not a version tag - no rolling tags"
+            echo "stable=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -157,6 +159,7 @@ jobs:
           else
             stable=false
           fi
+          echo "stable=$stable" >> "$GITHUB_OUTPUT"
 
           minor="${triple%.*}"
           major="${minor%.*}"
@@ -183,6 +186,29 @@ jobs:
               done
             done
           done
+
+      # Docker Hub's overview and one-line summary are repository metadata, not part
+      # of any image: the OCI labels GoReleaser stamps on the manifest never reach the
+      # listing page, which is why it renders blank until something calls the Docker
+      # Hub API. This step does that from docs/docker-hub.md, an image-focused page
+      # rather than README.md -- the README is well past Docker Hub's 25,000-character
+      # full_description cap, and its relative links would all 404 there.
+      #
+      # Stable releases only. The overview describes the tags a plain `docker pull`
+      # resolves to, and a prerelease deliberately moves neither `:latest` nor `:X.Y`,
+      # so letting one rewrite this page would describe tags that do not exist yet.
+      - name: Sync the Docker Hub description
+        if: steps.target.outputs.dry_run == 'false' && steps.rolling.outputs.stable == 'true'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # Must be a password or a PAT with write scope; a read-only PAT logs in fine
+          # for the image push above but 401s on this API.
+          password: ${{ secrets.DOCKERHUB_PASSWORD || secrets.DOCKERHUB_TOKEN }}
+          repository: kestra/kestractl
+          short-description: "Official command-line interface for Kestra"
+          readme-filepath: ./docs/docker-hub.md
+          enable-url-completion: true
 
       - name: Slack notification
         if: success()
