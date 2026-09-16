@@ -835,6 +835,141 @@ func TestReplaceNamespaceInYAML(t *testing.T) {
 	}
 }
 
+// TestReplaceNamespaceInYAML_PreservesSource guards #160: the server persists
+// what we send as the flow's source, so everything but the namespace value has
+// to come back out byte-for-byte.
+func TestReplaceNamespaceInYAML_PreservesSource(t *testing.T) {
+	tests := []struct {
+		name         string
+		yaml         string
+		newNamespace string
+		want         string
+	}{
+		{
+			name: "keeps key order, comments, blank lines and indentation",
+			yaml: "# Deployed by CI\n" +
+				"id: my-flow\n" +
+				"namespace: old.ns  # overridden at deploy time\n" +
+				"\n" +
+				"description: |\n" +
+				"  A multi-line\n" +
+				"  description\n" +
+				"\n" +
+				"tasks:\n" +
+				"  # greet the user\n" +
+				"  - id: hello\n" +
+				"    type: io.kestra.plugin.core.log.Log\n" +
+				"    message: \"hi\"\n",
+			newNamespace: "new.ns",
+			want: "# Deployed by CI\n" +
+				"id: my-flow\n" +
+				"namespace: new.ns  # overridden at deploy time\n" +
+				"\n" +
+				"description: |\n" +
+				"  A multi-line\n" +
+				"  description\n" +
+				"\n" +
+				"tasks:\n" +
+				"  # greet the user\n" +
+				"  - id: hello\n" +
+				"    type: io.kestra.plugin.core.log.Log\n" +
+				"    message: \"hi\"\n",
+		},
+		{
+			name:         "leaves a nested Subflow namespace alone",
+			yaml:         "id: my-flow\nnamespace: old.ns\ntasks:\n  - id: sub\n    type: io.kestra.plugin.core.flow.Subflow\n    namespace: other.ns\n    flowId: child\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace: new.ns\ntasks:\n  - id: sub\n    type: io.kestra.plugin.core.flow.Subflow\n    namespace: other.ns\n    flowId: child\n",
+		},
+		{
+			name:         "replaces a double-quoted value",
+			yaml:         "id: my-flow\nnamespace: \"old.ns\"  # quoted\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace: new.ns  # quoted\n",
+		},
+		{
+			name:         "replaces a single-quoted value",
+			yaml:         "id: my-flow\nnamespace: 'old.ns'\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace: new.ns\n",
+		},
+		{
+			name:         "replaces a namespace given as the first key",
+			yaml:         "namespace: old.ns\nid: my-flow\n",
+			newNamespace: "new.ns",
+			want:         "namespace: new.ns\nid: my-flow\n",
+		},
+		{
+			name:         "replaces a value on its own line",
+			yaml:         "id: my-flow\nnamespace:\n  old.ns\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace:\n  new.ns\n",
+		},
+		{
+			name:         "quotes a value that needs it",
+			yaml:         "id: my-flow\nnamespace: old.ns\n",
+			newNamespace: "yes",
+			want:         "id: my-flow\nnamespace: \"yes\"\n",
+		},
+		{
+			name:         "keeps CRLF line endings",
+			yaml:         "id: my-flow\r\nnamespace: old.ns\r\ntasks: []\r\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\r\nnamespace: new.ns\r\ntasks: []\r\n",
+		},
+		{
+			name:         "adds the key when the document lacks one",
+			yaml:         "id: my-flow\n",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace: new.ns\n",
+		},
+		{
+			name:         "adds the key to a document with no trailing newline",
+			yaml:         "id: my-flow",
+			newNamespace: "new.ns",
+			want:         "id: my-flow\nnamespace: new.ns\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := replaceNamespaceInYAML(tt.yaml, tt.newNamespace)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("source not preserved:\n--- got ---\n%s\n--- want ---\n%s", got, tt.want)
+			}
+			ns, _, err := parseFlowYAML(got)
+			if err != nil {
+				t.Fatalf("result does not parse: %v", err)
+			}
+			if ns != tt.newNamespace {
+				t.Fatalf("expected namespace %q, got %q", tt.newNamespace, ns)
+			}
+		})
+	}
+}
+
+func TestReplaceNamespaceInYAML_Rejects(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{name: "not a mapping", yaml: "- id: my-flow\n"},
+		{name: "non-scalar namespace", yaml: "id: my-flow\nnamespace:\n  - old.ns\n"},
+		{name: "flow-style mapping without a namespace", yaml: "{id: my-flow}\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := replaceNamespaceInYAML(tt.yaml, "new.ns"); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
 func executeCommand(cmd *cobra.Command, args ...string) (string, error) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
