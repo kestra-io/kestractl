@@ -928,7 +928,10 @@ func runExecutionsList(client *Client, namespace, flowID, state string, page, si
 }
 
 func newExecutionsRunCommand() *cobra.Command {
-	var wait bool
+	var (
+		wait   bool
+		inputs []string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "run <namespace> <flow_id>",
@@ -936,9 +939,14 @@ func newExecutionsRunCommand() *cobra.Command {
 		Long: `Trigger a flow execution in the specified namespace.
 
 The command returns immediately by default. Use --wait to poll until
-the execution completes (SUCCESS, FAILED, or other terminal state).`,
+the execution completes (SUCCESS, FAILED, or other terminal state).
+
+Flow inputs are passed with --input key=value (repeatable).`,
 		Example: `  # Trigger a flow
 	  kestractl executions run my.namespace my-flow
+
+	  # Trigger a flow with inputs
+	  kestractl executions run my.namespace my-flow --input branch=main --input dry_run=true
 
 	  # Trigger and wait for completion
 	  kestractl executions run my.namespace my-flow --wait
@@ -953,21 +961,26 @@ the execution completes (SUCCESS, FAILED, or other terminal state).`,
 				return err
 			}
 			renderer.WithErrWriter(cmd.ErrOrStderr())
+			parsedInputs, err := parseBlueprintInputs(inputs)
+			if err != nil {
+				return err
+			}
 			client, err := NewClient()
 			if err != nil {
 				return err
 			}
 
-			return runExecutionsRun(client, args[0], args[1], wait, renderer)
+			return runExecutionsRun(client, args[0], args[1], wait, parsedInputs, renderer)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&wait, "wait", "w", false, "Wait for execution to complete")
+	cmd.Flags().StringArrayVarP(&inputs, "input", "i", nil, "Flow input as key=value (repeatable)")
 
 	return cmd
 }
 
-func runExecutionsRun(client *Client, namespace, flowID string, wait bool, renderer *Renderer) error {
+func runExecutionsRun(client *Client, namespace, flowID string, wait bool, inputs map[string]any, renderer *Renderer) error {
 	if wait {
 		// Progress goes to stderr so it never mixes into the rendered output,
 		// which would make `--output json` unparseable.
@@ -979,9 +992,11 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, rende
 	// call, so the compat rewrite is opted out of here rather than guessed at in
 	// the transport (see withoutExecutionActionRewrite).
 	ctx := withoutExecutionActionRewrite(client.Ctx)
-	resp, _, err := client.API.ExecutionsAPI.CreateExecution(ctx, namespace, flowID, client.Tenant).
-		Wait(wait).
-		Execute()
+	req := client.API.ExecutionsAPI.CreateExecution(ctx, namespace, flowID, client.Tenant).Wait(wait)
+	if len(inputs) > 0 {
+		req = req.FormData(inputs)
+	}
+	resp, _, err := req.Execute()
 
 	// Handle SDK type mismatch bugs
 	var execution map[string]any
