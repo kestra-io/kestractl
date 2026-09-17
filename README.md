@@ -376,6 +376,9 @@ draft-only flow is not validated at all.
 # Trigger a flow execution (aliases: trigger, execute)
 kestractl executions run my.namespace my-flow
 
+# Trigger a flow with inputs (repeatable)
+kestractl executions run my.namespace my-flow --input branch=main --input dry_run=true
+
 # Trigger and wait for completion
 kestractl executions run my.namespace my-flow --wait
 
