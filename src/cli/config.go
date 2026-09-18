@@ -28,7 +28,7 @@ func newConfigShowCommand() *cobra.Command {
 		Use:   "show",
 		Short: "Show current configuration.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			manager := NewAuthManager("")
+			manager := NewAuthManagerForFile(resolveConfigFile(cmd))
 			contexts, defaultName, err := manager.ListContexts()
 			if err != nil {
 				return err
@@ -99,7 +99,7 @@ func newConfigAddCommand() *cobra.Command {
 				return errors.New("at least token or username+password is required (use --token or --username and --password)")
 			}
 
-			manager := NewAuthManager("")
+			manager := NewAuthManagerForFile(resolveConfigFile(cmd))
 			ctx := AuthContext{
 				Name:       name,
 				Host:       host,
@@ -147,7 +147,7 @@ func newConfigRemoveCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			manager := NewAuthManager("")
+			manager := NewAuthManagerForFile(resolveConfigFile(cmd))
 			if err := manager.DeleteContext(name); err != nil {
 				return err
 			}
@@ -166,7 +166,7 @@ func newConfigUseCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 
-			manager := NewAuthManager("")
+			manager := NewAuthManagerForFile(resolveConfigFile(cmd))
 			if err := manager.SetDefaultContext(name); err != nil {
 				return err
 			}

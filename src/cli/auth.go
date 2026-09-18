@@ -50,6 +50,16 @@ func NewAuthManager(configDir string) *AuthManager {
 	}
 }
 
+// NewAuthManagerForFile returns an AuthManager backed by the exact config
+// file path given, honoring --config/KESTRACTL_CONFIG instead of always
+// resolving to $HOME/.kestractl/config.yaml.
+func NewAuthManagerForFile(configFile string) *AuthManager {
+	return &AuthManager{
+		configDir:  filepath.Dir(configFile),
+		configFile: configFile,
+	}
+}
+
 func (m *AuthManager) ensureConfigDir() error {
 	return os.MkdirAll(m.configDir, 0o755)
 }

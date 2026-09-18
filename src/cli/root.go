@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/spf13/pflag"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -154,6 +155,26 @@ Compatibility:
 	root.AddCommand(newReusableInputsCommand())
 
 	return root
+}
+
+// resolveConfigFile returns the config file that config-mutating commands
+// (config add/use/remove) should read and write, honoring --config the same
+// way initializeConfig resolves it for reads (issue #179: these commands
+// used to hardcode $HOME/.kestractl/config.yaml, ignoring the flag).
+func resolveConfigFile(cmd *cobra.Command) string {
+	if cfgFile := cmd.Flag(FlagConfig).Value.String(); cfgFile != "" {
+		return cfgFile
+	}
+
+	if used := viper.ConfigFileUsed(); used != "" {
+		return used
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".kestractl", "config.yaml")
+	}
+	return filepath.Join(home, ".kestractl", "config.yaml")
 }
 
 // initializeConfig sets up Viper to handle configuration from multiple sources.
