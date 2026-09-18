@@ -4,10 +4,12 @@ set -euo pipefail
 BINARY_NAME="${BINARY_NAME:-kestractl}"
 GITHUB_REPO="${GITHUB_REPO:-kestra-io/kestractl}"
 INSTALL_DIR="${INSTALL_DIR:-}"
-# The release line installed when VERSION is unset or "latest". kestractl v2
+# The release line installed when VERSION is unset or "latest". kestractl v3
 # targets Kestra 2.x and stays usable against Kestra 1.3, so it is the default;
 # VERSION=1 selects the legacy v1 line, VERSION=x.y.z an exact release.
-DEFAULT_MAJOR="2"
+# kestractl's own major version tracks its own breaking changes, not Kestra's —
+# bump this whenever a <type>!: commit moves main to a new major line.
+DEFAULT_MAJOR="3"
 VERSION="${VERSION:-}"
 # Release metadata comes from the GitHub REST API, which is rate-limited per IP
 # for anonymous callers. CI runners share egress IPs and do hit that limit
@@ -105,10 +107,10 @@ if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
   VERSION="$DEFAULT_MAJOR"
 fi
 if echo "$VERSION" | grep -qE '^v?[0-9]+$'; then
-  # Bare major version (e.g. VERSION=2 or VERSION=v2): resolve to the newest
+  # Bare major version (e.g. VERSION=3 or VERSION=v3): resolve to the newest
   # release of that major line, prereleases included. GitHub's own "latest"
-  # release is not used: it is a single repo-wide pointer, and v1 and v2 are
-  # released independently from their own branches.
+  # release is not used: it is a single repo-wide pointer, and v1 and the
+  # current major line are released independently from their own branches.
   major="$(echo "$VERSION" | sed 's/^v//')"
   list_json="$(mktemp)"
   download "https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100" "$list_json"
