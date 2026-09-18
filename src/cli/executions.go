@@ -1035,14 +1035,21 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 			full, _, ferr := client.API.ExecutionsAPI.Execution(client.Ctx, id, client.Tenant).Execute()
 			switch {
 			case ferr == nil && full != nil:
-				execution["taskRunList"] = taskRunListToMaps(full.GetTaskRunList())
+				if trl := taskRunListToMaps(full.GetTaskRunList()); trl != nil {
+					execution["taskRunList"] = trl
+				}
 			case ferr != nil:
 				// Same SDK/API type-mismatch class as tryParseExecutionFromError's
 				// other callers: the raw success body still has taskRunList even
 				// when the SDK's strict unmarshal errors on an unrelated field.
-				if raw := tryParseExecutionFromError(ferr); raw != nil {
-					if trl, ok := raw["taskRunList"].([]any); ok {
-						execution["taskRunList"] = rawTaskRunListToMaps(trl)
+				raw := tryParseExecutionFromError(ferr)
+				if raw == nil {
+					fmt.Fprintf(renderer.ErrWriter(), "Warning: could not re-fetch execution %s to show task runs: %v\n", id, ferr)
+					break
+				}
+				if rawTrl, ok := raw["taskRunList"].([]any); ok {
+					if trl := rawTaskRunListToMaps(rawTrl); trl != nil {
+						execution["taskRunList"] = trl
 					}
 				}
 			}
@@ -1068,6 +1075,9 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 // taskRunListToMaps converts SDK TaskRun entries into the map shape used for
 // both JSON output and table rendering.
 func taskRunListToMaps(taskRuns []kestra.TaskRun) []map[string]any {
+	if len(taskRuns) == 0 {
+		return nil
+	}
 	list := make([]map[string]any, len(taskRuns))
 	for i, tr := range taskRuns {
 		state := tr.GetState()
@@ -1084,6 +1094,9 @@ func taskRunListToMaps(taskRuns []kestra.TaskRun) []map[string]any {
 // used by tryParseExecutionFromError's callers) into the same map shape
 // taskRunListToMaps produces from the typed SDK model.
 func rawTaskRunListToMaps(raw []any) []map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
 	list := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
 		tr, ok := item.(map[string]any)
