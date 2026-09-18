@@ -47,12 +47,13 @@ jobs:
       # GITHUB_TOKEN: the installer reads release metadata from the GitHub REST API,
       # which is rate-limited per IP for anonymous callers. Runners share egress IPs,
       # so without a token these steps intermittently fail with HTTP 403.
-      - name: Check installer defaults to the v2 line
+      - name: Check installer defaults to the current major line
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          default_major="$(grep -oE 'DEFAULT_MAJOR="[0-9]+"' ./install-scripts/install.sh | grep -oE '[0-9]+')"
           cat ./install-scripts/install.sh | INSTALL_DIR=./ bash
-          ./kestractl version | grep -E '(^|[^0-9.])2\.[0-9]+\.[0-9]+'
+          ./kestractl version | grep -E "(^|[^0-9.])${default_major}\.[0-9]+\.[0-9]+"
       - name: Check installer is working when specifying the v1 line
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
