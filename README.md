@@ -642,7 +642,25 @@ kestractl plugins download 1.3.9 --from-config /etc/kestra/application.yaml
 
 # Preview the core plugins a config needs without downloading (pipes into download)
 kestractl plugins list 1.3.9 --from-config /etc/kestra/application.yaml
+
+# Download named plugins at the versions compatible with a Kestra version.
+# --compatible-for resolves each groupId:artifactId from the same catalog
+# `plugins list` prints, so no shell parsing is needed to pin one plugin.
+kestractl plugins download --compatible-for 2.0.2 \
+  --plugins io.kestra.storage:storage-s3 \
+  --plugins-dir ./plugins
+
+# The version argument does the same thing when --plugins is unversioned
+kestractl plugins download 2.0.2 --plugins io.kestra.storage:storage-s3
+
+# Download a single plugin by exact coordinates, or resolved from a Kestra version
+kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
+kestractl plugins get io.kestra.storage:storage-s3 --compatible-for 2.0.2
 ```
+
+An artifact that is not in the compatibility set for that Kestra version fails
+with a non-zero exit naming it. A coordinate that pins its own version keeps it;
+when `--compatible-for` was passed explicitly, the override is reported.
 
 ### Workers
 

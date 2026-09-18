@@ -82,6 +82,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var mavenPassword string
 	var pluginsList []string
 	var configPaths []string
+	var compatibleFor string
 
 	cmd := &cobra.Command{
 		Use:   "download [version]",
@@ -94,6 +95,17 @@ version argument is optional and the API is not called. The --plugins format mat
 the output of "kestractl plugins list", making it easy to pipe the two commands:
 
   kestractl plugins download --plugins "$(kestractl plugins list 1.3.9 --edition OSS)"
+
+Coordinates given to --plugins may omit the version (groupId:artifactId). In that
+case --compatible-for <kestra-version> — or the version argument, which means the
+same thing — resolves each one against the compatibility catalog "plugins list"
+prints, so a single plugin can be pinned to a Kestra version in one command:
+
+  kestractl plugins download --compatible-for 2.0.2 --plugins io.kestra.storage:storage-s3
+
+An artifact absent from that version's compatibility set is an error naming it.
+A coordinate that pins its own version keeps it, and the ignored --compatible-for
+is reported. --edition still filters the catalog used for resolution.
 
 By default plugins are fetched from Maven Central. Use --maven-repository to
 point at a custom registry (mirror, internal Nexus/Artifactory, etc.).
@@ -140,6 +152,14 @@ Authentication:
 			if len(pluginsList) > 0 && len(configPaths) > 0 {
 				return fmt.Errorf("--plugins and --from-config are mutually exclusive")
 			}
+			if compatibleFor != "" {
+				if len(configPaths) > 0 {
+					return fmt.Errorf("--compatible-for and --from-config are mutually exclusive: --from-config already resolves versions from the version argument")
+				}
+				if len(pluginsList) == 0 {
+					return fmt.Errorf("--compatible-for requires --plugins: without it, pass the Kestra version as the argument to download the whole compatibility set")
+				}
+			}
 			version := ""
 			if len(args) > 0 {
 				version = args[0]
@@ -147,7 +167,7 @@ Authentication:
 			var explicit []pluginArtifact
 			switch {
 			case len(pluginsList) > 0:
-				explicit, err = parsePluginCoordinates(pluginsList)
+				explicit, err = resolveDownloadPlugins(cmd.OutOrStdout(), pluginsList, compatibleFor, version, license)
 			case len(configPaths) > 0:
 				explicit, err = corePluginsFromConfig(configPaths, resolveVersion(version))
 			}
@@ -176,7 +196,8 @@ Authentication:
 	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
-	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup)")
+	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup). The version may be omitted when --compatible-for or a version argument is given")
+	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve unversioned --plugins coordinates against, using the same compatibility catalog as \"plugins list\"")
 	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Download only the core plugins (storage, secret manager, queue/repository backend) required by one or more Kestra configuration files; requires a version argument")
 	return cmd
 }
@@ -235,16 +256,24 @@ func newPluginsGetCommand() *cobra.Command {
 	var mavenRepository string
 	var mavenUsername string
 	var mavenPassword string
+	var compatibleFor string
 
 	cmd := &cobra.Command{
-		Use:          "get <groupId:artifactId:version>",
+		Use:          "get <groupId:artifactId[:version]>",
 		Short:        "Download a single plugin by Maven coordinates",
 		SilenceUsage: true,
 		Long: `Download a single plugin JAR by its Maven coordinates (groupId:artifactId:version)
 into --plugins-dir, without downloading the full compatibility set for a version.
-This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.`,
+This lets users install a single plugin into their plugins/ directory without pulling every plugin for a Kestra version.
+
+The version may be omitted (groupId:artifactId) when --compatible-for <kestra-version>
+is given: it is then resolved from the same compatibility catalog "plugins list"
+prints. An artifact absent from that set is an error naming it.`,
 		Example: `  # Download only the Kafka plugin version 1.6.0
   kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
+
+  # Download the S3 storage plugin at the version compatible with Kestra 2.0.2
+  kestractl plugins get io.kestra.storage:storage-s3 --compatible-for 2.0.2
 
   # Download an Enterprise Edition (EE) plugin from a custom registry with credentials
   kestractl plugins get io.kestra.ee:ee-plugin:1.6.0 \
@@ -254,7 +283,7 @@ This lets users install a single plugin into their plugins/ directory without pu
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsGet(cmd.OutOrStdout(), args[0], pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
+			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -265,6 +294,7 @@ This lets users install a single plugin into their plugins/ directory without pu
 	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve the coordinate's version against when it is given as groupId:artifactId")
 
 	return cmd
 }
@@ -466,11 +496,16 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	return nil
 }
 
-func runPluginsGet(out io.Writer, coordinate string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
-	p, err := parsePluginCoordinate(coordinate)
+func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
+	p, err := parsePluginCoordinate(coordinate, true)
 	if err != nil {
 		return err
 	}
+	resolved, err := resolvePluginVersions(out, []pluginArtifact{p}, compatibleFor, compatibleFor != "", "")
+	if err != nil {
+		return err
+	}
+	p = resolved[0]
 
 	effectiveMavenBase := pluginsMavenBase
 	if mavenRepository != "" {
@@ -589,37 +624,45 @@ func validateCoordinateVersion(version string) error {
 // parsePluginCoordinate parses a single Maven-style plugin coordinate string
 // in the format "groupId:artifactId:version" into a pluginArtifact struct.
 // It returns an error if the coordinate is malformed or missing required parts.
-func parsePluginCoordinate(coord string) (pluginArtifact, error) {
-	if strings.Count(coord, ":") != 2 {
-		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
+// When allowUnversioned is set, "groupId:artifactId" is also accepted and yields
+// an artifact with an empty Version, to be filled in from the compatibility
+// catalogue by resolvePluginVersions.
+func parsePluginCoordinate(coord string, allowUnversioned bool) (pluginArtifact, error) {
+	expected := "expected groupId:artifactId:version"
+	if allowUnversioned {
+		expected = "expected groupId:artifactId:version or groupId:artifactId"
+	}
+	colons := strings.Count(coord, ":")
+	if colons != 2 && !(allowUnversioned && colons == 1) {
+		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %s", coord, expected)
 	}
 	parts := strings.SplitN(coord, ":", 3)
-	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
-		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: expected groupId:artifactId:version", coord)
-	}
 	for _, part := range parts {
+		if part == "" {
+			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %s", coord, expected)
+		}
 		if !validCoordinatePart.MatchString(part) {
 			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: parts may only contain letters, digits, '.', '-', or '_'", coord)
 		}
 	}
-	if err := validateCoordinateVersion(parts[2]); err != nil {
-		return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %w", coord, err)
+	artifact := pluginArtifact{GroupID: parts[0], ArtifactID: parts[1]}
+	if len(parts) == 3 {
+		if err := validateCoordinateVersion(parts[2]); err != nil {
+			return pluginArtifact{}, fmt.Errorf("invalid plugin coordinate %q: %w", coord, err)
+		}
+		artifact.Version = parts[2]
 	}
-	return pluginArtifact{
-		GroupID:    parts[0],
-		ArtifactID: parts[1],
-		Version:    parts[2],
-	}, nil
+	return artifact, nil
 }
 
 // parsePluginCoordinates parses a list of strings — each may be a single
 // "groupId:artifactId:version" coordinate or a space-separated list of them
 // (matching the output of "kestractl plugins list") — into pluginArtifact values.
-func parsePluginCoordinates(values []string) ([]pluginArtifact, error) {
+func parsePluginCoordinates(values []string, allowUnversioned bool) ([]pluginArtifact, error) {
 	var result []pluginArtifact
 	for _, v := range values {
 		for _, coord := range strings.Fields(v) {
-			artifact, err := parsePluginCoordinate(coord)
+			artifact, err := parsePluginCoordinate(coord, allowUnversioned)
 			if err != nil {
 				return nil, err
 			}
@@ -630,6 +673,88 @@ func parsePluginCoordinates(values []string) ([]pluginArtifact, error) {
 		return nil, fmt.Errorf("--plugins was set but no valid coordinates were found")
 	}
 	return result, nil
+}
+
+// resolvePluginVersions fills in the version of every coordinate that was given
+// without one, from the plugin compatibility catalogue for kestraVersion — the
+// same catalogue "kestractl plugins list <version>" prints.
+//
+// A coordinate that already pins a version is left untouched: the explicit
+// version wins. When the Kestra version came from an explicit --compatible-for
+// (compatibleForExplicit), that override is reported on warnOut, so it is never
+// silent. Piping "plugins list" output into --plugins alongside a version
+// argument is the same shape and stays quiet.
+//
+// An artifact that is absent from the compatibility set is an error naming it —
+// that is the whole point over grepping the list by hand.
+func resolvePluginVersions(warnOut io.Writer, coords []pluginArtifact, kestraVersion string, compatibleForExplicit bool, license string) ([]pluginArtifact, error) {
+	needsCatalog := false
+	for _, c := range coords {
+		if c.Version == "" {
+			needsCatalog = true
+			break
+		}
+	}
+
+	if needsCatalog && kestraVersion == "" {
+		for _, c := range coords {
+			if c.Version == "" {
+				return nil, fmt.Errorf("plugin coordinate %s:%s has no version — pass --compatible-for <kestra-version> to resolve it from the compatibility catalog, or give the full groupId:artifactId:version", c.GroupID, c.ArtifactID)
+			}
+		}
+	}
+
+	var catalog map[string]string
+	if needsCatalog {
+		resolved := resolveVersion(kestraVersion)
+		plugins, err := fetchPluginList(resolved, license)
+		if err != nil {
+			return nil, err
+		}
+		catalog = make(map[string]string, len(plugins))
+		for _, p := range plugins {
+			key := p.GroupID + ":" + p.ArtifactID
+			if _, seen := catalog[key]; !seen {
+				catalog[key] = p.Version
+			}
+		}
+	}
+
+	out := make([]pluginArtifact, len(coords))
+	copy(out, coords)
+	for i, c := range out {
+		key := c.GroupID + ":" + c.ArtifactID
+		if c.Version != "" {
+			if compatibleForExplicit {
+				fmt.Fprintf(warnOut, "[warn] %s pins version %s explicitly — --compatible-for %s is not applied to it\n", key, c.Version, kestraVersion)
+			}
+			continue
+		}
+		version, ok := catalog[key]
+		if !ok {
+			return nil, fmt.Errorf("plugin %s is not in the compatibility set for Kestra %s — check the artifact name with \"kestractl plugins list %s\"", key, kestraVersion, kestraVersion)
+		}
+		out[i].Version = version
+	}
+	return out, nil
+}
+
+// resolveDownloadPlugins parses the --plugins values of "plugins download" and
+// resolves any unversioned coordinate against the compatibility catalog for
+// compatibleFor, falling back to the positional version argument.
+func resolveDownloadPlugins(warnOut io.Writer, values []string, compatibleFor string, versionArg string, license string) ([]pluginArtifact, error) {
+	if compatibleFor != "" && versionArg != "" && resolveVersion(compatibleFor) != resolveVersion(versionArg) {
+		return nil, fmt.Errorf("conflicting Kestra versions: --compatible-for %s and version argument %s — pass only one", compatibleFor, versionArg)
+	}
+	coords, err := parsePluginCoordinates(values, true)
+	if err != nil {
+		return nil, err
+	}
+	kestraVersion := compatibleFor
+	if kestraVersion == "" {
+		kestraVersion = versionArg
+	}
+	return resolvePluginVersions(warnOut, coords, kestraVersion, compatibleFor != "", license)
 }
 
 // pluginFileName returns the Kestra-compatible filename for a plugin artifact.
