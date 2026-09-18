@@ -272,21 +272,23 @@ func normalizeHost(host string) string {
 // doRawRequest issues a request the generated SDK cannot express usefully and
 // returns the raw response body.
 //
-// Two kinds of endpoint need it: ones the SDK builds a URL for that the server
-// rejects (the path-less webhook, whose only SDK helpers append a trailing
-// segment answered with 404) and ones the SDK mistypes, where the typed decode
-// fails or silently rounds the payload before kestractl sees it (namespace
-// inherited variables — see issue #128). Callers decode the body themselves.
+// Three kinds of endpoint need it: ones the SDK builds a URL for that the
+// server rejects (the path-less webhook, whose only SDK helpers append a
+// trailing segment answered with 404), ones the SDK mistypes, where the typed
+// decode fails or silently rounds the payload before kestractl sees it
+// (namespace inherited variables — see issue #128), and ones the SDK has no
+// endpoint for at all (the tenant-scoped, filtered secrets search — see issue
+// #172). Callers decode the body themselves.
 //
 // The request reuses the SDK's resolved host, HTTP client (so the compat.go
 // shims still apply), default headers, and context-based authentication.
 // segments are the path below /api/v1/{tenant}/ and are escaped here, so a
 // namespace or flow id containing a slash or space cannot break out of its
-// position.
+// position. query, if non-nil, is appended as the URL's query string.
 //
 // Because that HTTP client is the shared compat transport, a request issued here
 // gets the same --verbose masked dump as any SDK call.
-func (c *Client) doRawRequest(method string, segments ...string) ([]byte, error) {
+func (c *Client) doRawRequest(method string, query url.Values, segments ...string) ([]byte, error) {
 	cfg := c.API.GetConfig()
 
 	base := ""
@@ -304,6 +306,9 @@ func (c *Client) doRawRequest(method string, segments ...string) ([]byte, error)
 		escaped = append(escaped, url.PathEscape(segment))
 	}
 	endpoint := base + "/api/v1/" + strings.Join(escaped, "/")
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
 
 	req, err := http.NewRequestWithContext(c.Ctx, method, endpoint, nil)
 	if err != nil {

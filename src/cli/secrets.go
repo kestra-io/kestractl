@@ -1,7 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
 	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -50,6 +54,13 @@ func newSecretsListCommand() *cobra.Command {
 	return cmd
 }
 
+// runSecretsList lists a namespace's secrets via the tenant-scoped, filtered
+// secrets search rather than the SDK's ListNamespaceSecrets endpoint
+// (GET /namespaces/{namespace}/secrets), which a Kestra EE server can 403 on
+// even for a token that succeeds on every other namespace-scoped list — see
+// issue #172. The SDK has no generated client for this endpoint, so the
+// request is built and decoded by hand; the response shape matches the
+// generated ApiSecretListResponseApiSecretMeta model.
 func runSecretsList(client *Client, namespace string, page, size int32, renderer *Renderer) error {
 	if page < 1 {
 		page = 1
@@ -58,14 +69,19 @@ func runSecretsList(client *Client, namespace string, page, size int32, renderer
 		size = 50
 	}
 
-	resp, _, err := client.API.NamespacesAPI.
-		ListNamespaceSecrets(client.Ctx, namespace, client.Tenant).
-		Page(page).
-		Size(size).
-		Filters([]kestra.QueryFilter{}).
-		Execute()
+	query := url.Values{}
+	query.Set("filters[namespace][EQUALS]", namespace)
+	query.Set("page", strconv.Itoa(int(page)))
+	query.Set("size", strconv.Itoa(int(size)))
+
+	body, err := client.doRawRequest(http.MethodGet, query, "secrets")
 	if err != nil {
-		return formatSDKError(err)
+		return err
+	}
+
+	var resp kestra.ApiSecretListResponseApiSecretMeta
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("failed to parse secrets response: %w", err)
 	}
 
 	secrets := resp.GetResults()

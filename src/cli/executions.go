@@ -2377,7 +2377,7 @@ func webhookResponseRow(result *kestra.WebhookResponse) map[string]any {
 // directly (see Client.doRawRequest) while reusing the SDK's configured host,
 // default headers, and context-based authentication.
 func triggerWebhookDirect(client *Client, method, namespace, flowID, key string) (map[string]any, error) {
-	body, err := client.doRawRequest(method, "executions", "webhook", namespace, flowID, key)
+	body, err := client.doRawRequest(method, nil, "executions", "webhook", namespace, flowID, key)
 	if err != nil {
 		return nil, err
 	}

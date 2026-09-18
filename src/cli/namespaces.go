@@ -630,7 +630,7 @@ func runNamespacesInheritedVariables(client *Client, id string, renderer *Render
 //
 // The path mirrors the SDK's InheritedVariables endpoint.
 func fetchInheritedVariables(client *Client, id string) (map[string]any, error) {
-	body, err := client.doRawRequest(http.MethodGet, "namespaces", id, "inherited-variables")
+	body, err := client.doRawRequest(http.MethodGet, nil, "namespaces", id, "inherited-variables")
 	if err != nil {
 		return nil, err
 	}
