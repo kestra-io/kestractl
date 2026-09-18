@@ -1578,7 +1578,7 @@ func TestRunExecutionsRun_WaitJSONOutputIsParseable(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	renderer := newJSONRenderer(&out).WithErrWriter(&errOut)
-	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, renderer); err != nil {
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, nil, renderer); err != nil {
 		t.Fatalf("runExecutionsRun error: %v", err)
 	}
 
@@ -1600,7 +1600,7 @@ func TestRunExecutionsRun_WaitProgressGoesToErrWriter(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	renderer := newTableRenderer(&out).WithErrWriter(&errOut)
-	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, renderer); err != nil {
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, nil, renderer); err != nil {
 		t.Fatalf("runExecutionsRun error: %v", err)
 	}
 
@@ -1622,5 +1622,38 @@ func TestRunExecutionsRun_WaitProgressGoesToErrWriter(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "SUCCESS") {
 		t.Errorf("expected state on stdout, got:\n%s", stdout)
+	}
+}
+
+func TestRunExecutionsRun_InputsSentAsMultipartForm(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("expected multipart form body: %v", err)
+		}
+		got = map[string]string{}
+		for k := range r.MultipartForm.Value {
+			got[k] = r.FormValue(k)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"CREATED"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	inputs := map[string]any{"branch": "main", "dry_run": "true"}
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", false, inputs, newJSONRenderer(&out)); err != nil {
+		t.Fatalf("runExecutionsRun error: %v", err)
+	}
+	if got["branch"] != "main" || got["dry_run"] != "true" {
+		t.Errorf("expected inputs in form body, got %v", got)
+	}
+}
+
+func TestExecutionsRunCommand_InvalidInput(t *testing.T) {
+	cmd := newExecutionsRunCommand()
+	_, err := executeCommand(cmd, "my.ns", "my-flow", "--input", "novalue")
+	if err == nil || !strings.Contains(err.Error(), "expected key=value") {
+		t.Fatalf("expected key=value error, got: %v", err)
 	}
 }
