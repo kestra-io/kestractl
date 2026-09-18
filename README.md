@@ -13,7 +13,7 @@ Every version in the badges above is exercised by the e2e matrix on each run. Th
 
 ### use convenience script installer
 
-Install the latest kestractl v2 release. kestractl v2 targets Kestra 2.x and works against Kestra 1.3 for everyday commands (flows, executions, namespace files, KV, namespaces); features that only exist in Kestra 2.0 are refused with a clear error on a 1.x server.
+Install the latest kestractl v3 release. kestractl v3 targets Kestra 2.x and works against Kestra 1.3 for everyday commands (flows, executions, namespace files, KV, namespaces); features that only exist in Kestra 2.0 are refused with a clear error on a 1.x server. (kestractl's own version is independent of Kestra's — v3 is a breaking change to the CLI itself, not a new Kestra target.)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | bash
@@ -52,14 +52,14 @@ Every release publishes a multi-arch (`linux/amd64` + `linux/arm64`) image to bo
 Docker Hub and GitHub Container Registry:
 
 ```bash
-docker run --rm kestra/kestractl:2 --help
-docker run --rm ghcr.io/kestra-io/kestractl:2 --help
+docker run --rm kestra/kestractl:latest --help
+docker run --rm ghcr.io/kestra-io/kestractl:latest --help
 ```
 
 | Tag | Contents |
 | --- | --- |
-| `latest`, `2`, `2.0`, `2.0.0` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
-| `latest-static`, `2-static`, `2.0-static`, `2.0.0-static` | distroless, no shell — smallest surface, runs `kestractl` only |
+| `latest`, `X`, `X.Y`, `X.Y.Z` | Alpine based, with `bash`, `git` and `curl` — use this in CI jobs that run scripts |
+| `latest-static`, `X-static`, `X.Y-static`, `X.Y.Z-static` | distroless, no shell — smallest surface, runs `kestractl` only |
 
 `latest`, `X` and `X.Y` follow the newest stable release. Pin `X.Y.Z` in CI if you want a
 release to stay put; a prerelease, should one be published, only ever moves `X`.
@@ -72,7 +72,7 @@ docker run --rm \
   -e KESTRACTL_TENANT=main \
   -e KESTRACTL_USERNAME=admin@example.com \
   -e KESTRACTL_PASSWORD='...' \
-  kestra/kestractl:2 flows list
+  kestra/kestractl:latest flows list
 ```
 
 or by mounting a config file. The images run as a non-root user, so mount it at that
@@ -83,14 +83,14 @@ user's home: `/home/kestractl/.kestractl` (Alpine) or `/home/nonroot/.kestractl`
 docker run --rm \
   -v ~/.kestractl:/home/kestractl/.kestractl:ro \
   -v "$PWD/flows:/flows:ro" \
-  kestra/kestractl:2 flows deploy /flows
+  kestra/kestractl:latest flows deploy /flows
 ```
 
 Deploying flows from GitLab CI:
 
 ```yaml
 deploy-flows:
-  image: kestra/kestractl:2
+  image: kestra/kestractl:latest
   variables:
     KESTRACTL_HOST: https://kestra.example.com
     KESTRACTL_TENANT: main
