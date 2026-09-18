@@ -925,7 +925,7 @@ func TestParsePluginCoordinates(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePluginCoordinates(tt.input)
+			got, err := parsePluginCoordinates(tt.input, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -1127,7 +1127,7 @@ func TestParsePluginCoordinate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parsePluginCoordinate(tt.coordinate)
+			got, err := parsePluginCoordinate(tt.coordinate, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected an invalid coordinate error, got nil")
@@ -1176,7 +1176,7 @@ func TestRunPluginsGet_HappyPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, false, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1206,7 +1206,7 @@ func TestRunPluginsGet_SkipsExistingValidJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, false, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1231,7 +1231,7 @@ func TestRunPluginsGet_ForceRedownloadsExistingJAR(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, true, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, true, nil, "", "", "", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1257,7 +1257,7 @@ func TestRunPluginsGet_DownloadFailure(t *testing.T) {
 	})
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
 
 	if err == nil {
 		t.Fatal("expected error when Maven returns 404, got nil")
@@ -1275,7 +1275,7 @@ func TestRunPluginsGet_DownloadFailure(t *testing.T) {
 func TestRunPluginsGet_InvalidCoordinate(t *testing.T) {
 	var out bytes.Buffer
 
-	err := runPluginsGet(&out, "invalid-coordinate-format", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "invalid-coordinate-format", "", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
 
 	if err == nil {
 		t.Fatal("expected error for invalid coordinate format, got nil")
@@ -1292,7 +1292,7 @@ func TestRunPluginsGet_Timeout(t *testing.T) {
 	}))
 	t.Cleanup(mockServer.Close)
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 1*time.Millisecond)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", t.TempDir(), false, nil, mockServer.URL, "", "", 1*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected context deadline/timeout error, got nil")
 	}
@@ -1323,7 +1323,7 @@ func TestRunPluginsGet_429RetryThenSucceeds(t *testing.T) {
 	t.Cleanup(mockServer.Close)
 
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, mockServer.URL, "", "", 5*time.Second)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", t.TempDir(), false, nil, mockServer.URL, "", "", 5*time.Second)
 	if err != nil {
 		t.Fatalf("expected download to succeed after retry, got error: %v", err)
 	}
@@ -1347,7 +1347,7 @@ func TestRunPluginsGet_MavenBasicAuth(t *testing.T) {
 	}))
 	t.Cleanup(customMaven.Close)
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", t.TempDir(), false, nil, customMaven.URL, "alice", "s3cr3t", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", t.TempDir(), false, nil, customMaven.URL, "alice", "s3cr3t", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1371,7 +1371,7 @@ func TestRunPluginsGet_AtomicCleanupOnFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
 
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mockServer.URL, "", "", 10*time.Millisecond)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, false, nil, mockServer.URL, "", "", 10*time.Millisecond)
 
 	if err == nil {
 		t.Fatal("expected download to fail due to timeout, got nil")
@@ -1447,7 +1447,7 @@ func TestRunPluginsGet_ChecksumMismatchOnDownload(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, false, nil, "", "", "", 5*time.Minute)
 
 	if err == nil {
 		t.Fatal("expected error due to checksum mismatch, got nil")
@@ -1482,7 +1482,7 @@ func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	var out bytes.Buffer
-	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", tmpDir, false, nil, mavenServer.URL, "", "", 5*time.Minute)
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka:1.6.0", "", tmpDir, false, nil, mavenServer.URL, "", "", 5*time.Minute)
 
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1490,5 +1490,293 @@ func TestRunPluginsGet_MissingSHA1WarnsAndSkipsVerification(t *testing.T) {
 
 	if !strings.Contains(out.String(), "[warn] no .sha1 published") {
 		t.Errorf("expected warning about missing .sha1, got:\n%s", out.String())
+	}
+}
+
+// --- issue #181: resolve a named plugin's version from a Kestra version ---
+
+func TestParsePluginCoordinate_Unversioned(t *testing.T) {
+	if _, err := parsePluginCoordinate("io.kestra.storage:storage-s3", false); err == nil {
+		t.Fatal("expected error for unversioned coordinate when not allowed, got nil")
+	}
+
+	got, err := parsePluginCoordinate("io.kestra.storage:storage-s3", true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := pluginArtifact{GroupID: "io.kestra.storage", ArtifactID: "storage-s3"}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+
+	// Trailing/empty segments stay invalid even when unversioned is allowed.
+	for _, bad := range []string{"io.kestra.storage:", ":storage-s3", "storage-s3", "a:b:c:d", "a::c"} {
+		if _, err := parsePluginCoordinate(bad, true); err == nil {
+			t.Errorf("expected error for %q, got nil", bad)
+		}
+	}
+}
+
+func TestResolvePluginVersions_FillsFromCatalog(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	got, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka"},
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-docker"},
+	}, "1.3.9", true, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d artifacts, want 2", len(got))
+	}
+	if got[0].Version != "1.6.0" {
+		t.Errorf("plugin-kafka: got version %q, want 1.6.0", got[0].Version)
+	}
+	if got[1].Version != "1.3.0" {
+		t.Errorf("plugin-docker: got version %q, want 1.3.0", got[1].Version)
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected no warnings, got: %s", out.String())
+	}
+}
+
+func TestResolvePluginVersions_SymbolicVersion(t *testing.T) {
+	var requestedPath string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		fmt.Fprint(w, pluginListPayload)
+	}))
+	defer apiServer.Close()
+	orig := pluginsAPIBase
+	pluginsAPIBase = apiServer.URL
+	defer func() { pluginsAPIBase = orig }()
+
+	var out bytes.Buffer
+	if _, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka"},
+	}, "latest", true, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(requestedPath, "999.999.999") {
+		t.Errorf("expected symbolic version to resolve to 999.999.999, got path %q", requestedPath)
+	}
+}
+
+func TestResolvePluginVersions_PassesLicenseFilter(t *testing.T) {
+	var requestedQuery string
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedQuery = r.URL.RawQuery
+		fmt.Fprint(w, pluginListPayload)
+	}))
+	defer apiServer.Close()
+	orig := pluginsAPIBase
+	pluginsAPIBase = apiServer.URL
+	defer func() { pluginsAPIBase = orig }()
+
+	var out bytes.Buffer
+	if _, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka"},
+	}, "1.3.9", true, "OPEN_SOURCE"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(requestedQuery, "license=OPEN_SOURCE") {
+		t.Errorf("expected license filter in query, got %q", requestedQuery)
+	}
+}
+
+func TestResolvePluginVersions_NotInCompatibilitySet(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	_, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka"},
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-nonexistent"},
+	}, "1.3.9", true, "")
+	if err == nil {
+		t.Fatal("expected error for a plugin absent from the compatibility set, got nil")
+	}
+	if !strings.Contains(err.Error(), "io.kestra.plugin:plugin-nonexistent") {
+		t.Errorf("expected error to name the artifact, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "1.3.9") {
+		t.Errorf("expected error to name the Kestra version, got: %v", err)
+	}
+}
+
+func TestResolvePluginVersions_NoVersionToResolveFrom(t *testing.T) {
+	var out bytes.Buffer
+	_, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka"},
+	}, "", false, "")
+	if err == nil {
+		t.Fatal("expected error when no Kestra version is available, got nil")
+	}
+	if !strings.Contains(err.Error(), "--compatible-for") {
+		t.Errorf("expected error to mention --compatible-for, got: %v", err)
+	}
+}
+
+func TestResolvePluginVersions_ExplicitVersionWins(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	got, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "9.9.9"},
+	}, "1.3.9", true, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got[0].Version != "9.9.9" {
+		t.Errorf("expected the explicit version to win, got %q", got[0].Version)
+	}
+	warning := out.String()
+	if !strings.Contains(warning, "--compatible-for") || !strings.Contains(warning, "plugin-kafka") {
+		t.Errorf("expected a warning naming the coordinate, got: %q", warning)
+	}
+}
+
+func TestResolvePluginVersions_NoWarningWhenNotExplicit(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	if _, err := resolvePluginVersions(&out, []pluginArtifact{
+		{GroupID: "io.kestra.plugin", ArtifactID: "plugin-kafka", Version: "1.6.0"},
+	}, "1.3.9", false, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected no warning for a piped versioned coordinate, got: %s", out.String())
+	}
+}
+
+func TestResolveDownloadPlugins_PositionalVersionResolves(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	got, err := resolveDownloadPlugins(&out, []string{"io.kestra.plugin:plugin-kafka"}, "", "1.3.9", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Version != "1.6.0" {
+		t.Fatalf("expected plugin-kafka:1.6.0, got %+v", got)
+	}
+}
+
+func TestResolveDownloadPlugins_ConflictingVersions(t *testing.T) {
+	var out bytes.Buffer
+	_, err := resolveDownloadPlugins(&out, []string{"io.kestra.plugin:plugin-kafka"}, "2.0.2", "1.3.9", "")
+	if err == nil {
+		t.Fatal("expected error when --compatible-for and the version argument disagree, got nil")
+	}
+	if !strings.Contains(err.Error(), "2.0.2") || !strings.Contains(err.Error(), "1.3.9") {
+		t.Errorf("expected error to name both versions, got: %v", err)
+	}
+}
+
+func TestResolveDownloadPlugins_SameVersionIsNotAConflict(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	got, err := resolveDownloadPlugins(&out, []string{"io.kestra.plugin:plugin-kafka"}, "1.3.9", "1.3.9", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Version != "1.6.0" {
+		t.Fatalf("expected plugin-kafka:1.6.0, got %+v", got)
+	}
+}
+
+func TestResolveDownloadPlugins_FullyVersionedNeedsNoCatalog(t *testing.T) {
+	// No mock servers: hitting the API would fail, proving no lookup happens.
+	var out bytes.Buffer
+	got, err := resolveDownloadPlugins(&out, []string{"io.kestra.plugin:plugin-kafka:1.6.0"}, "", "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Version != "1.6.0" {
+		t.Fatalf("expected plugin-kafka:1.6.0, got %+v", got)
+	}
+}
+
+func TestRunPluginsGet_CompatibleFor(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	tmpDir := t.TempDir()
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka", "1.3.9", tmpDir, false, nil, "", "", "", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")); statErr != nil {
+		t.Errorf("expected resolved JAR on disk: %v", statErr)
+	}
+	if !strings.Contains(out.String(), "io.kestra.plugin:plugin-kafka:1.6.0") {
+		t.Errorf("expected the resolved coordinate in output, got:\n%s", out.String())
+	}
+}
+
+func TestRunPluginsGet_CompatibleFor_NotInSet(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-nonexistent", "1.3.9", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for a plugin absent from the compatibility set, got nil")
+	}
+	if !strings.Contains(err.Error(), "plugin-nonexistent") {
+		t.Errorf("expected error to name the artifact, got: %v", err)
+	}
+}
+
+func TestRunPluginsGet_UnversionedWithoutCompatibleFor(t *testing.T) {
+	var out bytes.Buffer
+	err := runPluginsGet(&out, "io.kestra.plugin:plugin-kafka", "", t.TempDir(), false, nil, "", "", "", 5*time.Minute)
+	if err == nil {
+		t.Fatal("expected error for an unversioned coordinate without --compatible-for, got nil")
+	}
+	if !strings.Contains(err.Error(), "--compatible-for") {
+		t.Errorf("expected error to mention --compatible-for, got: %v", err)
+	}
+}
+
+func TestPluginsDownloadCommand_CompatibleForRequiresPlugins(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	_, err := executeCommand(cmd, "1.3.9", "--compatible-for", "1.3.9")
+	if err == nil {
+		t.Fatal("expected error when --compatible-for is used without --plugins, got nil")
+	}
+	if !strings.Contains(err.Error(), "--plugins") {
+		t.Errorf("expected error to mention --plugins, got: %v", err)
+	}
+}
+
+func TestPluginsDownloadCommand_CompatibleForRejectsFromConfig(t *testing.T) {
+	cmd := newPluginsDownloadCommand()
+	_, err := executeCommand(cmd, "1.3.9", "--compatible-for", "1.3.9", "--from-config", "/nonexistent.yaml")
+	if err == nil {
+		t.Fatal("expected error when --compatible-for is combined with --from-config, got nil")
+	}
+	if !strings.Contains(err.Error(), "--from-config") {
+		t.Errorf("expected error to mention --from-config, got: %v", err)
+	}
+}
+
+func TestPluginsDownloadCommand_CompatibleForResolvesAndDownloads(t *testing.T) {
+	newMockServers(t, http.StatusOK, pluginListPayload)
+
+	tmpDir := t.TempDir()
+	cmd := newPluginsDownloadCommand()
+	out, err := executeCommand(cmd,
+		"--compatible-for", "1.3.9",
+		"--plugins", "io.kestra.plugin:plugin-kafka",
+		"--plugins-dir", tmpDir,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out)
+	}
+	if _, statErr := os.Stat(filepath.Join(tmpDir, "io_kestra_plugin__plugin-kafka__1_6_0.jar")); statErr != nil {
+		t.Errorf("expected resolved JAR on disk: %v", statErr)
 	}
 }
