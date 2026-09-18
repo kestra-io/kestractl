@@ -941,7 +941,9 @@ func newExecutionsRunCommand() *cobra.Command {
 The command returns immediately by default. Use --wait to poll until
 the execution completes (SUCCESS, FAILED, or other terminal state).
 
-Flow inputs are passed with --input key=value (repeatable).`,
+Flow inputs are passed with --input key=value (repeatable). Repeating the
+same key overwrites the previous value; for array/multiselect inputs, pass
+a JSON array as the value instead (e.g. --input 'tags=["a","b"]').`,
 		Example: `  # Trigger a flow
 	  kestractl executions run my.namespace my-flow
 
