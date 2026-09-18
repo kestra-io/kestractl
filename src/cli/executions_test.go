@@ -1591,6 +1591,37 @@ func TestRunExecutionsRun_WaitJSONOutputIsParseable(t *testing.T) {
 	}
 }
 
+func TestRunExecutionsRun_WaitFetchesTaskRunList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"SUCCESS"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","flowRevision":1,"state":{"current":"SUCCESS","histories":[]},"originalId":"exec-1","deleted":false,"metadata":{"originalCreatedDate":"2026-01-01T00:00:00Z"},"taskRunList":[{"id":"tr-1","executionId":"exec-1","namespace":"my.ns","flowId":"my-flow","taskId":"my-task","state":{"current":"SUCCESS","histories":[]}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	renderer := newJSONRenderer(&out)
+	if err := runExecutionsRun(newTestClient(t, server.URL), "my.ns", "my-flow", true, nil, renderer); err != nil {
+		t.Fatalf("runExecutionsRun error: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nstdout:\n%s", err, out.String())
+	}
+	taskRuns, ok := payload["taskRunList"].([]any)
+	if !ok || len(taskRuns) != 1 {
+		t.Fatalf("expected 1 task run in taskRunList, got %v", payload["taskRunList"])
+	}
+	tr := taskRuns[0].(map[string]any)
+	if tr["taskId"] != "my-task" || tr["state"] != "SUCCESS" {
+		t.Errorf("unexpected task run: %v", tr)
+	}
+}
+
 func TestRunExecutionsRun_WaitProgressGoesToErrWriter(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

@@ -1026,6 +1026,36 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		execution["state"] = stateMap
 	}
 
+	// CreateExecution's own response doesn't reliably carry the completed
+	// taskRunList even after --wait returns a terminal state, so re-fetch the
+	// execution to give the task runs directly instead of making the caller
+	// issue a second `executions get` (kestractl#173).
+	if wait {
+		if id, ok := execution["id"].(string); ok && id != "" {
+			full, _, ferr := client.API.ExecutionsAPI.Execution(client.Ctx, id, client.Tenant).Execute()
+			switch {
+			case ferr == nil && full != nil:
+				if trl := taskRunListToMaps(full.GetTaskRunList()); trl != nil {
+					execution["taskRunList"] = trl
+				}
+			case ferr != nil:
+				// Same SDK/API type-mismatch class as tryParseExecutionFromError's
+				// other callers: the raw success body still has taskRunList even
+				// when the SDK's strict unmarshal errors on an unrelated field.
+				raw := tryParseExecutionFromError(ferr)
+				if raw == nil {
+					fmt.Fprintf(renderer.ErrWriter(), "Warning: could not re-fetch execution %s to show task runs: %v\n", id, ferr)
+					break
+				}
+				if rawTrl, ok := raw["taskRunList"].([]any); ok {
+					if trl := rawTaskRunListToMaps(rawTrl); trl != nil {
+						execution["taskRunList"] = trl
+					}
+				}
+			}
+		}
+	}
+
 	return renderer.Render(execution, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "Execution triggered successfully!")
 		fmt.Fprintln(w)
@@ -1037,8 +1067,66 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		if url, ok := execution["url"]; ok {
 			fmt.Fprintf(w, "URL: %v\n", url)
 		}
+		printTaskRunList(w, execution)
 		return nil
 	})
+}
+
+// taskRunListToMaps converts SDK TaskRun entries into the map shape used for
+// both JSON output and table rendering.
+func taskRunListToMaps(taskRuns []kestra.TaskRun) []map[string]any {
+	if len(taskRuns) == 0 {
+		return nil
+	}
+	list := make([]map[string]any, len(taskRuns))
+	for i, tr := range taskRuns {
+		state := tr.GetState()
+		list[i] = map[string]any{
+			"id":     tr.GetId(),
+			"taskId": tr.GetTaskId(),
+			"state":  string(state.GetCurrent()),
+		}
+	}
+	return list
+}
+
+// rawTaskRunListToMaps normalizes a taskRunList decoded from raw JSON (as
+// used by tryParseExecutionFromError's callers) into the same map shape
+// taskRunListToMaps produces from the typed SDK model.
+func rawTaskRunListToMaps(raw []any) []map[string]any {
+	if len(raw) == 0 {
+		return nil
+	}
+	list := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		tr, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		state := ""
+		if st, ok := tr["state"].(map[string]any); ok {
+			state = stringify(st["current"])
+		}
+		list = append(list, map[string]any{
+			"id":     tr["id"],
+			"taskId": tr["taskId"],
+			"state":  state,
+		})
+	}
+	return list
+}
+
+// printTaskRunList prints the task runs attached to an execution map, if any.
+func printTaskRunList(w io.Writer, execution map[string]any) {
+	taskRuns, ok := execution["taskRunList"].([]map[string]any)
+	if !ok || len(taskRuns) == 0 {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Task Runs:")
+	for _, tr := range taskRuns {
+		fmt.Fprintf(w, "  - %s (%s): %s\n", stringify(tr["taskId"]), stringify(tr["id"]), stringify(tr["state"]))
+	}
 }
 
 func newExecutionsGetCommand() *cobra.Command {

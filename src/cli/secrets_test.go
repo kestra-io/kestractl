@@ -2,9 +2,12 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -142,7 +145,7 @@ func TestSecretsSetCommand_NoArgs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no args provided")
 	}
-	if !strings.Contains(err.Error(), "accepts 3 arg") {
+	if !strings.Contains(err.Error(), "between 2 and 3 arg") {
 		t.Fatalf("expected args error, got: %v", err)
 	}
 }
@@ -165,6 +168,77 @@ func TestSecretsSetCommand_ClientError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "client error") {
 		t.Fatalf("expected client error, got: %v", err)
+	}
+}
+
+func TestSecretsSetCommand_FromFileAndValueConflict(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newSecretsSetCommand()
+	_, err := executeCommand(cmd, "my.namespace", "MY_KEY", "my-value", "--from-file", "/dev/null")
+	if err == nil {
+		t.Fatal("expected error when both a positional value and --from-file are given")
+	}
+	if !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("expected conflict error, got: %v", err)
+	}
+}
+
+func TestSecretsSetCommand_NoValueOrFromFile(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	cmd := newSecretsSetCommand()
+	_, err := executeCommand(cmd, "my.namespace", "MY_KEY")
+	if err == nil {
+		t.Fatal("expected error when neither a value nor --from-file is given")
+	}
+	if !strings.Contains(err.Error(), "a value is required") {
+		t.Fatalf("expected missing-value error, got: %v", err)
+	}
+}
+
+// A value starting with "-" (a PEM/SSH key) must not be misparsed as a flag
+// once it comes after --from-file's positional args, and --from-file must
+// send the file's bytes verbatim, including a trailing newline (issue #174).
+func TestSecretsSetCommand_FromFilePreservesTrailingNewline(t *testing.T) {
+	origOutput := globalFlags.Output
+	globalFlags.Output = "table"
+	defer func() { globalFlags.Output = origOutput }()
+
+	dir := t.TempDir()
+	keyPath := dir + "/id_ed25519"
+	const keyContent = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+	if err := os.WriteFile(keyPath, []byte(keyContent), 0o600); err != nil {
+		t.Fatalf("failed to write test key file: %v", err)
+	}
+
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+	t.Cleanup(func() { newClientFunc = original })
+
+	cmd := newSecretsSetCommand()
+	if _, err := executeCommand(cmd, "my.namespace", "MY_SSH_KEY", "--from-file", keyPath); err != nil {
+		t.Fatalf("execute error: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(gotBody, &payload); err != nil {
+		t.Fatalf("request body is not valid JSON: %v\nbody:\n%s", err, gotBody)
+	}
+	if payload["value"] != keyContent {
+		t.Errorf("expected secret value to match file content byte for byte, got %q", payload["value"])
 	}
 }
 

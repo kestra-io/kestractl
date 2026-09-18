@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"text/tabwriter"
 
@@ -114,27 +115,55 @@ func runSecretsList(client *Client, namespace string, page, size int32, renderer
 
 func newSecretsSetCommand() *cobra.Command {
 	var description string
+	var fromFile string
 
 	cmd := &cobra.Command{
-		Use:   "set <namespace> <key> <value>",
+		Use:   "set <namespace> <key> [value]",
 		Short: "Create or update a secret in a namespace.",
+		Long: `Create or update a secret in a namespace.
+
+Use --from-file to store a file's content byte for byte instead of passing
+the value on the command line. This sidesteps two common gotchas: a value
+starting with "-" (e.g. a PEM/SSH private key) being parsed as a flag unless
+preceded by --, and "$(cat file)"-style shell substitution silently
+stripping a trailing newline that some secrets require.`,
 		Example: `  kestractl secrets set my.namespace MY_API_KEY "secret-value"
-  kestractl secrets set my.namespace MY_API_KEY "secret-value" --description "API key"`,
-		Args: cobra.ExactArgs(3),
+  kestractl secrets set my.namespace MY_API_KEY "secret-value" --description "API key"
+  kestractl secrets set my.namespace MY_KEY -- "-----BEGIN OPENSSH PRIVATE KEY-----..."
+  kestractl secrets set my.namespace MY_SSH_KEY --from-file ~/.ssh/id_ed25519`,
+		Args: cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
 				return err
 			}
+
+			var value string
+			switch {
+			case fromFile != "" && len(args) == 3:
+				return fmt.Errorf("--from-file cannot be combined with a positional value")
+			case fromFile != "":
+				data, err := os.ReadFile(fromFile)
+				if err != nil {
+					return fmt.Errorf("failed to read %q: %w", fromFile, err)
+				}
+				value = string(data)
+			case len(args) == 3:
+				value = args[2]
+			default:
+				return fmt.Errorf("a value is required unless --from-file is set")
+			}
+
 			client, err := newClientFunc()
 			if err != nil {
 				return err
 			}
-			return runSecretsSet(client, args[0], args[1], args[2], description, renderer)
+			return runSecretsSet(client, args[0], args[1], value, description, renderer)
 		},
 	}
 
 	cmd.Flags().StringVar(&description, "description", "", "Secret description")
+	cmd.Flags().StringVar(&fromFile, "from-file", "", "Read the secret value from this file, byte for byte")
 	return cmd
 }
 
