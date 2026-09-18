@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -32,7 +33,7 @@ func TestClientDoRawRequest(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		body, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "my.namespace", "inherited-variables")
+		body, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, nil, "namespaces", "my.namespace", "inherited-variables")
 		if err != nil {
 			t.Fatalf("doRawRequest error: %v", err)
 		}
@@ -56,12 +57,31 @@ func TestClientDoRawRequest(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		if _, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "a b/c"); err != nil {
+		if _, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, nil, "namespaces", "a b/c"); err != nil {
 			t.Fatalf("doRawRequest error: %v", err)
 		}
 		// A segment containing a slash must not add a path element.
 		if gotRawPath != "/api/v1/main/namespaces/a%20b%2Fc" {
 			t.Fatalf("unexpected escaped path: %s", gotRawPath)
+		}
+	})
+
+	t.Run("appends the query string", func(t *testing.T) {
+		var gotRawQuery string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotRawQuery = r.URL.RawQuery
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{}`))
+		}))
+		t.Cleanup(server.Close)
+
+		query := url.Values{}
+		query.Set("filters[namespace][EQUALS]", "system")
+		if _, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, query, "secrets"); err != nil {
+			t.Fatalf("doRawRequest error: %v", err)
+		}
+		if gotRawQuery != query.Encode() {
+			t.Fatalf("unexpected query string: %s", gotRawQuery)
 		}
 	})
 
@@ -77,7 +97,7 @@ func TestClientDoRawRequest(t *testing.T) {
 		client := newTestClient(t, server.URL)
 		client.Ctx = context.WithValue(client.Ctx, kestra.ContextAccessToken, "s3cret-token")
 
-		if _, err := client.doRawRequest(http.MethodGet, "namespaces"); err != nil {
+		if _, err := client.doRawRequest(http.MethodGet, nil, "namespaces"); err != nil {
 			t.Fatalf("doRawRequest error: %v", err)
 		}
 		if gotAuth != "Bearer s3cret-token" {
@@ -98,7 +118,7 @@ func TestClientDoRawRequest(t *testing.T) {
 		client := newTestClient(t, server.URL)
 		client.Ctx = context.WithValue(client.Ctx, kestra.ContextBasicAuth, kestra.BasicAuth{UserName: "root@root.com", Password: "pw"})
 
-		if _, err := client.doRawRequest(http.MethodGet, "namespaces"); err != nil {
+		if _, err := client.doRawRequest(http.MethodGet, nil, "namespaces"); err != nil {
 			t.Fatalf("doRawRequest error: %v", err)
 		}
 		if !gotOK || gotUser != "root@root.com" {
@@ -114,7 +134,7 @@ func TestClientDoRawRequest(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces", "missing")
+		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, nil, "namespaces", "missing")
 		if err == nil {
 			t.Fatal("expected an error for a 404 response")
 		}
@@ -130,7 +150,7 @@ func TestClientDoRawRequest(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, "namespaces")
+		_, err := newTestClient(t, server.URL).doRawRequest(http.MethodGet, nil, "namespaces")
 		if err == nil {
 			t.Fatal("expected an error for a 500 response")
 		}
@@ -595,7 +615,7 @@ func TestDoRawRequest_VerboseDumpGoesThroughCompatTransport(t *testing.T) {
 	}
 	transport.era = client.serverEra
 
-	if _, err := client.doRawRequest(http.MethodGet, "namespaces", "my.namespace", "inherited-variables"); err != nil {
+	if _, err := client.doRawRequest(http.MethodGet, nil, "namespaces", "my.namespace", "inherited-variables"); err != nil {
 		t.Fatalf("doRawRequest error: %v", err)
 	}
 
