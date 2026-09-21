@@ -211,6 +211,11 @@ func newPluginsListCommand() *cobra.Command {
 		Short: "List all compatible plugins for a given Kestra version",
 		Long: `List all compatible plugins for a given Kestra version.
 
+This queries api.kestra.io's public compatibility catalog for the given <version>
+argument — it does not talk to your Kestra server, so --server/KESTRACTL_HOST and
+the active auth context have no effect on it. To see what's actually installed on
+a running instance, check that instance directly (e.g. its plugins page or API).
+
 Output format matches the legacy npx @kestra-io/kestra-devtools getCompatiblePlugins
 command: a single space-separated line of groupId:artifactId:version coordinates.
 
