@@ -379,6 +379,7 @@ func runPluginsInstalled(client *Client, renderer *Renderer) error {
 	// body is {"results": [...], "total": N}, not a bare array.
 	var page struct {
 		Results []kestra.Plugin `json:"results"`
+		Total   int             `json:"total"`
 	}
 	if err := json.Unmarshal(body, &page); err != nil {
 		return fmt.Errorf("failed to parse installed plugins response: %w", err)
@@ -392,7 +393,10 @@ func runPluginsInstalled(client *Client, renderer *Renderer) error {
 		for _, p := range plugins {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.GetName(), p.GetGroup(), p.GetVersion(), p.GetLicense())
 		}
-		fmt.Fprintf(w, "\nTotal plugins: %d\n", len(plugins))
+		fmt.Fprintf(w, "\nTotal plugins: %d\n", page.Total)
+		if page.Total > len(plugins) {
+			fmt.Fprintf(w, "Warning: listing truncated to the page size — showing %d of %d plugins.\n", len(plugins), page.Total)
+		}
 		return nil
 	})
 }
@@ -401,56 +405,9 @@ func runPluginsInstalled(client *Client, renderer *Renderer) error {
 // list directly, bypassing the SDK: the generated client has no wrapped
 // method for GET /api/v1/plugins (issue #186), even though it already
 // generates the Plugin model that endpoint returns. Plugins are server-wide
-// (JVM classpath), not tenant-scoped, so the path carries no tenant segment,
-// unlike doRawRequest.
+// (JVM classpath), not tenant-scoped, so the path carries no tenant segment.
 func fetchInstalledPlugins(client *Client) ([]byte, error) {
-	cfg := client.API.GetConfig()
-
-	base := ""
-	if len(cfg.Servers) > 0 {
-		base = cfg.Servers[0].URL
-	}
-	if base == "" {
-		base = cfg.Scheme + "://" + cfg.Host
-	}
-	base = strings.TrimRight(base, "/")
-
-	req, err := http.NewRequestWithContext(client.Ctx, http.MethodGet, base+"/api/v1/plugins", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/json")
-
-	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
-		req.SetBasicAuth(auth.UserName, auth.Password)
-	}
-	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	for h, v := range cfg.DefaultHeader {
-		req.Header.Set(h, v)
-	}
-
-	httpClient := cfg.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read installed plugins response: %w", err)
-	}
-	if resp.StatusCode >= 400 {
-		return nil, formatErrorBody(body, resp.Status)
-	}
-
-	return body, nil
+	return client.doRawRequestNoTenant(http.MethodGet, "/api/v1/plugins")
 }
 
 // editionToLicense maps the user-facing --edition value to the API license query param.

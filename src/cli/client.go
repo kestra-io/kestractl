@@ -269,26 +269,18 @@ func normalizeHost(host string) string {
 	return normalized
 }
 
-// doRawRequest issues a request the generated SDK cannot express usefully and
-// returns the raw response body.
-//
-// Three kinds of endpoint need it: ones the SDK builds a URL for that the
-// server rejects (the path-less webhook, whose only SDK helpers append a
-// trailing segment answered with 404), ones the SDK mistypes, where the typed
-// decode fails or silently rounds the payload before kestractl sees it
-// (namespace inherited variables — see issue #128), and ones the SDK has no
-// endpoint for at all (the tenant-scoped, filtered secrets search — see issue
-// #172). Callers decode the body themselves.
+// doRawRequestPath issues a request against an exact path below the API root
+// (e.g. "/api/v1/plugins") and returns the raw response body. It is the
+// shared HTTP-mechanics core behind doRawRequest and doRawRequestNoTenant:
+// base URL resolution, request building, context-based authentication,
+// default headers, and error handling.
 //
 // The request reuses the SDK's resolved host, HTTP client (so the compat.go
 // shims still apply), default headers, and context-based authentication.
-// segments are the path below /api/v1/{tenant}/ and are escaped here, so a
-// namespace or flow id containing a slash or space cannot break out of its
-// position. query, if non-nil, is appended as the URL's query string.
 //
 // Because that HTTP client is the shared compat transport, a request issued here
 // gets the same --verbose masked dump as any SDK call.
-func (c *Client) doRawRequest(method string, query url.Values, segments ...string) ([]byte, error) {
+func (c *Client) doRawRequestPath(method string, path string) ([]byte, error) {
 	cfg := c.API.GetConfig()
 
 	base := ""
@@ -300,15 +292,7 @@ func (c *Client) doRawRequest(method string, query url.Values, segments ...strin
 	}
 	base = strings.TrimRight(base, "/")
 
-	escaped := make([]string, 0, len(segments)+1)
-	escaped = append(escaped, url.PathEscape(c.Tenant))
-	for _, segment := range segments {
-		escaped = append(escaped, url.PathEscape(segment))
-	}
-	endpoint := base + "/api/v1/" + strings.Join(escaped, "/")
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
+	endpoint := base + path
 
 	req, err := http.NewRequestWithContext(c.Ctx, method, endpoint, nil)
 	if err != nil {
@@ -346,6 +330,40 @@ func (c *Client) doRawRequest(method string, query url.Values, segments ...strin
 		return nil, formatErrorBody(body, fmt.Sprintf("status %d", resp.StatusCode))
 	}
 	return body, nil
+}
+
+// doRawRequest issues a request the generated SDK cannot express usefully and
+// returns the raw response body.
+//
+// Three kinds of endpoint need it: ones the SDK builds a URL for that the
+// server rejects (the path-less webhook, whose only SDK helpers append a
+// trailing segment answered with 404), ones the SDK mistypes, where the typed
+// decode fails or silently rounds the payload before kestractl sees it
+// (namespace inherited variables — see issue #128), and ones the SDK has no
+// endpoint for at all (the tenant-scoped, filtered secrets search — see issue
+// #172). Callers decode the body themselves.
+//
+// segments are the path below /api/v1/{tenant}/ and are escaped here, so a
+// namespace or flow id containing a slash or space cannot break out of its
+// position. query, if non-nil, is appended as the URL's query string.
+func (c *Client) doRawRequest(method string, query url.Values, segments ...string) ([]byte, error) {
+	escaped := make([]string, 0, len(segments)+1)
+	escaped = append(escaped, url.PathEscape(c.Tenant))
+	for _, segment := range segments {
+		escaped = append(escaped, url.PathEscape(segment))
+	}
+	endpoint := "/api/v1/" + strings.Join(escaped, "/")
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	return c.doRawRequestPath(method, endpoint)
+}
+
+// doRawRequestNoTenant is like doRawRequest but for endpoints that are
+// server-wide, not tenant-scoped (e.g. GET /api/v1/plugins) — the path is
+// used exactly as given, with no tenant segment inserted.
+func (c *Client) doRawRequestNoTenant(method string, path string) ([]byte, error) {
+	return c.doRawRequestPath(method, path)
 }
 
 // formatSDKError extracts a user-friendly message from SDK errors. It handles

@@ -1827,6 +1827,29 @@ func TestRunPluginsInstalled_ServerError(t *testing.T) {
 	}
 }
 
+func TestRunPluginsInstalled_ReportsTruncationWhenTotalExceedsPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"results":[
+			{"name":"core","group":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"}
+		],"total":1500}`)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runPluginsInstalled(newTestClient(t, server.URL), newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runPluginsInstalled error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Total plugins: 1500") {
+		t.Errorf("expected server-reported total in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "truncated") || !strings.Contains(out, "1 of 1500") {
+		t.Errorf("expected truncation warning mentioning 1 of 1500, got:\n%s", out)
+	}
+}
+
 func TestPluginsInstalledCommand_JSONOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"results":[{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"}],"total":1}`)
