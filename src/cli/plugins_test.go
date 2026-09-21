@@ -1786,10 +1786,10 @@ func TestRunPluginsInstalled_QueriesConnectedServer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `[
-			{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"},
-			{"name":"io.kestra.plugin.kafka","version":"1.6.0","license":"OPEN_SOURCE"}
-		]`)
+		fmt.Fprint(w, `{"results":[
+			{"name":"core","group":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"},
+			{"name":"plugin-kafka","group":"io.kestra.plugin.kafka","version":"1.6.0","license":"OPEN_SOURCE"}
+		],"total":2}`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -1829,7 +1829,7 @@ func TestRunPluginsInstalled_ServerError(t *testing.T) {
 
 func TestPluginsInstalledCommand_JSONOutput(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `[{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"}]`)
+		fmt.Fprint(w, `{"results":[{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"}],"total":1}`)
 	}))
 	t.Cleanup(server.Close)
 

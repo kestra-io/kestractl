@@ -374,17 +374,23 @@ func runPluginsInstalled(client *Client, renderer *Renderer) error {
 		return err
 	}
 
-	var plugins []kestra.Plugin
-	if err := json.Unmarshal(body, &plugins); err != nil {
+	// The server paginates this endpoint (PagedResults<Plugin>, default and
+	// max page size 1000 — comfortably above any real plugin count), so the
+	// body is {"results": [...], "total": N}, not a bare array.
+	var page struct {
+		Results []kestra.Plugin `json:"results"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
 		return fmt.Errorf("failed to parse installed plugins response: %w", err)
 	}
+	plugins := page.Results
 
 	sort.Slice(plugins, func(i, j int) bool { return plugins[i].GetName() < plugins[j].GetName() })
 
 	return renderer.Render(plugins, func(w *tabwriter.Writer) error {
-		fmt.Fprintln(w, "GROUP\tVERSION\tLICENSE")
+		fmt.Fprintln(w, "NAME\tGROUP\tVERSION\tLICENSE")
 		for _, p := range plugins {
-			fmt.Fprintf(w, "%s\t%s\t%s\n", p.GetName(), p.GetVersion(), p.GetLicense())
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.GetName(), p.GetGroup(), p.GetVersion(), p.GetLicense())
 		}
 		fmt.Fprintf(w, "\nTotal plugins: %d\n", len(plugins))
 		return nil
