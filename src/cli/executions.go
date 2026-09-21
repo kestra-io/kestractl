@@ -790,6 +790,7 @@ func newExecutionsListCommand() *cobra.Command {
 		namespace string
 		flowID    string
 		state     string
+		sort      []string
 		page      int32
 		size      int32
 	)
@@ -799,7 +800,9 @@ func newExecutionsListCommand() *cobra.Command {
 		Short: "List executions.",
 		Long: `Search and list executions, optionally filtered by namespace, flow, or state.
 
-Results are paginated. Use --page and --size to navigate larger result sets.`,
+Results are paginated. Use --page and --size to navigate larger result sets.
+
+Sorted newest first by default. Use --sort to override.`,
 		Example: `  # List the most recent executions
 	  kestractl executions list
 
@@ -808,6 +811,9 @@ Results are paginated. Use --page and --size to navigate larger result sets.`,
 
 	  # List failed executions for a specific flow
 	  kestractl executions list --namespace my.namespace --flow-id my-flow --state FAILED
+
+	  # Sort by namespace ascending instead of newest first
+	  kestractl executions list --sort namespace:asc
 
 	  # Paginate
 	  kestractl executions list --page 2 --size 100
@@ -826,13 +832,14 @@ Results are paginated. Use --page and --size to navigate larger result sets.`,
 				return err
 			}
 
-			return runExecutionsList(client, namespace, flowID, state, page, size, renderer)
+			return runExecutionsList(client, namespace, flowID, state, sort, page, size, renderer)
 		},
 	}
 
 	cmd.Flags().StringVarP(&namespace, "namespace", "n", "", "Filter by namespace")
 	cmd.Flags().StringVar(&flowID, "flow-id", "", "Filter by flow ID")
 	cmd.Flags().StringVar(&state, "state", "", "Filter by execution state (e.g. SUCCESS, FAILED, RUNNING)")
+	cmd.Flags().StringArrayVar(&sort, "sort", nil, "Sort expression (e.g. 'state.startDate:asc', repeatable). Defaults to newest first")
 	cmd.Flags().Int32Var(&page, "page", 1, "Page number (1-based)")
 	cmd.Flags().Int32Var(&size, "size", 50, "Number of executions per page")
 
@@ -866,19 +873,22 @@ func buildExecutionFilters(namespace, flowID, state string) []kestra.QueryFilter
 	return filters
 }
 
-func runExecutionsList(client *Client, namespace, flowID, state string, page, size int32, renderer *Renderer) error {
+func runExecutionsList(client *Client, namespace, flowID, state string, sort []string, page, size int32, renderer *Renderer) error {
 	if page < 1 {
 		page = 1
 	}
 	if size < 1 {
 		size = 50
 	}
+	if len(sort) == 0 {
+		sort = []string{"state.startDate:desc"}
+	}
 
 	pageInt, sizeInt := int(page), int(size)
 	filters := queryFiltersToSearchFilters(buildExecutionFilters(namespace, flowID, state))
 
 	resp, err := client.Kestra.Executions().
-		SearchExecutions(client.Ctx, client.Tenant, &pageInt, &sizeInt, nil, filters)
+		SearchExecutions(client.Ctx, client.Tenant, &pageInt, &sizeInt, sort, filters)
 	if err != nil {
 		return formatSDKError(err)
 	}
