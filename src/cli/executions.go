@@ -873,6 +873,17 @@ func buildExecutionFilters(namespace, flowID, state string) []kestra.QueryFilter
 	return filters
 }
 
+// filterEmpty returns the input with blank and whitespace-only entries removed.
+func filterEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 func runExecutionsList(client *Client, namespace, flowID, state string, sort []string, page, size int32, renderer *Renderer) error {
 	if page < 1 {
 		page = 1
@@ -880,6 +891,9 @@ func runExecutionsList(client *Client, namespace, flowID, state string, sort []s
 	if size < 1 {
 		size = 50
 	}
+	// Drop empty --sort tokens so `--sort ""` cannot suppress the default or
+	// forward a blank sort expression to the API.
+	sort = filterEmpty(sort)
 	if len(sort) == 0 {
 		sort = []string{"state.startDate:desc"}
 	}
