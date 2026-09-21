@@ -12,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/dustin/go-humanize"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -67,6 +70,7 @@ func newPluginsCommand() *cobra.Command {
 	cmd.AddCommand(newPluginsDownloadCommand())
 	cmd.AddCommand(newPluginsListCommand())
 	cmd.AddCommand(newPluginsGetCommand())
+	cmd.AddCommand(newPluginsInstalledCommand())
 	return cmd
 }
 
@@ -333,6 +337,77 @@ func runPluginsList(out io.Writer, kestraVersion string, license string, outputF
 	}
 	fmt.Fprintln(out, strings.Join(coords, " "))
 	return nil
+}
+
+func newPluginsInstalledCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "installed",
+		Short: "List the plugins actually installed on the connected Kestra server",
+		Long: `List the plugins installed on the Kestra server at --server/KESTRACTL_HOST.
+
+Unlike "plugins list", which resolves the public compatibility catalog for a
+Kestra version from api.kestra.io and ignores --server/KESTRACTL_HOST, this
+queries the connected instance's own classpath, so it reflects what is really
+installed there.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			return runPluginsInstalled(client, renderer)
+		},
+	}
+	return cmd
+}
+
+func runPluginsInstalled(client *Client, renderer *Renderer) error {
+	body, err := fetchInstalledPlugins(client)
+	if err != nil {
+		return err
+	}
+
+	// The server paginates this endpoint (PagedResults<Plugin>, default and
+	// max page size 1000 — comfortably above any real plugin count), so the
+	// body is {"results": [...], "total": N}, not a bare array.
+	var page struct {
+		Results []kestra.Plugin `json:"results"`
+		Total   int             `json:"total"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		return fmt.Errorf("failed to parse installed plugins response: %w", err)
+	}
+	plugins := page.Results
+
+	sort.Slice(plugins, func(i, j int) bool { return plugins[i].GetName() < plugins[j].GetName() })
+
+	return renderer.Render(plugins, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "NAME\tGROUP\tVERSION\tLICENSE")
+		for _, p := range plugins {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.GetName(), p.GetGroup(), p.GetVersion(), p.GetLicense())
+		}
+		fmt.Fprintf(w, "\nTotal plugins: %d\n", page.Total)
+		if page.Total > len(plugins) {
+			fmt.Fprintf(w, "Warning: listing truncated to the page size — showing %d of %d plugins.\n", len(plugins), page.Total)
+		}
+		return nil
+	})
+}
+
+// fetchInstalledPlugins queries the connected Kestra server's real plugin
+// list directly, bypassing the SDK: the generated client has no wrapped
+// method for GET /api/v1/plugins (issue #186), even though it already
+// generates the Plugin model that endpoint returns. Plugins are server-wide
+// (JVM classpath), not tenant-scoped, so the path carries no tenant segment.
+func fetchInstalledPlugins(client *Client) ([]byte, error) {
+	return client.doRawRequestNoTenant(http.MethodGet, "/api/v1/plugins")
 }
 
 // editionToLicense maps the user-facing --edition value to the API license query param.
