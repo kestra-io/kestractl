@@ -873,12 +873,13 @@ func buildExecutionFilters(namespace, flowID, state string) []kestra.QueryFilter
 	return filters
 }
 
-// filterEmpty returns the input with blank and whitespace-only entries removed.
+// filterEmpty returns the input with blank and whitespace-only entries removed,
+// trimming surrounding whitespace from the entries it keeps.
 func filterEmpty(values []string) []string {
 	out := make([]string, 0, len(values))
 	for _, v := range values {
-		if strings.TrimSpace(v) != "" {
-			out = append(out, v)
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			out = append(out, trimmed)
 		}
 	}
 	return out

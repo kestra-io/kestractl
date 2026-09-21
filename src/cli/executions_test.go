@@ -122,12 +122,31 @@ func TestRunExecutionsList_EmptySortFallsBackToDefault(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	var buf bytes.Buffer
-	err := runExecutionsList(newTestClient(t, server.URL), "", "", "", []string{""}, 1, 50, newTableRenderer(&buf))
+	err := runExecutionsList(newTestClient(t, server.URL), "", "", "", []string{"", "  "}, 1, 50, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runExecutionsList error: %v", err)
 	}
 	if len(gotSort) != 1 || gotSort[0] != "state.startDate:desc" {
 		t.Errorf("expected default sort [state.startDate:desc], got %v", gotSort)
+	}
+}
+
+func TestRunExecutionsList_TrimsPaddedSortTokens(t *testing.T) {
+	var gotSort []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSort = r.URL.Query()["sort"]
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[],"total":0}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runExecutionsList(newTestClient(t, server.URL), "", "", "", []string{"  namespace:asc  "}, 1, 50, newTableRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runExecutionsList error: %v", err)
+	}
+	if len(gotSort) != 1 || gotSort[0] != "namespace:asc" {
+		t.Errorf("expected trimmed sort [namespace:asc], got %v", gotSort)
 	}
 }
 
