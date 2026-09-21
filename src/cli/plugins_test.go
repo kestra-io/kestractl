@@ -1780,3 +1780,78 @@ func TestPluginsDownloadCommand_CompatibleForResolvesAndDownloads(t *testing.T) 
 		t.Errorf("expected resolved JAR on disk: %v", statErr)
 	}
 }
+
+func TestRunPluginsInstalled_QueriesConnectedServer(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[
+			{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"},
+			{"name":"io.kestra.plugin.kafka","version":"1.6.0","license":"OPEN_SOURCE"}
+		]`)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runPluginsInstalled(newTestClient(t, server.URL), newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runPluginsInstalled error: %v", err)
+	}
+
+	if gotPath != "/api/v1/plugins" {
+		t.Errorf("expected request to /api/v1/plugins (not tenant-scoped), got %q", gotPath)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "io.kestra.plugin.core") || !strings.Contains(out, "io.kestra.plugin.kafka") {
+		t.Errorf("expected both installed plugins in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "Total plugins: 2") {
+		t.Errorf("expected total count in output, got:\n%s", out)
+	}
+}
+
+func TestRunPluginsInstalled_ServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"forbidden"}`, http.StatusForbidden)
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runPluginsInstalled(newTestClient(t, server.URL), newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected error on server failure")
+	}
+	if !strings.Contains(err.Error(), "forbidden") {
+		t.Errorf("expected formatted server error, got: %v", err)
+	}
+}
+
+func TestPluginsInstalledCommand_JSONOutput(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"name":"io.kestra.plugin.core","version":"1.3.9","license":"OPEN_SOURCE"}]`)
+	}))
+	t.Cleanup(server.Close)
+
+	origOutput := globalFlags.Output
+	globalFlags.Output = "json"
+	t.Cleanup(func() { globalFlags.Output = origOutput })
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+	t.Cleanup(func() { newClientFunc = original })
+
+	cmd := newPluginsInstalledCommand()
+	out, err := executeCommand(cmd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var parsed []map[string]any
+	if unmarshalErr := json.Unmarshal([]byte(out), &parsed); unmarshalErr != nil {
+		t.Fatalf("expected valid JSON output, got %q: %v", out, unmarshalErr)
+	}
+	if len(parsed) != 1 || parsed[0]["name"] != "io.kestra.plugin.core" {
+		t.Errorf("expected one decoded plugin named io.kestra.plugin.core, got: %v", parsed)
+	}
+}

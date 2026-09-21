@@ -12,11 +12,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 	"time"
 
 	"github.com/dustin/go-humanize"
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/cobra"
 )
 
@@ -67,6 +70,7 @@ func newPluginsCommand() *cobra.Command {
 	cmd.AddCommand(newPluginsDownloadCommand())
 	cmd.AddCommand(newPluginsListCommand())
 	cmd.AddCommand(newPluginsGetCommand())
+	cmd.AddCommand(newPluginsInstalledCommand())
 	return cmd
 }
 
@@ -333,6 +337,114 @@ func runPluginsList(out io.Writer, kestraVersion string, license string, outputF
 	}
 	fmt.Fprintln(out, strings.Join(coords, " "))
 	return nil
+}
+
+func newPluginsInstalledCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "installed",
+		Short: "List the plugins actually installed on the connected Kestra server",
+		Long: `List the plugins installed on the Kestra server at --server/KESTRACTL_HOST.
+
+Unlike "plugins list", which resolves the public compatibility catalog for a
+Kestra version from api.kestra.io and ignores --server/KESTRACTL_HOST, this
+queries the connected instance's own classpath, so it reflects what is really
+installed there.`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
+			client, err := NewClient()
+			if err != nil {
+				return err
+			}
+			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
+			if err != nil {
+				return err
+			}
+			return runPluginsInstalled(client, renderer)
+		},
+	}
+	return cmd
+}
+
+func runPluginsInstalled(client *Client, renderer *Renderer) error {
+	body, err := fetchInstalledPlugins(client)
+	if err != nil {
+		return err
+	}
+
+	var plugins []kestra.Plugin
+	if err := json.Unmarshal(body, &plugins); err != nil {
+		return fmt.Errorf("failed to parse installed plugins response: %w", err)
+	}
+
+	sort.Slice(plugins, func(i, j int) bool { return plugins[i].GetName() < plugins[j].GetName() })
+
+	return renderer.Render(plugins, func(w *tabwriter.Writer) error {
+		fmt.Fprintln(w, "GROUP\tVERSION\tLICENSE")
+		for _, p := range plugins {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", p.GetName(), p.GetVersion(), p.GetLicense())
+		}
+		fmt.Fprintf(w, "\nTotal plugins: %d\n", len(plugins))
+		return nil
+	})
+}
+
+// fetchInstalledPlugins queries the connected Kestra server's real plugin
+// list directly, bypassing the SDK: the generated client has no wrapped
+// method for GET /api/v1/plugins (issue #186), even though it already
+// generates the Plugin model that endpoint returns. Plugins are server-wide
+// (JVM classpath), not tenant-scoped, so the path carries no tenant segment,
+// unlike doRawRequest.
+func fetchInstalledPlugins(client *Client) ([]byte, error) {
+	cfg := client.API.GetConfig()
+
+	base := ""
+	if len(cfg.Servers) > 0 {
+		base = cfg.Servers[0].URL
+	}
+	if base == "" {
+		base = cfg.Scheme + "://" + cfg.Host
+	}
+	base = strings.TrimRight(base, "/")
+
+	req, err := http.NewRequestWithContext(client.Ctx, http.MethodGet, base+"/api/v1/plugins", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+
+	if auth, ok := client.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
+		req.SetBasicAuth(auth.UserName, auth.Password)
+	}
+	if token, ok := client.Ctx.Value(kestra.ContextAccessToken).(string); ok {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for h, v := range cfg.DefaultHeader {
+		req.Header.Set(h, v)
+	}
+
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read installed plugins response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, formatErrorBody(body, resp.Status)
+	}
+
+	return body, nil
 }
 
 // editionToLicense maps the user-facing --edition value to the API license query param.
