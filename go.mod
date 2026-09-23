@@ -3,7 +3,7 @@ module github.com/kestra-io/kestractl
 go 1.25.0
 
 require (
-	github.com/posthog/posthog-go v1.25.1
+	github.com/posthog/posthog-go v1.25.2
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	github.com/dustin/go-humanize v1.0.1
+	github.com/dustin/go-humanize v1.1.0
 	github.com/kestra-io/client-sdk/go-sdk/v2 v2.0.1
 )
 
