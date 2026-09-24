@@ -111,6 +111,7 @@ type migrationSignals struct {
 	ConditionProperty           signalCount            `json:"condition_property"`
 	PebbleJsonFunction          signalCount            `json:"pebble_json_function"`
 	FsLocalDelete               signalCount            `json:"fs_local_delete"`
+	WorkerGroup                 signalCount            `json:"worker_group"`
 	ServerDeprecationsAvailable bool                   `json:"server_deprecations_available"`
 	ServerDeprecations          []serverDeprecation    `json:"server_deprecations,omitempty"`
 	DeprecatedTaskTypes         []deprecatedTaskType   `json:"deprecated_task_types,omitempty"`
@@ -187,6 +188,10 @@ type flowAnalysis struct {
 	ConditionProperty int64
 	PebbleJSON        int64
 	FsLocalDelete     int64
+	// WorkerGroup counts the tasks and triggers carrying the EE `workerGroup`
+	// property, removed in 2.0 in favor of `workerSelector`. Only the key's
+	// presence is recorded — the group name is a customer identifier.
+	WorkerGroup int64
 
 	// PebbleFunctions only ever holds allowlisted function names; everything
 	// else a flow calls is counted anonymously in PebbleUnknownFunctions.
@@ -509,6 +514,11 @@ func (a *flowAnalysis) walk(node any, trigger bool, depth int) {
 		if hasType {
 			a.recordType(typeName, trigger)
 		}
+		if hasType {
+			if _, ok := value["workerGroup"]; ok {
+				a.WorkerGroup++
+			}
+		}
 		if trigger && hasType {
 			// A trigger's `condition` is renamed to `when` in 2.0. Task-level
 			// `condition` properties are NOT in scope: the If task, for one,
@@ -785,6 +795,7 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 		conditionProperty signalAccumulator
 		pebbleJSON        signalAccumulator
 		fsLocalDelete     signalAccumulator
+		workerGroup       signalAccumulator
 		removed           = map[string]*signalAccumulator{}
 		namespaceKeys     = map[string]struct{}{}
 		deprecatedTypes   = map[deprecatedTask]int64{}
@@ -882,6 +893,7 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 			conditionProperty.add(flow.ConditionProperty, ref)
 			pebbleJSON.add(flow.PebbleJSON, ref)
 			fsLocalDelete.add(flow.FsLocalDelete, ref)
+			workerGroup.add(flow.WorkerGroup, ref)
 		}
 
 		tenant.Totals.TenantsScanned = 1
@@ -927,6 +939,7 @@ func aggregateReport(scans []tenantScan, anon *anonymizer, generatedAt time.Time
 	report.Signals.ConditionProperty = conditionProperty.result()
 	report.Signals.PebbleJsonFunction = pebbleJSON.result()
 	report.Signals.FsLocalDelete = fsLocalDelete.result()
+	report.Signals.WorkerGroup = workerGroup.result()
 
 	// Every removed task gets a row, including the ones nobody uses: "0 uses
 	// of ForEach" is itself an answer for the migration plan.
@@ -1108,6 +1121,8 @@ func renderSignalsSection(out *markdownWriter, report *usageReport) {
 		count(signals.PebbleJsonFunction.Flows), "Removed — use `fromJson()`/`toJson()` (text heuristic)")
 	table.row("`fs.local.Delete`", count(signals.FsLocalDelete.Occurrences),
 		count(signals.FsLocalDelete.Flows), "`recursive` default changed in 2.0")
+	table.row("`workerGroup` (EE)", count(signals.WorkerGroup.Occurrences),
+		count(signals.WorkerGroup.Flows), "Removed — use `workerSelector.tags` backed by a Worker Queue; `fallback` default is now FAIL")
 	if signals.ServerDeprecationsAvailable {
 		deprecatedTasks := int64(0)
 		for _, dep := range signals.ServerDeprecations {
@@ -1196,6 +1211,7 @@ func renderAffectedFlowsSection(out *markdownWriter, report *usageReport, detail
 	render("`condition` property", report.Signals.ConditionProperty.FlowRefs)
 	render("Pebble `json()`", report.Signals.PebbleJsonFunction.FlowRefs)
 	render("`fs.local.Delete`", report.Signals.FsLocalDelete.FlowRefs)
+	render("`workerGroup` (EE)", report.Signals.WorkerGroup.FlowRefs)
 
 	if len(report.Signals.ServerDeprecations) > 0 {
 		rendered = true
