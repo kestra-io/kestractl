@@ -943,7 +943,10 @@ Use --fail-fast to stop on the first error.
 --namespace forces every flow to one target namespace. --namespace-prefix
 instead prepends a prefix to each flow's own namespace, keeping their
 relative structure (useful for ephemeral per-branch or per-PR namespaces).
-The two are mutually exclusive.
+The two are mutually exclusive. Only each flow's own top-level namespace is
+changed: namespaces a flow refers to (Subflow targets, Flow trigger
+conditions, namespace files, KV lookups) are left as-is, so a prefixed copy
+still calls the unprefixed flows and reads the unprefixed data.
 
 Use --disable-triggers to set 'disabled: true' on every trigger of every
 deployed flow, so schedules and other triggers stay off, for example when
@@ -980,8 +983,11 @@ deploying to a short-lived preview namespace.`,
 		Aliases: []string{"create", "apply"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if namespaceOverride != "" && namespacePrefix != "" {
-				return errors.New("--namespace and --namespace-prefix are mutually exclusive")
+			if cmd.Flags().Changed("namespace-prefix") {
+				namespacePrefix = strings.Trim(strings.TrimSpace(namespacePrefix), ".")
+				if namespacePrefix == "" || strings.Contains(namespacePrefix, "..") || strings.ContainsAny(namespacePrefix, " \t") {
+					return errors.New("--namespace-prefix must be a dot-separated namespace such as 'staging.pr42'")
+				}
 			}
 
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
@@ -1003,6 +1009,7 @@ deploying to a short-lived preview namespace.`,
 	cmd.Flags().BoolVar(&disableTriggers, "disable-triggers", false, "Disable every trigger in each deployed flow")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first deployment error")
 	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
+	cmd.MarkFlagsMutuallyExclusive("namespace", "namespace-prefix")
 
 	return cmd
 }
@@ -1594,10 +1601,12 @@ func parseFlowYAML(content string) (string, string, error) {
 // bit flags starting at 1, so the plain style has no name of its own.
 const plainScalarStyle yaml.Style = 0
 
-// errNamespaceSpan means the namespace value was found in the parsed document
-// but could not be pinned to an exact range of source text, so rewriting it
-// would be a guess.
-var errNamespaceSpan = errors.New("could not isolate the 'namespace' field in the flow YAML")
+// errFieldSpan means the field's value was found in the parsed document but
+// could not be pinned to an exact range of source text, so rewriting it would
+// be a guess.
+func errFieldSpan(field string) error {
+	return fmt.Errorf("could not isolate the '%s' field in the flow YAML", field)
+}
 
 // replaceNamespaceInYAML sets the top-level namespace field in YAML content.
 // It rewrites only the span of that one value, so key order, comments, blank
@@ -1626,7 +1635,11 @@ func replaceNamespaceInYAML(content string, newNamespace string) (string, error)
 	// Only the top-level key: nested ones belong to tasks such as Subflow.
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value == "namespace" {
-			return spliceYAMLScalar(content, root.Content[i+1], encoded)
+			lines := strings.Split(content, "\n")
+			if err := spliceYAMLScalar(lines, root.Content[i+1], encoded, "namespace"); err != nil {
+				return "", err
+			}
+			return strings.Join(lines, "\n"), nil
 		}
 	}
 
@@ -1640,7 +1653,9 @@ func replaceNamespaceInYAML(content string, newNamespace string) (string, error)
 // top-level 'triggers' list, leaving every other byte of content untouched —
 // same guarantee as replaceNamespaceInYAML, and for the same reason: the
 // server persists whatever source we send. A flow with no 'triggers' key, or
-// an empty one, is returned unchanged.
+// an empty one, is returned unchanged; any other non-list 'triggers' (an
+// alias, a scalar) is an error, since silently deploying live triggers is
+// exactly what the caller asked to prevent.
 func disableTriggersInYAML(content string) (string, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
@@ -1659,50 +1674,82 @@ func disableTriggersInYAML(content string) (string, error) {
 			break
 		}
 	}
-	if triggers == nil || triggers.Kind != yaml.SequenceNode || len(triggers.Content) == 0 {
+	if triggers == nil || (triggers.Kind == yaml.ScalarNode && triggers.Tag == "!!null") {
 		return content, nil
 	}
+	if triggers.Kind != yaml.SequenceNode {
+		return "", errors.New("'triggers' must be a plain YAML list (aliases are not supported)")
+	}
 
-	// Walk bottom-to-top: inserting a 'disabled: true' line for one trigger
-	// must never shift the line numbers of triggers not yet processed, all of
-	// which were computed from the one parse of the original content above.
-	for i := len(triggers.Content) - 1; i >= 0; i-- {
-		trigger := triggers.Content[i]
+	// Every edit below rewrites text within a single existing line and never
+	// adds one, so the line numbers from the one parse above stay valid.
+	lines := strings.Split(content, "\n")
+	for _, trigger := range triggers.Content {
 		if trigger.Kind != yaml.MappingNode {
 			return "", errors.New("each entry in 'triggers' must be a YAML mapping")
 		}
 		if trigger.Style&yaml.FlowStyle != 0 {
 			return "", errors.New("cannot disable a flow-style trigger mapping")
 		}
-
-		var handled bool
-		for j := 0; j+1 < len(trigger.Content); j += 2 {
-			if trigger.Content[j].Value == "disabled" {
-				updated, err := spliceYAMLScalar(content, trigger.Content[j+1], "true")
-				if err != nil {
-					return "", err
-				}
-				content = updated
-				handled = true
-				break
-			}
+		if err := disableTrigger(lines, trigger); err != nil {
+			return "", err
 		}
-		if handled {
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// disableTrigger sets 'disabled: true' on one block-style trigger mapping.
+func disableTrigger(lines []string, trigger *yaml.Node) error {
+	for j := 0; j+1 < len(trigger.Content); j += 2 {
+		key, value := trigger.Content[j], trigger.Content[j+1]
+		if key.Value != "disabled" {
 			continue
 		}
-
-		firstKey := trigger.Content[0]
-		lines := strings.Split(content, "\n")
-		if firstKey.Line < 1 || firstKey.Line > len(lines) {
-			return "", errors.New("could not isolate a trigger in the flow YAML")
+		if value.Kind == yaml.ScalarNode && value.Tag == "!!null" && value.Value == "" {
+			// 'disabled:' with no value: there is no token to splice, so
+			// write the value right after the key's colon.
+			return appendAfterKey(lines, key, "disabled", " true")
 		}
-		indent := strings.Repeat(" ", firstKey.Column-1)
-		insertAt := firstKey.Line // 0-based index right after the trigger's first key line
-		lines = append(lines[:insertAt:insertAt], append([]string{indent + "disabled: true"}, lines[insertAt:]...)...)
-		content = strings.Join(lines, "\n")
+		return spliceYAMLScalar(lines, value, "true", "disabled")
 	}
 
-	return content, nil
+	// Insert the new key in front of the first one, on its line, so it lands
+	// before the first value whatever shape that value takes (nested list,
+	// block scalar, value on the next line).
+	firstKey := trigger.Content[0]
+	if firstKey.Line < 1 || firstKey.Line > len(lines) {
+		return errFieldSpan("triggers")
+	}
+	line := lines[firstKey.Line-1]
+	col := firstKey.Column - 1
+	if col < 0 || col >= len(line) {
+		return errFieldSpan("triggers")
+	}
+	eol := ""
+	if strings.HasSuffix(line, "\r") {
+		eol = "\r" // keep CRLF files CRLF
+	}
+	lines[firstKey.Line-1] = line[:col] + "disabled: true" + eol + "\n" + strings.Repeat(" ", col) + line[col:]
+	return nil
+}
+
+// appendAfterKey writes text right after "field:" when key is a plain key
+// followed by nothing but whitespace or a comment on its line.
+func appendAfterKey(lines []string, key *yaml.Node, field string, text string) error {
+	if key.Line < 1 || key.Line > len(lines) {
+		return errFieldSpan(field)
+	}
+	line := lines[key.Line-1]
+	start := key.Column - 1
+	end := start + len(field) + 1
+	if start < 0 || end > len(line) || line[start:end] != field+":" {
+		return errFieldSpan(field)
+	}
+	if rest := strings.TrimSpace(line[end:]); rest != "" && !strings.HasPrefix(rest, "#") {
+		return errFieldSpan(field)
+	}
+	lines[key.Line-1] = line[:end] + text + line[end:]
+	return nil
 }
 
 // encodeYAMLScalar renders value as a single-line YAML scalar, quoting it when
@@ -1735,61 +1782,61 @@ func yamlDocumentRoot(node *yaml.Node) *yaml.Node {
 	return node
 }
 
-// spliceYAMLScalar replaces the source text of node with encoded, leaving every
-// other byte of content — including the rest of node's own line — untouched.
-func spliceYAMLScalar(content string, node *yaml.Node, encoded string) (string, error) {
+// spliceYAMLScalar replaces the source text of node, the value of field, with
+// encoded in lines, leaving every other byte — including the rest of node's
+// own line — untouched. It never adds or removes a line.
+func spliceYAMLScalar(lines []string, node *yaml.Node, encoded string, field string) error {
 	if node.Kind != yaml.ScalarNode {
-		return "", errors.New("flow YAML must contain a scalar 'namespace' field")
+		return fmt.Errorf("flow YAML must contain a scalar '%s' field", field)
 	}
 
-	lines := strings.Split(content, "\n")
 	if node.Line < 1 || node.Line > len(lines) {
-		return "", errNamespaceSpan
+		return errFieldSpan(field)
 	}
 	line := lines[node.Line-1]
 	start := node.Column - 1
 	if start < 0 || start >= len(line) {
-		return "", errNamespaceSpan
+		return errFieldSpan(field)
 	}
 
-	end, err := yamlScalarEnd(line, start, node)
+	end, err := yamlScalarEnd(line, start, node, field)
 	if err != nil {
-		return "", err
+		return err
 	}
 	// Never rewrite on a guess at where the token ended: the span has to parse
 	// back to the very scalar the document decoded.
 	if !isYAMLScalar(line[start:end], node.Value) {
-		return "", errNamespaceSpan
+		return errFieldSpan(field)
 	}
 
 	lines[node.Line-1] = line[:start] + encoded + line[end:]
-	return strings.Join(lines, "\n"), nil
+	return nil
 }
 
 // yamlScalarEnd returns the index just past the scalar that node occupies,
 // which begins at start on line.
-func yamlScalarEnd(line string, start int, node *yaml.Node) (int, error) {
+func yamlScalarEnd(line string, start int, node *yaml.Node, field string) (int, error) {
 	switch node.Style {
 	case plainScalarStyle:
 		// A plain scalar is its own source text, minus the trailing whitespace
 		// the parser stripped; overrunning the line means it spanned lines.
 		end := start + len(node.Value)
 		if end > len(line) {
-			return 0, errNamespaceSpan
+			return 0, errFieldSpan(field)
 		}
 		return end, nil
 	case yaml.SingleQuotedStyle, yaml.DoubleQuotedStyle:
-		return quotedScalarEnd(line, start)
+		return quotedScalarEnd(line, start, field)
 	default:
 		// Literal and folded scalars span lines by definition.
-		return 0, errors.New("unsupported style for the 'namespace' field")
+		return 0, fmt.Errorf("unsupported style for the '%s' field", field)
 	}
 }
 
 // quotedScalarEnd returns the index just past the closing quote of the quoted
 // scalar starting at start. Inside single quotes a doubled quote escapes one;
 // inside double quotes a backslash escapes the next character.
-func quotedScalarEnd(line string, start int) (int, error) {
+func quotedScalarEnd(line string, start int, field string) (int, error) {
 	quote := line[start]
 	for i := start + 1; i < len(line); i++ {
 		switch {
@@ -1803,7 +1850,7 @@ func quotedScalarEnd(line string, start int) (int, error) {
 			return i + 1, nil
 		}
 	}
-	return 0, errors.New("unterminated 'namespace' field")
+	return 0, fmt.Errorf("unterminated '%s' field", field)
 }
 
 // isYAMLScalar reports whether text parses to exactly the scalar value want.

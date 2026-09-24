@@ -999,7 +999,7 @@ func TestDisableTriggersInYAML(t *testing.T) {
 		{
 			name: "inserts disabled: true on a trigger without one",
 			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"*/5 * * * *\"\n",
-			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    disabled: true\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"*/5 * * * *\"\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - disabled: true\n    id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"*/5 * * * *\"\n",
 		},
 		{
 			name: "flips an explicit disabled: false to true",
@@ -1014,7 +1014,32 @@ func TestDisableTriggersInYAML(t *testing.T) {
 		{
 			name: "handles multiple triggers without shifting earlier ones",
 			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: first\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n  - id: second\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n",
-			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: first\n    disabled: true\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n  - id: second\n    disabled: true\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - disabled: true\n    id: first\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n  - disabled: true\n    id: second\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n",
+		},
+		{
+			name: "first key holds a nested list",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - conditions:\n      - type: x\n    id: t\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - disabled: true\n    conditions:\n      - type: x\n    id: t\n",
+		},
+		{
+			name: "first value is a folded block",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - description: >\n      long text\n    id: t\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - disabled: true\n    description: >\n      long text\n    id: t\n",
+		},
+		{
+			name: "existing disabled with no value",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: # set later\n    type: x\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: true # set later\n    type: x\n",
+		},
+		{
+			name: "CRLF line endings are kept",
+			yaml: "id: f\r\nnamespace: n\r\ntriggers:\r\n  - id: t\r\n    type: x\r\n",
+			want: "id: f\r\nnamespace: n\r\ntriggers:\r\n  - disabled: true\r\n    id: t\r\n    type: x\r\n",
+		},
+		{
+			name: "null triggers: unchanged",
+			yaml: "id: f\nnamespace: n\ntriggers:\n",
+			want: "id: f\nnamespace: n\ntriggers:\n",
 		},
 	}
 
@@ -1038,6 +1063,9 @@ func TestDisableTriggersInYAML_Rejects(t *testing.T) {
 	}{
 		{name: "trigger not a mapping", yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - schedule\n"},
 		{name: "flow-style trigger mapping", yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - {id: sched, type: io.kestra.plugin.core.trigger.Schedule}\n"},
+		{name: "triggers is an alias", yaml: "x: &t\n  - id: t\n    type: x\nid: f\nnamespace: n\ntriggers: *t\n"},
+		{name: "triggers is a scalar", yaml: "id: f\nnamespace: n\ntriggers: nope\n"},
+		{name: "disabled is a list", yaml: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: [false]\n"},
 	}
 
 	for _, tt := range tests {
@@ -1055,8 +1083,19 @@ func TestFlowsDeployCommand_NamespaceAndPrefixMutuallyExclusive(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when both --namespace and --namespace-prefix are set")
 	}
-	if !strings.Contains(err.Error(), "mutually exclusive") {
+	if !strings.Contains(err.Error(), "none of the others can be") {
 		t.Fatalf("expected mutually-exclusive error, got: %v", err)
+	}
+}
+
+func TestFlowsDeployCommand_RejectsInvalidPrefix(t *testing.T) {
+	for _, prefix := range []string{"", ".", " . ", "a..b", "a b"} {
+		t.Run(prefix, func(t *testing.T) {
+			_, err := executeCommand(newFlowsDeployCommand(), "somefile.yaml", "--namespace-prefix", prefix)
+			if err == nil || !strings.Contains(err.Error(), "--namespace-prefix") {
+				t.Fatalf("expected --namespace-prefix error, got: %v", err)
+			}
+		})
 	}
 }
 
