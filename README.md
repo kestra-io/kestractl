@@ -271,6 +271,12 @@ kestractl flows deploy ./flows/
 # Deploy with namespace override (all flows go to specified namespace)
 kestractl flows deploy ./flows/ --namespace prod.namespace
 
+# Deploy under a namespace prefix (keeps each flow's own namespace beneath it)
+kestractl flows deploy ./flows/ --namespace-prefix staging.pr42
+
+# Deploy with every trigger disabled
+kestractl flows deploy ./flows/ --disable-triggers
+
 # Override existing flows
 kestractl flows deploy ./flows/ --override
 

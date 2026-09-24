@@ -918,6 +918,8 @@ func newFlowsDeployCommand() *cobra.Command {
 	var (
 		override          bool
 		namespaceOverride string
+		namespacePrefix   string
+		disableTriggers   bool
 		failFast          bool
 		recursive         bool
 	)
@@ -936,7 +938,16 @@ By default, the deployment will fail if a flow already exists.
 Use --override to update existing flows.
 
 By default, when deploying multiple flows, all files are processed even if some fail.
-Use --fail-fast to stop on the first error.`,
+Use --fail-fast to stop on the first error.
+
+--namespace forces every flow to one target namespace. --namespace-prefix
+instead prepends a prefix to each flow's own namespace, keeping their
+relative structure (useful for ephemeral per-branch or per-PR namespaces).
+The two are mutually exclusive.
+
+Use --disable-triggers to set 'disabled: true' on every trigger of every
+deployed flow, so schedules and other triggers stay off, for example when
+deploying to a short-lived preview namespace.`,
 		Example: `  # Deploy a single flow
 	  kestractl flows deploy flow.yaml
 
@@ -948,6 +959,12 @@ Use --fail-fast to stop on the first error.`,
 
 	  # Deploy with namespace override (all flows go to specified namespace)
 	  kestractl flows deploy ./flows/ --namespace prod.namespace
+
+	  # Deploy under a namespace prefix (keeps each flow's own namespace beneath it)
+	  kestractl flows deploy ./flows/ --namespace-prefix staging.pr42
+
+	  # Deploy with every trigger disabled
+	  kestractl flows deploy ./flows/ --disable-triggers
 
 	  # Stop on first error (fail-fast)
 	  kestractl flows deploy ./flows/ --fail-fast
@@ -963,6 +980,10 @@ Use --fail-fast to stop on the first error.`,
 		Aliases: []string{"create", "apply"},
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if namespaceOverride != "" && namespacePrefix != "" {
+				return errors.New("--namespace and --namespace-prefix are mutually exclusive")
+			}
+
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -972,12 +993,14 @@ Use --fail-fast to stop on the first error.`,
 				return err
 			}
 
-			return runFlowsDeploy(client, args[0], override, namespaceOverride, failFast, recursive, renderer)
+			return runFlowsDeploy(client, args[0], override, namespaceOverride, namespacePrefix, disableTriggers, failFast, recursive, renderer)
 		},
 	}
 
 	cmd.Flags().BoolVar(&override, "override", false, "Override the flow if it already exists")
 	cmd.Flags().StringVar(&namespaceOverride, "namespace", "", "Override the namespace for all deployed flows")
+	cmd.Flags().StringVar(&namespacePrefix, "namespace-prefix", "", "Prepend a prefix to each flow's existing namespace")
+	cmd.Flags().BoolVar(&disableTriggers, "disable-triggers", false, "Disable every trigger in each deployed flow")
 	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop on the first deployment error")
 	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
 
@@ -1312,7 +1335,7 @@ func appendUniqueString(list []string, value string) []string {
 	return append(list, value)
 }
 
-func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, failFast bool, recursive bool, renderer *Renderer) error {
+func runFlowsDeploy(client *Client, path string, override bool, namespaceOverride string, namespacePrefix string, disableTriggers bool, failFast bool, recursive bool, renderer *Renderer) error {
 	// Check if path is a file or directory
 	info, err := os.Stat(path)
 	if err != nil {
@@ -1336,7 +1359,7 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 	// Deploy all flows
 	results := make([]DeployResult, 0, len(files))
 	for _, file := range files {
-		result := deployFlow(client, file, namespaceOverride, override)
+		result := deployFlow(client, file, namespaceOverride, namespacePrefix, disableTriggers, override)
 		results = append(results, result)
 
 		if !result.Success && failFast {
@@ -1385,7 +1408,7 @@ func collectFlowFiles(rootPath string, recursive bool) ([]string, error) {
 }
 
 // deployFlow deploys a single flow file and returns the result.
-func deployFlow(client *Client, filePath string, namespaceOverride string, override bool) DeployResult {
+func deployFlow(client *Client, filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, override bool) DeployResult {
 	result := DeployResult{
 		FilePath: filePath,
 		Success:  false,
@@ -1406,7 +1429,8 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 
 	result.FlowID = flowID
 
-	// Apply namespace override if provided
+	// Apply namespace override or prefix if provided; the two are mutually
+	// exclusive, enforced by the command before deployFlow is ever called.
 	if namespaceOverride != "" {
 		// Modify YAML content to use the overridden namespace
 		yamlContent, err = replaceNamespaceInYAML(yamlContent, namespaceOverride)
@@ -1415,6 +1439,22 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, overr
 			return result
 		}
 		namespace = namespaceOverride
+	} else if namespacePrefix != "" {
+		prefixedNamespace := namespacePrefix + "." + namespace
+		yamlContent, err = replaceNamespaceInYAML(yamlContent, prefixedNamespace)
+		if err != nil {
+			result.Error = fmt.Sprintf("failed to apply namespace prefix: %v", err)
+			return result
+		}
+		namespace = prefixedNamespace
+	}
+
+	if disableTriggers {
+		yamlContent, err = disableTriggersInYAML(yamlContent)
+		if err != nil {
+			result.Error = fmt.Sprintf("failed to disable triggers: %v", err)
+			return result
+		}
 	}
 	result.Namespace = namespace
 
@@ -1594,6 +1634,75 @@ func replaceNamespaceInYAML(content string, newNamespace string) (string, error)
 		return "", errors.New("cannot add a 'namespace' field to a flow-style YAML mapping")
 	}
 	return appendNamespaceLine(content, encoded), nil
+}
+
+// disableTriggersInYAML sets 'disabled: true' on every entry of the flow's
+// top-level 'triggers' list, leaving every other byte of content untouched —
+// same guarantee as replaceNamespaceInYAML, and for the same reason: the
+// server persists whatever source we send. A flow with no 'triggers' key, or
+// an empty one, is returned unchanged.
+func disableTriggersInYAML(content string) (string, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		return "", fmt.Errorf("invalid YAML content: %w", err)
+	}
+
+	root := yamlDocumentRoot(&doc)
+	if root == nil || root.Kind != yaml.MappingNode {
+		return content, nil
+	}
+
+	var triggers *yaml.Node
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "triggers" {
+			triggers = root.Content[i+1]
+			break
+		}
+	}
+	if triggers == nil || triggers.Kind != yaml.SequenceNode || len(triggers.Content) == 0 {
+		return content, nil
+	}
+
+	// Walk bottom-to-top: inserting a 'disabled: true' line for one trigger
+	// must never shift the line numbers of triggers not yet processed, all of
+	// which were computed from the one parse of the original content above.
+	for i := len(triggers.Content) - 1; i >= 0; i-- {
+		trigger := triggers.Content[i]
+		if trigger.Kind != yaml.MappingNode {
+			return "", errors.New("each entry in 'triggers' must be a YAML mapping")
+		}
+		if trigger.Style&yaml.FlowStyle != 0 {
+			return "", errors.New("cannot disable a flow-style trigger mapping")
+		}
+
+		var handled bool
+		for j := 0; j+1 < len(trigger.Content); j += 2 {
+			if trigger.Content[j].Value == "disabled" {
+				updated, err := spliceYAMLScalar(content, trigger.Content[j+1], "true")
+				if err != nil {
+					return "", err
+				}
+				content = updated
+				handled = true
+				break
+			}
+		}
+		if handled {
+			continue
+		}
+
+		firstKey := trigger.Content[0]
+		lines := strings.Split(content, "\n")
+		if firstKey.Line < 1 || firstKey.Line > len(lines) {
+			return "", errors.New("could not isolate a trigger in the flow YAML")
+		}
+		indent := strings.Repeat(" ", firstKey.Column-1)
+		insertAt := firstKey.Line // 0-based index right after the trigger's first key line
+		lines = append(lines[:insertAt:insertAt], append([]string{indent + "disabled: true"}, lines[insertAt:]...)...)
+		content = strings.Join(lines, "\n")
+	}
+
+	return content, nil
 }
 
 // encodeYAMLScalar renders value as a single-line YAML scalar, quoting it when
