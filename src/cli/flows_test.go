@@ -701,7 +701,7 @@ func TestFlowsDeployCommand_Flags(t *testing.T) {
 	cmd := newFlowsDeployCommand()
 
 	// Check that all expected flags exist
-	flags := []string{"override", "namespace", "fail-fast", "recursive"}
+	flags := []string{"override", "namespace", "namespace-prefix", "disable-triggers", "fail-fast", "recursive"}
 	for _, flag := range flags {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("expected flag --%s to exist", flag)
@@ -721,6 +721,8 @@ func TestFlowsDeployCommand_Help(t *testing.T) {
 		"deploy <path>",
 		"--override",
 		"--namespace",
+		"--namespace-prefix",
+		"--disable-triggers",
 		"--fail-fast",
 		"--recursive",
 		"directory",
@@ -973,6 +975,125 @@ func TestReplaceNamespaceInYAML_Rejects(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if _, err := replaceNamespaceInYAML(tt.yaml, "new.ns"); err == nil {
 				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestDisableTriggersInYAML(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{
+			name: "no triggers key: unchanged",
+			yaml: "id: my-flow\nnamespace: my.ns\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n",
+			want: "id: my-flow\nnamespace: my.ns\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n",
+		},
+		{
+			name: "empty triggers list: unchanged",
+			yaml: "id: my-flow\nnamespace: my.ns\ntriggers: []\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers: []\n",
+		},
+		{
+			name: "inserts disabled: true on a trigger without one",
+			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"*/5 * * * *\"\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - disabled: true\n    id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"*/5 * * * *\"\n",
+		},
+		{
+			name: "flips an explicit disabled: false to true",
+			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    disabled: false\n    cron: \"*/5 * * * *\"\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    disabled: true\n    cron: \"*/5 * * * *\"\n",
+		},
+		{
+			name: "leaves an already-disabled trigger alone",
+			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    disabled: true\n    type: io.kestra.plugin.core.trigger.Schedule\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: sched\n    disabled: true\n    type: io.kestra.plugin.core.trigger.Schedule\n",
+		},
+		{
+			name: "handles multiple triggers without shifting earlier ones",
+			yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - id: first\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n  - id: second\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n",
+			want: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - disabled: true\n    id: first\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n  - disabled: true\n    id: second\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\n",
+		},
+		{
+			name: "first key holds a nested list",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - conditions:\n      - type: x\n    id: t\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - disabled: true\n    conditions:\n      - type: x\n    id: t\n",
+		},
+		{
+			name: "first value is a folded block",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - description: >\n      long text\n    id: t\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - disabled: true\n    description: >\n      long text\n    id: t\n",
+		},
+		{
+			name: "existing disabled with no value",
+			yaml: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: # set later\n    type: x\n",
+			want: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: true # set later\n    type: x\n",
+		},
+		{
+			name: "CRLF line endings are kept",
+			yaml: "id: f\r\nnamespace: n\r\ntriggers:\r\n  - id: t\r\n    type: x\r\n",
+			want: "id: f\r\nnamespace: n\r\ntriggers:\r\n  - disabled: true\r\n    id: t\r\n    type: x\r\n",
+		},
+		{
+			name: "null triggers: unchanged",
+			yaml: "id: f\nnamespace: n\ntriggers:\n",
+			want: "id: f\nnamespace: n\ntriggers:\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := disableTriggersInYAML(tt.yaml)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("source not as expected:\n--- got ---\n%s\n--- want ---\n%s", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDisableTriggersInYAML_Rejects(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{name: "trigger not a mapping", yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - schedule\n"},
+		{name: "flow-style trigger mapping", yaml: "id: my-flow\nnamespace: my.ns\ntriggers:\n  - {id: sched, type: io.kestra.plugin.core.trigger.Schedule}\n"},
+		{name: "triggers is an alias", yaml: "x: &t\n  - id: t\n    type: x\nid: f\nnamespace: n\ntriggers: *t\n"},
+		{name: "triggers is a scalar", yaml: "id: f\nnamespace: n\ntriggers: nope\n"},
+		{name: "disabled is a list", yaml: "id: f\nnamespace: n\ntriggers:\n  - id: t\n    disabled: [false]\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := disableTriggersInYAML(tt.yaml); err == nil {
+				t.Fatal("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestFlowsDeployCommand_NamespaceAndPrefixMutuallyExclusive(t *testing.T) {
+	cmd := newFlowsDeployCommand()
+	_, err := executeCommand(cmd, "somefile.yaml", "--namespace", "a.b", "--namespace-prefix", "c.d")
+	if err == nil {
+		t.Fatal("expected error when both --namespace and --namespace-prefix are set")
+	}
+	if !strings.Contains(err.Error(), "none of the others can be") {
+		t.Fatalf("expected mutually-exclusive error, got: %v", err)
+	}
+}
+
+func TestFlowsDeployCommand_RejectsInvalidPrefix(t *testing.T) {
+	for _, prefix := range []string{"", ".", " . ", "a..b", "a b"} {
+		t.Run(prefix, func(t *testing.T) {
+			_, err := executeCommand(newFlowsDeployCommand(), "somefile.yaml", "--namespace-prefix", prefix)
+			if err == nil || !strings.Contains(err.Error(), "--namespace-prefix") {
+				t.Fatalf("expected --namespace-prefix error, got: %v", err)
 			}
 		})
 	}
@@ -1796,7 +1917,7 @@ func TestDeployFlow_OverrideWithArrayLabels(t *testing.T) {
 	_, _ = tmpFile.WriteString("id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
 	tmpFile.Close()
 
-	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", true)
+	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", "", false, true)
 	if !result.Success {
 		t.Fatalf("expected deploy success, got error: %s", result.Error)
 	}
@@ -1832,7 +1953,7 @@ func TestDeployFlow_CreateWithArrayLabels(t *testing.T) {
 	_, _ = tmpFile.WriteString("id: my-flow\nnamespace: my.namespace\nlabels:\n  - key: type\n    value: data_extraction\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
 	tmpFile.Close()
 
-	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", false)
+	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", "", false, false)
 	if !result.Success {
 		t.Fatalf("expected deploy success, got error: %s", result.Error)
 	}
@@ -1841,6 +1962,45 @@ func TestDeployFlow_CreateWithArrayLabels(t *testing.T) {
 	}
 	if result.Revision != 1 {
 		t.Errorf("expected revision 1, got %d", result.Revision)
+	}
+}
+
+func TestDeployFlow_NamespacePrefixAndDisableTriggers(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			gotBody = string(body)
+			_, _ = w.Write([]byte(`{"id":"my-flow","namespace":"staging.pr42.my.namespace","revision":1,"disabled":false,"deleted":false,"tasks":[]}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "flow-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = tmpFile.WriteString("id: my-flow\nnamespace: my.namespace\ntriggers:\n  - id: sched\n    type: io.kestra.plugin.core.trigger.Schedule\n    cron: \"* * * * *\"\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
+	tmpFile.Close()
+
+	result := deployFlow(newTestClient(t, server.URL), tmpFile.Name(), "", "staging.pr42", true, false)
+	if !result.Success {
+		t.Fatalf("expected deploy success, got error: %s", result.Error)
+	}
+	if result.Namespace != "staging.pr42.my.namespace" {
+		t.Fatalf("expected prefixed namespace, got %q", result.Namespace)
+	}
+	if !strings.Contains(gotBody, "namespace: staging.pr42.my.namespace") {
+		t.Fatalf("expected prefixed namespace in deployed source, got: %s", gotBody)
+	}
+	if !strings.Contains(gotBody, "disabled: true") {
+		t.Fatalf("expected trigger disabled in deployed source, got: %s", gotBody)
 	}
 }
 
