@@ -43,6 +43,8 @@ tasks:
     tasks:
       - id: purge
         type: io.kestra.plugin.fs.local.Delete
+        workerGroup:
+          key: gpu
 errors:
   - id: on-error
     type: io.kestra.plugin.core.log.Log
@@ -56,6 +58,8 @@ triggers:
   - id: schedule
     type: io.kestra.plugin.core.trigger.Schedule
     cron: "0 * * * *"
+    workerGroup:
+      key: gpu
     conditions:
       - type: io.kestra.plugin.core.condition.DayWeekInMonth
       - type: io.kestra.plugin.core.condition.WeekendCondition
@@ -146,6 +150,10 @@ func TestAnalyzeFlowSource_Walker(t *testing.T) {
 	}
 	if analysis.FsLocalDelete != 1 {
 		t.Errorf("fs.local.Delete: got %d, want 1", analysis.FsLocalDelete)
+	}
+	// The nested Delete task and the Schedule trigger.
+	if analysis.WorkerGroup != 2 {
+		t.Errorf("workerGroup: got %d, want 2", analysis.WorkerGroup)
 	}
 	// Two `conditions` entries plus one `preconditions` entry.
 	if analysis.TriggerConditions != 3 {
@@ -1001,6 +1009,8 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 		"| Task ForEachItem | 1 | 1 |",
 		"| Task ForEach | 0 | 0 |",
 		"| Trigger conditions/preconditions | 3 | 1 |",
+		"| `workerGroup` (EE) | 2 | 1 |",
+		"### `workerGroup` (EE)",
 		"io.kestra.plugin.core.trigger.Schedule",
 		"Scope: single-tenant",
 		"- Kestra version: unknown",
@@ -1383,6 +1393,8 @@ tasks:
     type: io.kestra.plugin.jdbc.postgresql.Query
     url: jdbc:postgresql://db/app?password=SENTINEL-SECRET-VALUE
     sql: SELECT * FROM customers WHERE email = 'SENTINEL-SECRET-VALUE'
+    workerGroup:
+      key: SENTINEL-SECRET-VALUE
   - id: each
     type: io.kestra.plugin.core.flow.ForEach
     values: SENTINEL-SECRET-VALUE
@@ -1445,6 +1457,9 @@ func TestUsageReport_DoesNotLeakFlowValues(t *testing.T) {
 			// Sanity check: the signal itself is still reported.
 			if report.Signals.RemovedTasks["ForEach"].Occurrences != 1 {
 				t.Error("expected the ForEach signal to be counted")
+			}
+			if report.Signals.WorkerGroup.Occurrences != 1 {
+				t.Error("expected the workerGroup signal to be counted")
 			}
 
 			names := strings.Contains(markdown.String(), "prod.secrets") || strings.Contains(markdown.String(), "leaky-flow")
