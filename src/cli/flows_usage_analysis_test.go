@@ -21,6 +21,12 @@ disabled: true
 inputs:
   - id: target
     type: STRING
+    workerGroup:
+      key: not-a-task
+variables:
+  routing:
+    workerGroup:
+      key: not-a-task-either
 tasks:
   - id: branch
     type: io.kestra.plugin.core.flow.If
@@ -48,6 +54,8 @@ tasks:
 errors:
   - id: on-error
     type: io.kestra.plugin.core.log.Log
+    workerGroup:
+      key: etl
 finally:
   - id: cleanup
     type: io.kestra.plugin.core.log.Log
@@ -83,6 +91,8 @@ pluginDefaults:
   - type: io.kestra.plugin.jdbc.postgresql.Query
     values:
       url: jdbc:postgresql://db/app
+      workerGroup:
+        key: db
 `
 
 func mustAnalyze(t *testing.T, source string) flowAnalysis {
@@ -151,9 +161,15 @@ func TestAnalyzeFlowSource_Walker(t *testing.T) {
 	if analysis.FsLocalDelete != 1 {
 		t.Errorf("fs.local.Delete: got %d, want 1", analysis.FsLocalDelete)
 	}
-	// The nested Delete task and the Schedule trigger.
-	if analysis.WorkerGroup != 2 {
-		t.Errorf("workerGroup: got %d, want 2", analysis.WorkerGroup)
+	// The nested Delete task, the Schedule trigger, the errors task and the
+	// pluginDefaults entry. The input and the variable carry no plugin type
+	// and must not count.
+	if analysis.WorkerGroup != 4 {
+		t.Errorf("workerGroup: got %d, want 4", analysis.WorkerGroup)
+	}
+	// gpu (twice), etl and db.
+	if len(analysis.WorkerGroupKeys) != 3 {
+		t.Errorf("distinct workerGroup keys: got %d, want 3", len(analysis.WorkerGroupKeys))
 	}
 	// Two `conditions` entries plus one `preconditions` entry.
 	if analysis.TriggerConditions != 3 {
@@ -1009,7 +1025,8 @@ func TestRenderUsageReportMarkdown(t *testing.T) {
 		"| Task ForEachItem | 1 | 1 |",
 		"| Task ForEach | 0 | 0 |",
 		"| Trigger conditions/preconditions | 3 | 1 |",
-		"| `workerGroup` (EE) | 2 | 1 |",
+		"| `workerGroup` (EE) | 4 | 1 |",
+		"3 distinct group(s), each needing a Worker Queue",
 		"### `workerGroup` (EE)",
 		"io.kestra.plugin.core.trigger.Schedule",
 		"Scope: single-tenant",
@@ -1521,5 +1538,71 @@ func TestFlowsFromZip(t *testing.T) {
 func TestFlowsFromZip_InvalidArchive(t *testing.T) {
 	if _, _, err := flowsFromZip([]byte("not a zip file")); err == nil {
 		t.Fatal("expected an error for an invalid archive")
+	}
+}
+
+func TestAnalyzeFlowSource_WorkerGroupEdgeCases(t *testing.T) {
+	analysis := mustAnalyze(t, `
+id: f
+namespace: ns
+tasks:
+  - id: empty
+    type: io.kestra.plugin.core.log.Log
+    workerGroup: {}
+  - id: null-group
+    type: io.kestra.plugin.core.log.Log
+    workerGroup:
+  - id: fallback-only
+    type: io.kestra.plugin.core.log.Log
+    workerGroup:
+      fallback: WAIT
+  - id: call
+    type: io.kestra.plugin.core.flow.Subflow
+    inputs:
+      workerGroup:
+        key: subflow-input-not-a-group
+finally:
+  - id: cleanup
+    type: io.kestra.plugin.core.log.Log
+    workerGroup:
+      key: gpu
+`)
+
+	// The Subflow's inputs map is walked but has no plugin type, so its
+	// workerGroup entry is a plain input value and must not count.
+	// 2.0 rejects the property whatever its value, so every presence counts,
+	// but only a real key contributes a distinct group.
+	if analysis.WorkerGroup != 4 {
+		t.Errorf("workerGroup: got %d, want 4", analysis.WorkerGroup)
+	}
+	if len(analysis.WorkerGroupKeys) != 1 {
+		t.Errorf("distinct workerGroup keys: got %d, want 1", len(analysis.WorkerGroupKeys))
+	}
+}
+
+func TestAggregateReport_CountsDistinctWorkerGroupsAcrossTenants(t *testing.T) {
+	withKeys := func(keys ...string) func(a *flowAnalysis) {
+		return func(a *flowAnalysis) {
+			for _, key := range keys {
+				a.recordWorkerGroup(map[string]any{"workerGroup": map[string]any{"key": key}})
+			}
+		}
+	}
+	scans := []tenantScan{
+		{Tenant: "main", Flows: []flowAnalysis{
+			flowFor("ns.a", "f1", withKeys("default", "default", "gpu")),
+			flowFor("ns.a", "f2", withKeys("default")),
+		}},
+		{Tenant: "other", Flows: []flowAnalysis{
+			flowFor("ns.b", "f3", withKeys("gpu", "etl")),
+		}},
+	}
+
+	signal := testReport(t, true, scans).Signals.WorkerGroup
+	if signal.Occurrences != 6 || signal.Flows != 3 {
+		t.Errorf("unexpected workerGroup signal: %+v", signal)
+	}
+	if signal.DistinctGroups != 3 {
+		t.Errorf("distinct groups: got %d, want 3", signal.DistinctGroups)
 	}
 }
