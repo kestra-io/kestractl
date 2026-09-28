@@ -44,7 +44,7 @@ The report is a markdown document listing the flow inventory (namespaces, task
 and trigger types, plugin families) together with the migration signals that
 matter for a Kestra 1.x to 2.0 upgrade: pluginDefaults, removed flow tasks such
 as ForEach, trigger 'conditions'/'preconditions', the 'condition' property, the
-Pebble 'json()' function and 'fs.local.Delete'.
+Pebble 'json()' function, 'fs.local.Delete' and the EE 'workerGroup' property.
 
 Only flow sources are read — no execution, log or database data. Tenant,
 namespace and flow names are replaced by stable hashes unless --anonymize=false
