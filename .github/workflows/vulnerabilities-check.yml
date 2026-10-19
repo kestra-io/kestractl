@@ -59,9 +59,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # `stable`, not go.mod's `go 1.25.0`: govulncheck v1.8+ itself requires Go
+      # `stable`, not go.mod's `go 1.26.0`: govulncheck v1.8+ itself requires Go
       # >= 1.26 to build. Note this scans the standard library of the *current*
-      # toolchain, while releases are still built with 1.25 (see the `go-version`
+      # toolchain, while releases are built with 1.27 (see the `go-version`
       # pins in tests.yml and release.yml) — worth keeping those in step.
       - name: Set up Go
         uses: actions/setup-go@v7

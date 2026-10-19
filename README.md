@@ -110,7 +110,7 @@ has no shell and only works with `docker run`/`kubectl run` style invocations.
 ```bash
 git clone git@github.com:kestra-io/kestractl.git
 
-# Download dependencies (requires Go 1.25+)
+# Download dependencies (requires Go 1.26+)
 go mod download
 
 # Build the binary
@@ -1274,5 +1274,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed instructions on adding new c
 
 ## Requirements
 
-- Go 1.25 or newer
+- Go 1.26 or newer
 - Access to a Kestra instance and API token
