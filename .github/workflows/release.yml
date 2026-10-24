@@ -129,6 +129,7 @@ jobs:
           args: ${{ steps.target.outputs.dry_run == 'true' && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       # GoReleaser publishes only the immutable exact-version manifests. `regctl
       # image copy` re-points the rolling tags at that same manifest instead of

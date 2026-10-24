@@ -37,6 +37,14 @@ The script resolves the release through the GitHub REST API, which is rate-limit
 curl -fsSL https://raw.githubusercontent.com/kestra-io/kestractl/main/install-scripts/install.sh | GITHUB_TOKEN="$GITHUB_TOKEN" bash
 ```
 
+### or install with Homebrew (macOS and Linux)
+
+```bash
+brew install kestra-io/tap/kestractl
+```
+
+The tap is updated automatically on every release, so `brew upgrade kestractl` keeps you on the latest version.
+
 ### or choose and download the proper binary for your OS/arch
 download the compressed or plain binary for your platform at https://github.com/kestra-io/kestractl/releases
 
