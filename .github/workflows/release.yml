@@ -118,6 +118,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # GITHUB_TOKEN can't write to another repo, so the bot pushes the cask to the tap.
+      - name: Generate tap app token
+        id: tap-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.GH_BOT_APP_ID }}
+          private-key: ${{ secrets.GH_BOT_PRIVATE_KEY }}
+          owner: kestra-io
+          repositories: homebrew-tap
+          permission-contents: write
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -129,6 +140,7 @@ jobs:
           args: ${{ steps.target.outputs.dry_run == 'true' && 'release --snapshot --clean' || 'release --clean' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
 
       # GoReleaser publishes only the immutable exact-version manifests. `regctl
       # image copy` re-points the rolling tags at that same manifest instead of
