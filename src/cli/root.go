@@ -152,6 +152,7 @@ Compatibility:
 	root.AddCommand(newDashboardsCommand())
 	root.AddCommand(newAssetsCommand())
 	root.AddCommand(newBlueprintsCommand())
+	root.AddCommand(newMcpServersCommand())
 	root.AddCommand(newReusableInputsCommand())
 
 	return root
