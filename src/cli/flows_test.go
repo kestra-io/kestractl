@@ -1709,18 +1709,14 @@ func TestFlowsUpdateConcurrencyCommand_NoArgs(t *testing.T) {
 	}
 }
 
-func TestFlowsUpdateConcurrencyCommand_DescribesRunningCounter(t *testing.T) {
+func TestFlowsUpdateConcurrencyCommand_RequiresRunning(t *testing.T) {
 	cmd := newFlowsUpdateConcurrencyCommand()
-	if !strings.Contains(cmd.Short, "running execution counter") {
-		t.Fatalf("short description does not describe the running counter: %q", cmd.Short)
+	_, err := executeCommand(cmd, "prod", "my-flow")
+	if err == nil {
+		t.Fatal("expected error when --running is missing")
 	}
-
-	runningFlag := cmd.Flags().Lookup("running")
-	if runningFlag == nil {
-		t.Fatal("expected --running flag")
-	}
-	if !strings.Contains(runningFlag.Usage, "reset the counter") {
-		t.Fatalf("--running help does not describe zero as a counter reset: %q", runningFlag.Usage)
+	if !strings.Contains(err.Error(), `required flag(s) "running" not set`) {
+		t.Fatalf("expected required --running error, got: %v", err)
 	}
 }
 
@@ -1730,23 +1726,32 @@ func TestRunFlowsUpdateConcurrency(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPut {
 					t.Errorf("expected PUT, got %s", r.Method)
+					http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+					return
 				}
 
 				var body kestra.ConcurrencyLimit
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Fatalf("decode request body: %v", err)
+					t.Errorf("decode request body: %v", err)
+					http.Error(w, "invalid request body", http.StatusBadRequest)
+					return
 				}
 				if body.Running == nil {
-					t.Fatal("request body omitted running")
+					t.Error("request body omitted running")
+					http.Error(w, "missing running", http.StatusBadRequest)
+					return
 				}
 				if *body.Running != running {
 					t.Errorf("request running = %d, want %d", *body.Running, running)
+					http.Error(w, "unexpected running value", http.StatusBadRequest)
+					return
 				}
 				t.Logf("request body includes running=%d", *body.Running)
 
 				w.Header().Set("Content-Type", "application/json")
 				if err := json.NewEncoder(w).Encode(body); err != nil {
-					t.Fatalf("encode response body: %v", err)
+					t.Errorf("encode response body: %v", err)
+					return
 				}
 			}))
 			t.Cleanup(server.Close)
@@ -1763,6 +1768,26 @@ func TestRunFlowsUpdateConcurrency(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRunFlowsUpdateConcurrencyRejectsNegativeRunning(t *testing.T) {
+	requested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested = true
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", -1, newTableRenderer(io.Discard))
+	if err == nil {
+		t.Fatal("expected error for negative --running")
+	}
+	if err.Error() != "--running must be >= 0" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requested {
+		t.Fatal("negative --running sent an HTTP request")
 	}
 }
 
