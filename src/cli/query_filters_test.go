@@ -3,6 +3,8 @@ package cli
 import (
 	"strings"
 	"testing"
+
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 )
 
 func TestParseQueryFilters_Namespace(t *testing.T) {
@@ -13,7 +15,7 @@ func TestParseQueryFilters_Namespace(t *testing.T) {
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 filter, got %d", len(filters))
 	}
-	if filters[0].Field == nil || string(*filters[0].Field) != "NAMESPACE" {
+	if filters[0].Field == nil || *filters[0].Field != kestra.QUERYFILTERFIELD_NAMESPACE {
 		t.Fatalf("expected NAMESPACE field, got %v", filters[0].Field)
 	}
 	if filters[0].Operation == nil || string(*filters[0].Operation) != "EQUALS" {
@@ -32,7 +34,7 @@ func TestParseQueryFilters_RawSpec(t *testing.T) {
 	if len(filters) != 1 {
 		t.Fatalf("expected 1 filter, got %d", len(filters))
 	}
-	if string(*filters[0].Field) != "STATE" || string(*filters[0].Operation) != "EQUALS" || filters[0].Value != "SUCCESS" {
+	if *filters[0].Field != kestra.QUERYFILTERFIELD_STATE || string(*filters[0].Operation) != "EQUALS" || filters[0].Value != "SUCCESS" {
 		t.Fatalf("unexpected filter: %+v", filters[0])
 	}
 }
@@ -99,33 +101,52 @@ func TestByQueryFilterFlags_ResolveOptionalAllowsEmpty(t *testing.T) {
 	}
 }
 
+func TestParseQueryFilters_FieldNames(t *testing.T) {
+	cases := map[string]kestra.QueryFilterField{
+		"NAMESPACE": "namespace",
+		"FLOW_ID":   "flowId",
+		"flow_id":   "flowId",
+		"STATE":     "state",
+		"QUERY":     "q",
+		"MIN_LEVEL": "level",
+	}
+	for name, want := range cases {
+		filters, err := parseQueryFilters("", []string{name + ":EQUALS:x"})
+		if err != nil {
+			t.Errorf("%s: unexpected error: %v", name, err)
+			continue
+		}
+		if got := *filters[0].Field; got != want {
+			t.Errorf("%s: field = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestQueryFilterFields_CoverSDKEnum(t *testing.T) {
+	mapped := map[kestra.QueryFilterField]bool{}
+	for _, f := range queryFilterFields {
+		mapped[f] = true
+	}
+	for _, f := range kestra.AllowedQueryFilterFieldEnumValues {
+		if !mapped[f] {
+			t.Errorf("SDK field %q has no --filter name in queryFilterFields", f)
+		}
+	}
+}
+
 func TestQueryFiltersToSearchFilters(t *testing.T) {
-	qf, err := parseQueryFilters("my.ns", []string{"FLOW_ID:EQUALS:my-flow"})
+	qf, err := parseQueryFilters("my.ns", []string{"FLOW_ID:EQUALS:my-flow", "MIN_LEVEL:EQUALS:WARN"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	sf := queryFiltersToSearchFilters(qf)
-	if len(sf) != 2 {
-		t.Fatalf("expected 2 search filters, got %d", len(sf))
+	want := []string{"namespace", "flowId", "level"}
+	if len(sf) != len(want) {
+		t.Fatalf("expected %d search filters, got %d", len(want), len(sf))
 	}
-	if string(sf[0].Field) != "namespace" {
-		t.Fatalf("expected camel-cased namespace field, got %q", sf[0].Field)
-	}
-	if string(sf[1].Field) != "flowId" {
-		t.Fatalf("expected camel-cased flowId field, got %q", sf[1].Field)
-	}
-}
-
-func TestCamelFilterField(t *testing.T) {
-	cases := map[string]string{
-		"NAMESPACE": "namespace",
-		"FLOW_ID":   "flowId",
-		"QUERY":     "q",
-		"STATE":     "state",
-	}
-	for in, want := range cases {
-		if got := camelFilterField(in); got != want {
-			t.Errorf("camelFilterField(%q) = %q, want %q", in, got, want)
+	for i, field := range want {
+		if string(sf[i].Field) != field {
+			t.Errorf("search filter %d: field = %q, want %q", i, sf[i].Field, field)
 		}
 	}
 }

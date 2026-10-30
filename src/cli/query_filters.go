@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -97,14 +98,14 @@ func parseQueryFilters(namespace string, raw []string) ([]kestra.QueryFilter, er
 
 // queryFiltersToSearchFilters converts the generated QueryFilter values into
 // the hand-written SearchFilter values used by request-body endpoints (e.g.
-// triggers delete-by-query). The field name is camel-cased to the server's
-// query-parameter form, matching the SDK's own conversion.
+// triggers delete-by-query). QueryFilterField values are already the server's
+// wire names, so the field is passed through unchanged.
 func queryFiltersToSearchFilters(filters []kestra.QueryFilter) []kestra.SearchFilter {
 	out := make([]kestra.SearchFilter, 0, len(filters))
 	for _, f := range filters {
 		field := ""
 		if f.Field != nil {
-			field = camelFilterField(string(*f.Field))
+			field = string(*f.Field)
 		}
 		op := ""
 		if f.Operation != nil {
@@ -119,39 +120,49 @@ func queryFiltersToSearchFilters(filters []kestra.QueryFilter) []kestra.SearchFi
 	return out
 }
 
-// camelFilterField mirrors the SDK's field-name conversion: QUERY becomes "q",
-// otherwise the value is camel-cased (NAMESPACE -> namespace, FLOW_ID -> flowId).
-func camelFilterField(s string) string {
-	if strings.EqualFold(s, "query") {
-		return "q"
-	}
-	parts := strings.FieldsFunc(strings.TrimSpace(s), func(r rune) bool {
-		return !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'))
-	})
-	if len(parts) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(strings.ToLower(parts[0]))
-	for _, p := range parts[1:] {
-		p = strings.ToLower(p)
-		if p == "" {
-			continue
-		}
-		b.WriteString(strings.ToUpper(p[:1]))
-		if len(p) > 1 {
-			b.WriteString(p[1:])
-		}
-	}
-	return b.String()
+// queryFilterFields maps the FIELD names accepted by --filter to the SDK
+// enum. The names are the server's QueryFilter.Field constants (FLOW_ID), while
+// the SDK values are their wire names (flowId). Most are the camel-cased name,
+// but QUERY is "q" and MIN_LEVEL is "level", so the mapping is spelled out.
+var queryFilterFields = map[string]kestra.QueryFilterField{
+	"QUERY":                kestra.QUERYFILTERFIELD_QUERY,
+	"SCOPE":                kestra.QUERYFILTERFIELD_SCOPE,
+	"NAMESPACE":            kestra.QUERYFILTERFIELD_NAMESPACE,
+	"KIND":                 kestra.QUERYFILTERFIELD_KIND,
+	"LABELS":               kestra.QUERYFILTERFIELD_LABELS,
+	"METADATA":             kestra.QUERYFILTERFIELD_METADATA,
+	"FLOW_ID":              kestra.QUERYFILTERFIELD_FLOW_ID,
+	"FLOW_REVISION":        kestra.QUERYFILTERFIELD_FLOW_REVISION,
+	"ID":                   kestra.QUERYFILTERFIELD_ID,
+	"ASSET_ID":             kestra.QUERYFILTERFIELD_ASSET_ID,
+	"TYPE":                 kestra.QUERYFILTERFIELD_TYPE,
+	"CREATED":              kestra.QUERYFILTERFIELD_CREATED,
+	"UPDATED":              kestra.QUERYFILTERFIELD_UPDATED,
+	"START_DATE":           kestra.QUERYFILTERFIELD_START_DATE,
+	"END_DATE":             kestra.QUERYFILTERFIELD_END_DATE,
+	"STATE":                kestra.QUERYFILTERFIELD_STATE,
+	"TIME_RANGE":           kestra.QUERYFILTERFIELD_TIME_RANGE,
+	"TRIGGER_EXECUTION_ID": kestra.QUERYFILTERFIELD_TRIGGER_EXECUTION_ID,
+	"TRIGGER_ID":           kestra.QUERYFILTERFIELD_TRIGGER_ID,
+	"TRIGGER_STATE":        kestra.QUERYFILTERFIELD_TRIGGER_STATE,
+	"EXECUTION_ID":         kestra.QUERYFILTERFIELD_EXECUTION_ID,
+	"TASK_ID":              kestra.QUERYFILTERFIELD_TASK_ID,
+	"TASK_RUN_ID":          kestra.QUERYFILTERFIELD_TASK_RUN_ID,
+	"CHILD_FILTER":         kestra.QUERYFILTERFIELD_CHILD_FILTER,
+	"WORKER_ID":            kestra.QUERYFILTERFIELD_WORKER_ID,
+	"EXISTING_ONLY":        kestra.QUERYFILTERFIELD_EXISTING_ONLY,
+	"MIN_LEVEL":            kestra.QUERYFILTERFIELD_MIN_LEVEL,
+	"PATH":                 kestra.QUERYFILTERFIELD_PATH,
+	"PARENT_PATH":          kestra.QUERYFILTERFIELD_PARENT_PATH,
+	"VERSION":              kestra.QUERYFILTERFIELD_VERSION,
 }
 
 // newQueryFilter validates the field and operation against the SDK enums and
 // returns a populated QueryFilter.
 func newQueryFilter(field, op, value string) (*kestra.QueryFilter, error) {
-	fieldEnum, err := kestra.NewQueryFilterFieldFromValue(strings.ToUpper(strings.TrimSpace(field)))
-	if err != nil {
-		return nil, fmt.Errorf("invalid filter field %q: %w", field, err)
+	fieldEnum, ok := queryFilterFields[strings.ToUpper(strings.TrimSpace(field))]
+	if !ok {
+		return nil, fmt.Errorf("invalid filter field %q: valid fields are %s", field, strings.Join(queryFilterFieldNames(), ", "))
 	}
 	opEnum, err := kestra.NewQueryFilterOpFromValue(strings.ToUpper(strings.TrimSpace(op)))
 	if err != nil {
@@ -159,8 +170,18 @@ func newQueryFilter(field, op, value string) (*kestra.QueryFilter, error) {
 	}
 
 	qf := kestra.NewQueryFilter()
-	qf.Field = fieldEnum
+	qf.SetField(fieldEnum)
 	qf.Operation = opEnum
 	qf.Value = value
 	return qf, nil
+}
+
+// queryFilterFieldNames returns the accepted --filter field names, sorted.
+func queryFilterFieldNames() []string {
+	names := make([]string, 0, len(queryFilterFields))
+	for name := range queryFilterFields {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

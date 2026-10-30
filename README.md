@@ -867,6 +867,33 @@ kestractl blueprints custom update <id> --title "My Blueprint" --source-file blu
 kestractl blueprints custom delete <id>
 ```
 
+### MCP Servers
+
+An MCP server exposes the flows that declare an MCP Tool trigger as tools to MCP clients. Every tenant has a `default` server, which cannot be deleted. Requires Kestra **2.0 or later**.
+
+`update` only changes the fields you pass, and `enable` / `disable` set the state explicitly, so running them twice is safe.
+
+```bash
+# List MCP servers (alias: ls)
+kestractl mcp-servers list
+kestractl mcp-servers list --output json
+
+# Get a server (aliases: show, describe)
+kestractl mcp-servers get default
+
+# List the tools a server exposes, with the flow and trigger behind each one
+kestractl mcp-servers tools default
+
+# Create, update and delete a server (delete alias: rm)
+kestractl mcp-servers create ops --description "Operations flows" --instructions "Only call a tool when the request clearly maps to one of the flows."
+kestractl mcp-servers update ops --description "Operations and on-call flows"
+kestractl mcp-servers delete ops --yes
+
+# Enable or disable a server
+kestractl mcp-servers disable ops
+kestractl mcp-servers enable ops
+```
+
 ### Test Suites (Enterprise Edition)
 
 ```bash
@@ -1225,6 +1252,8 @@ kestractl/
     ├── assets_test.go
     ├── blueprints.go              # Blueprints commands (community + internal EE)
     ├── blueprints_test.go
+    ├── mcp_servers.go             # MCP servers commands
+    ├── mcp_servers_test.go
     ├── test_suites.go             # Test suites commands (EE)
     ├── test_suites_test.go
     ├── users.go                   # IAM users commands (EE)
