@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1708,26 +1709,60 @@ func TestFlowsUpdateConcurrencyCommand_NoArgs(t *testing.T) {
 	}
 }
 
-func TestRunFlowsUpdateConcurrency(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("expected PUT, got %s", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tenantId":"default","namespace":"prod","flowId":"my-flow","running":5}`))
-	}))
-	t.Cleanup(server.Close)
-
-	var buf bytes.Buffer
-	err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", 5, newTableRenderer(&buf))
-	if err != nil {
-		t.Fatalf("runFlowsUpdateConcurrency error: %v", err)
+func TestFlowsUpdateConcurrencyCommand_DescribesRunningCounter(t *testing.T) {
+	cmd := newFlowsUpdateConcurrencyCommand()
+	if !strings.Contains(cmd.Short, "running execution counter") {
+		t.Fatalf("short description does not describe the running counter: %q", cmd.Short)
 	}
-	out := buf.String()
-	for _, want := range []string{"prod", "my-flow", "5", "updated"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
+
+	runningFlag := cmd.Flags().Lookup("running")
+	if runningFlag == nil {
+		t.Fatal("expected --running flag")
+	}
+	if !strings.Contains(runningFlag.Usage, "reset the counter") {
+		t.Fatalf("--running help does not describe zero as a counter reset: %q", runningFlag.Usage)
+	}
+}
+
+func TestRunFlowsUpdateConcurrency(t *testing.T) {
+	for _, running := range []int32{0, 5} {
+		t.Run(strconv.Itoa(int(running)), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("expected PUT, got %s", r.Method)
+				}
+
+				var body kestra.ConcurrencyLimit
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+				if body.Running == nil {
+					t.Fatal("request body omitted running")
+				}
+				if *body.Running != running {
+					t.Errorf("request running = %d, want %d", *body.Running, running)
+				}
+				t.Logf("request body includes running=%d", *body.Running)
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(body); err != nil {
+					t.Fatalf("encode response body: %v", err)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			var buf bytes.Buffer
+			err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", running, newTableRenderer(&buf))
+			if err != nil {
+				t.Fatalf("runFlowsUpdateConcurrency error: %v", err)
+			}
+			out := buf.String()
+			for _, want := range []string{"prod", "my-flow", strconv.Itoa(int(running)), "updated"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q:\n%s", want, out)
+				}
+			}
+		})
 	}
 }
 

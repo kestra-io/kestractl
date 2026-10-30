@@ -3038,8 +3038,8 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update-concurrency <namespace> <flow-id>",
-		Short: "Set the concurrency limit for a flow.",
-		Example: `  kestractl flows update-concurrency prod my-flow --running 5
+		Short: "Set the running execution counter for a flow.",
+		Example: `  kestractl flows update-concurrency prod my-flow --running 0
   kestractl flows update-concurrency prod my-flow --running 5 --output json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -3055,7 +3055,7 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int32Var(&running, "running", 0, "Maximum number of concurrent running executions (0 = unlimited)")
+	cmd.Flags().Int32Var(&running, "running", 0, "Number of executions currently counted as running (0 = reset the counter)")
 	return cmd
 }
 
@@ -3064,9 +3064,7 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 		TenantId:  client.Tenant,
 		Namespace: namespace,
 		FlowId:    flowID,
-	}
-	if running > 0 {
-		limit.Running = &running
+		Running:   &running,
 	}
 
 	result, err := client.Kestra.Flows().UpdateConcurrencyLimit(client.Ctx, namespace, flowID, client.Tenant, limit)

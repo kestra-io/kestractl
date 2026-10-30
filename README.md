@@ -345,9 +345,9 @@ kestractl flows namespace-sync my.namespace flows.yaml --delete --override
 kestractl flows revisions my.namespace my-flow
 kestractl flows delete-revisions my.namespace my-flow --before-revision 5
 
-# Manage concurrency limits
+# Inspect concurrency limits and reset a flow's running execution counter
 kestractl flows concurrency-limits my.namespace my-flow
-kestractl flows update-concurrency my.namespace my-flow --limit 10
+kestractl flows update-concurrency my.namespace my-flow --running 0
 ```
 
 #### Verifying a migration
