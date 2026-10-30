@@ -394,3 +394,217 @@ func TestRunTestSuitesGetResult(t *testing.T) {
 		}
 	}
 }
+
+func TestTestSuiteRunOutcome(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		for _, tc := range []struct {
+			state, caseState string
+			wantErr          bool
+		}{
+			{"SUCCESS", "SUCCESS", false}, {"SKIPPED", "SKIPPED", false},
+			{"FAILED", "SUCCESS", true}, {"ERROR", "SUCCESS", true},
+			{"SUCCESS", "FAILED", true}, {"SUCCESS", "ERROR", true},
+		} {
+			t.Run(format+"/"+tc.state+"/"+tc.caseState, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"id": "result", "testSuiteId": "suite", "state": tc.state, "namespace": "ns", "flowId": "flow", "startDate": "2026-10-30T00:00:00Z", "endDate": "2026-10-30T00:00:01Z", "results": []map[string]any{{"testId": "case", "testType": "UNIT", "assertionResults": []any{}, "errors": []any{}, "state": tc.caseState}}})
+				}))
+				defer server.Close()
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				err := runTestSuitesRun(newTestClient(t, server.URL), "ns", "suite", nil, renderer)
+				if (err != nil) != tc.wantErr {
+					t.Errorf("error = %v, want error %v", err, tc.wantErr)
+				}
+				if !strings.Contains(buf.String(), tc.state) {
+					t.Errorf("missing state in output: %s", &buf)
+				}
+				if format == "json" {
+					var result map[string]any
+					if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if tc.caseState == "SKIPPED" && (result["failed"] != float64(0) || result["skipped"] != float64(1)) {
+						t.Errorf("incorrect skipped counts: %v", result)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestTestSuiteValidationOutcome(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		for _, constraints := range []string{"", "invalid assertion"} {
+			t.Run(format+"/"+constraints, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"index": 0, "constraints": constraints})
+				}))
+				defer server.Close()
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				err := runTestSuitesValidate(newTestClient(t, server.URL), "id: suite", renderer)
+				if (err != nil) != (constraints != "") {
+					t.Errorf("error = %v, constraints = %q", err, constraints)
+				}
+				if constraints != "" && !strings.Contains(buf.String(), constraints) {
+					t.Errorf("missing violations: %s", &buf)
+				}
+			})
+		}
+	}
+}
+
+func TestTestSuiteCreateConflictDiagnostic(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte(`{"type":"about:blank","title":"Conflict","status":409,"detail":"Test suite already exists"}`))
+	}))
+	defer server.Close()
+	file := t.TempDir() + "/suite.yaml"
+	if err := os.WriteFile(file, []byte("id: suite"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := runTestSuitesCreate(newTestClient(t, server.URL), file, newTableRenderer(&buf))
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected actionable conflict, got %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("unexpected success output: %s", &buf)
+	}
+}
+
+func TestRunByQueryOutcomes(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		for _, state := range []string{"SUCCESS", "SKIPPED", "FAILED", "ERROR"} {
+			t.Run(format+"/"+state, func(t *testing.T) {
+				result := map[string]any{"id": "result", "testSuiteId": "suite", "namespace": "ns", "flowId": "flow", "state": state, "startDate": "2026-10-30T00:00:00Z", "endDate": "2026-10-30T00:00:01Z"}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"numberOfTestSuitesToBeRun": 1, "numberOfTestCasesToBeRun": 0, "results": []any{result}})
+				}))
+				defer server.Close()
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				err := runTestSuitesRunByQuery(newTestClient(t, server.URL), "ns", "flow", false, renderer)
+				wantErr := state == "FAILED" || state == "ERROR"
+				if (err != nil) != wantErr {
+					t.Fatalf("state %s: error %v", state, err)
+				}
+				if !strings.Contains(buf.String(), state) {
+					t.Fatalf("missing result: %s", &buf)
+				}
+				if format == "json" {
+					var decoded map[string]any
+					if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunByQueryMixedAndAbsentResults(t *testing.T) {
+	result := func(state, caseState string) map[string]any {
+		r := map[string]any{"id": "result", "testSuiteId": "suite", "namespace": "ns", "flowId": "flow", "state": state, "startDate": "2026-10-30T00:00:00Z", "endDate": "2026-10-30T00:00:01Z"}
+		if caseState != "" {
+			r["results"] = []any{map[string]any{"testId": "case", "testType": "UNIT", "state": caseState, "assertionResults": []any{}, "errors": []any{}}}
+		}
+		return r
+	}
+	for _, tc := range []struct {
+		name    string
+		results []any
+		count   int
+		wantErr bool
+	}{
+		{"mixed", []any{result("SUCCESS", ""), result("FAILED", "")}, 2, true},
+		{"failed case", []any{result("SUCCESS", "FAILED")}, 1, true},
+		{"error case", []any{result("SUCCESS", "ERROR")}, 1, true},
+		{"skipped case", []any{result("SUCCESS", "SKIPPED")}, 1, false},
+		{"absent results", nil, 1, false},
+		{"no matches", []any{}, 0, false},
+	} {
+		for _, format := range []string{"table", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				payload := map[string]any{"numberOfTestSuitesToBeRun": tc.count, "numberOfTestCasesToBeRun": 0}
+				if tc.results != nil {
+					payload["results"] = tc.results
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(payload)
+				}))
+				defer server.Close()
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				err := runTestSuitesRunByQuery(newTestClient(t, server.URL), "ns", "flow", false, renderer)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("error=%v, want error=%v", err, tc.wantErr)
+				}
+				if tc.results == nil && strings.Contains(buf.String(), "SUCCESS") {
+					t.Fatal("missing results must not be described as successful completion")
+				}
+				if format == "json" {
+					var got map[string]any
+					if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+						t.Fatal(err)
+					}
+					if got["numberOfTestSuitesToBeRun"] != float64(tc.count) {
+						t.Fatalf("lost count: %v", got)
+					}
+				}
+			})
+		}
+	}
+}
+
+type testSuiteFailWriter struct{ err error }
+
+func (w testSuiteFailWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestTestSuiteFailuresPropagate(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		for _, scenario := range []string{"api", "transport", "writer"} {
+			t.Run(format+"/"+scenario, func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					if scenario == "api" {
+						w.WriteHeader(http.StatusForbidden)
+						w.Write([]byte(`{"message":"access denied"}`))
+						return
+					}
+					w.Write([]byte(`{"numberOfTestSuitesToBeRun":0,"numberOfTestCasesToBeRun":0}`))
+				}))
+				defer server.Close()
+				if scenario == "transport" {
+					server.Close()
+				}
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				writeErr := errors.New("output unavailable")
+				if scenario == "writer" {
+					renderer, _ = NewRenderer(format, testSuiteFailWriter{writeErr})
+				}
+				err := runTestSuitesRunByQuery(newTestClient(t, server.URL), "ns", "flow", false, renderer)
+				if err == nil {
+					t.Fatal("expected failure")
+				}
+				if scenario == "writer" && !errors.Is(err, writeErr) {
+					t.Fatalf("lost write error: %v", err)
+				}
+				if scenario == "api" && !strings.Contains(err.Error(), "access denied") {
+					t.Fatalf("lost API diagnostic: %v", err)
+				}
+				if scenario != "writer" && buf.Len() != 0 {
+					t.Fatalf("rendered success after request failure: %s", &buf)
+				}
+			})
+		}
+	}
+}

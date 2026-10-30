@@ -353,12 +353,15 @@ func runTestSuitesRun(client *Client, namespace, id string, testCases []string, 
 		return formatSDKError(err)
 	}
 
-	passed, failed := 0, 0
+	passed, failed, skipped := 0, 0, 0
 	for _, r := range result.GetResults() {
-		if r.GetState() == kestra.TESTSTATE_SUCCESS {
+		switch r.GetState() {
+		case kestra.TESTSTATE_SUCCESS:
 			passed++
-		} else {
+		case kestra.TESTSTATE_FAILED, kestra.TESTSTATE_ERROR:
 			failed++
+		case kestra.TESTSTATE_SKIPPED:
+			skipped++
 		}
 	}
 
@@ -370,20 +373,29 @@ func runTestSuitesRun(client *Client, namespace, id string, testCases []string, 
 		"state":       string(result.GetState()),
 		"passed":      passed,
 		"failed":      failed,
+		"skipped":     skipped,
 	}
 	if !result.GetStartDate().IsZero() {
 		jsonResult["startDate"] = result.GetStartDate().Format(time.RFC3339)
 	}
 
-	return renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
+	err = renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
 		fmt.Fprintf(w, "SUITE\t%s\n", result.GetTestSuiteId())
 		fmt.Fprintf(w, "NAMESPACE\t%s\n", result.GetNamespace())
 		fmt.Fprintf(w, "FLOW\t%s\n", result.GetFlowId())
 		fmt.Fprintf(w, "STATE\t%s\n", string(result.GetState()))
 		fmt.Fprintf(w, "PASSED\t%d\n", passed)
 		fmt.Fprintf(w, "FAILED\t%d\n", failed)
+		fmt.Fprintf(w, "SKIPPED\t%d\n", skipped)
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if failed > 0 || result.GetState() == kestra.TESTSTATE_FAILED || result.GetState() == kestra.TESTSTATE_ERROR {
+		return fmt.Errorf("test suite %q failed (state %s, %d failed cases)", id, result.GetState(), failed)
+	}
+	return nil
 }
 
 func newTestSuitesValidateCommand() *cobra.Command {
@@ -442,7 +454,7 @@ func runTestSuitesValidate(client *Client, body string, renderer *Renderer) erro
 		"outdated":    result.GetOutdated(),
 	}
 
-	return renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
+	err = renderer.Render(jsonResult, func(w *tabwriter.Writer) error {
 		if constraints != "" {
 			fmt.Fprintf(w, "VIOLATIONS\t%s\n", constraints)
 		}
@@ -457,6 +469,14 @@ func runTestSuitesValidate(client *Client, body string, renderer *Renderer) erro
 		}
 		return nil
 	})
+
+	if err != nil {
+		return err
+	}
+	if constraints != "" {
+		return fmt.Errorf("test suite validation failed: %s", constraints)
+	}
+	return nil
 }
 
 func parseTestSuiteIds(args []string) ([]kestra.TestSuiteControllerTestSuiteApiId, error) {
@@ -735,13 +755,36 @@ func runTestSuitesRunByQuery(client *Client, namespace, flowID string, includeCh
 	count := resp.GetNumberOfTestSuitesToBeRun()
 	caseCount := resp.GetNumberOfTestCasesToBeRun()
 
-	return renderer.Render(map[string]any{
+	failed := 0
+	for _, result := range resp.GetResults() {
+		bad := result.GetState() == kestra.TESTSTATE_FAILED || result.GetState() == kestra.TESTSTATE_ERROR
+		for _, test := range result.GetResults() {
+			if test.GetState() == kestra.TESTSTATE_FAILED || test.GetState() == kestra.TESTSTATE_ERROR {
+				bad = true
+			}
+		}
+		if bad {
+			failed++
+		}
+	}
+	err = renderer.Render(map[string]any{
 		"numberOfTestSuitesToBeRun": count,
+		"results":                   resp.GetResults(),
 		"numberOfTestCasesToBeRun":  caseCount,
 	}, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Queued %d test suite(s) with %d test case(s) to run.\n", count, caseCount)
+		fmt.Fprintf(w, "Requested %d test suite(s) with %d test case(s).\n", count, caseCount)
+		for _, result := range resp.GetResults() {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", result.GetNamespace(), result.GetTestSuiteId(), result.GetState())
+		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d test suite(s) failed", failed)
+	}
+	return nil
 }
 
 func newTestSuitesGetResultCommand() *cobra.Command {
