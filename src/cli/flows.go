@@ -3038,8 +3038,8 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update-concurrency <namespace> <flow-id>",
-		Short: "Set the concurrency limit for a flow.",
-		Example: `  kestractl flows update-concurrency prod my-flow --running 5
+		Short: "Set the running execution counter for a flow.",
+		Example: `  kestractl flows update-concurrency prod my-flow --running 0
   kestractl flows update-concurrency prod my-flow --running 5 --output json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -3055,18 +3055,21 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int32Var(&running, "running", 0, "Maximum number of concurrent running executions (0 = unlimited)")
+	cmd.Flags().Int32Var(&running, "running", 0, "Number of executions currently counted as running (0 = reset the counter)")
+	_ = cmd.MarkFlagRequired("running")
 	return cmd
 }
 
 func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running int32, renderer *Renderer) error {
+	if running < 0 {
+		return errors.New("--running must be >= 0")
+	}
+
 	limit := kestra.ConcurrencyLimit{
 		TenantId:  client.Tenant,
 		Namespace: namespace,
 		FlowId:    flowID,
-	}
-	if running > 0 {
-		limit.Running = &running
+		Running:   &running,
 	}
 
 	result, err := client.Kestra.Flows().UpdateConcurrencyLimit(client.Ctx, namespace, flowID, client.Tenant, limit)
@@ -3075,7 +3078,7 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Concurrency limit updated.\n\nNamespace:\t%s\nFlow ID:\t%s\nRunning:\t%d\n",
+		fmt.Fprintf(w, "Running counter updated.\n\nNamespace:\t%s\nFlow ID:\t%s\nRunning:\t%d\n",
 			result.GetNamespace(), result.GetFlowId(), result.GetRunning())
 		return nil
 	})
