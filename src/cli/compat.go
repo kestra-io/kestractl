@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
 	"github.com/spf13/viper"
 )
 
@@ -126,6 +127,7 @@ func (t *compatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 func (t *compatTransport) roundTrip(req *http.Request) (*http.Response, error) {
+	req = restoreFilterFieldCase(req)
 	req, fallback := t.routeExecutionAction(req)
 	t.dumpRequest(req)
 
@@ -726,4 +728,98 @@ func (t *compatTransport) dumpTransportError(err error) {
 		return
 	}
 	fmt.Fprintf(t.dumpWriter(), "! %v\n\n", err)
+}
+
+// filterFieldWireNames maps each multi-word filter field, lower-cased, to the
+// spelling the server accepts (flowid -> flowId).
+var filterFieldWireNames = func() map[string]string {
+	names := make(map[string]string)
+	for _, field := range kestra.AllowedQueryFilterFieldEnumValues {
+		wire := string(field)
+		if lower := strings.ToLower(wire); lower != wire {
+			names[lower] = wire
+		}
+	}
+	return names
+}()
+
+// unescapeBrackets reads a raw query key with its brackets either literal, as
+// the generated SDK client sends them, or percent-encoded.
+var unescapeBrackets = strings.NewReplacer("%5B", "[", "%5D", "]", "%5b", "[", "%5d", "]")
+
+// restoreFilterFieldCase returns the request with each lower-cased multi-word
+// filter field put back in the case the server expects (flowid -> flowId).
+//
+// The generated *ByQuery endpoints of Go SDK v2.0.2 and v2.0.3 lower-case such
+// a field: the QueryFilterField values became the server's wire names, but the
+// SDK still camel-cases them as if they were FLOW_ID, which lower-cases a
+// single-part name (kestra-io/client-sdk#475). Kestra rejects the result with
+// 422 "Unsupported field 'flowid'", so --flow and --filter FLOW_ID:... would
+// fail on every *-by-query command that goes through a generated endpoint.
+// Keys that are already right, including every key the hand-written client
+// sends, match nothing here and are sent unchanged.
+func restoreFilterFieldCase(req *http.Request) *http.Request {
+	if !strings.Contains(req.URL.RawQuery, "filters") {
+		return req
+	}
+	pairs := strings.Split(req.URL.RawQuery, "&")
+	changed := false
+	for i, pair := range pairs {
+		key, value, hasValue := strings.Cut(pair, "=")
+		fixed, ok := filterKeyWithWireField(unescapeBrackets.Replace(key))
+		if !ok {
+			continue
+		}
+		pairs[i] = fixed
+		if hasValue {
+			pairs[i] += "=" + value
+		}
+		changed = true
+	}
+	if !changed {
+		return req
+	}
+	// RoundTrip must not mutate the caller's request; Clone deep-copies the URL.
+	out := req.Clone(req.Context())
+	out.URL.RawQuery = strings.Join(pairs, "&")
+	return out
+}
+
+// filterKeyWithWireField restores the field segments of a serialized filter
+// key and reports whether it changed anything. A field is the segment right
+// after `filters`, or right after a group index in the AND/OR form
+// (filters[and][0][flowid][EQUALS]). Other segments are left alone, such as the
+// label key in filters[labels][EQUALS][flowid], which is user data.
+func filterKeyWithWireField(key string) (string, bool) {
+	rest, ok := strings.CutPrefix(key, "filters[")
+	if !ok || !strings.HasSuffix(rest, "]") {
+		return key, false
+	}
+	segments := strings.Split(strings.TrimSuffix(rest, "]"), "][")
+	changed := false
+	for i, segment := range segments {
+		if i > 0 && !isGroupIndex(segments[i-1]) {
+			continue
+		}
+		if wire, ok := filterFieldWireNames[segment]; ok {
+			segments[i] = wire
+			changed = true
+		}
+	}
+	if !changed {
+		return key, false
+	}
+	return "filters[" + strings.Join(segments, "][") + "]", true
+}
+
+func isGroupIndex(segment string) bool {
+	if segment == "" {
+		return false
+	}
+	for _, r := range segment {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
