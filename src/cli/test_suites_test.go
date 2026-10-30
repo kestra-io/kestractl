@@ -477,3 +477,34 @@ func TestTestSuiteCreateConflictDiagnostic(t *testing.T) {
 		t.Fatalf("unexpected success output: %s", &buf)
 	}
 }
+
+func TestRunByQueryOutcomes(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		for _, state := range []string{"SUCCESS", "SKIPPED", "FAILED", "ERROR"} {
+			t.Run(format+"/"+state, func(t *testing.T) {
+				result := map[string]any{"id": "result", "testSuiteId": "suite", "namespace": "ns", "flowId": "flow", "state": state, "startDate": "2026-10-30T00:00:00Z", "endDate": "2026-10-30T00:00:01Z"}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(map[string]any{"numberOfTestSuitesToBeRun": 1, "numberOfTestCasesToBeRun": 0, "results": []any{result}})
+				}))
+				defer server.Close()
+				var buf bytes.Buffer
+				renderer, _ := NewRenderer(format, &buf)
+				err := runTestSuitesRunByQuery(newTestClient(t, server.URL), "ns", "flow", false, renderer)
+				wantErr := state == "FAILED" || state == "ERROR"
+				if (err != nil) != wantErr {
+					t.Fatalf("state %s: error %v", state, err)
+				}
+				if !strings.Contains(buf.String(), state) {
+					t.Fatalf("missing result: %s", &buf)
+				}
+				if format == "json" {
+					var decoded map[string]any
+					if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+		}
+	}
+}

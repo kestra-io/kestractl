@@ -755,13 +755,36 @@ func runTestSuitesRunByQuery(client *Client, namespace, flowID string, includeCh
 	count := resp.GetNumberOfTestSuitesToBeRun()
 	caseCount := resp.GetNumberOfTestCasesToBeRun()
 
-	return renderer.Render(map[string]any{
+	failed := 0
+	for _, result := range resp.GetResults() {
+		bad := result.GetState() == kestra.TESTSTATE_FAILED || result.GetState() == kestra.TESTSTATE_ERROR
+		for _, test := range result.GetResults() {
+			if test.GetState() == kestra.TESTSTATE_FAILED || test.GetState() == kestra.TESTSTATE_ERROR {
+				bad = true
+			}
+		}
+		if bad {
+			failed++
+		}
+	}
+	err = renderer.Render(map[string]any{
 		"numberOfTestSuitesToBeRun": count,
+		"results":                   resp.GetResults(),
 		"numberOfTestCasesToBeRun":  caseCount,
 	}, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Queued %d test suite(s) with %d test case(s) to run.\n", count, caseCount)
+		fmt.Fprintf(w, "Requested %d test suite(s) with %d test case(s).\n", count, caseCount)
+		for _, result := range resp.GetResults() {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", result.GetNamespace(), result.GetTestSuiteId(), result.GetState())
+		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d test suite(s) failed", failed)
+	}
+	return nil
 }
 
 func newTestSuitesGetResultCommand() *cobra.Command {
