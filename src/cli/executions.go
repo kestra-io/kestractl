@@ -1081,7 +1081,7 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		}
 	}
 
-	return renderer.Render(execution, func(w *tabwriter.Writer) error {
+	renderErr := renderer.Render(execution, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "Execution triggered successfully!")
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "Execution ID: %s\n", stringify(execution["id"]))
@@ -1095,6 +1095,22 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		printTaskRunList(w, execution)
 		return nil
 	})
+	if renderErr != nil {
+		return renderErr
+	}
+
+	if wait {
+		if state, ok := execution["state"].(map[string]any); ok {
+			if current, ok := state["current"].(string); ok {
+				switch strings.ToUpper(current) {
+				case "FAILED", "KILLED", "CANCELLED":
+					return fmt.Errorf("execution ended with state: %s", strings.ToUpper(current))
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // taskRunListToMaps converts SDK TaskRun entries into the map shape used for

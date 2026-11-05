@@ -1764,3 +1764,64 @@ func TestExecutionsRunCommand_InvalidInput(t *testing.T) {
 		t.Fatalf("expected key=value error, got: %v", err)
 	}
 }
+func TestRunExecutionsRun_WaitExitCodeByState(t *testing.T) {
+	tests := []struct {
+		name        string
+		state       string
+		wait        bool
+		expectError bool
+	}{
+		{"SUCCESS with wait", "SUCCESS", true, false},
+		{"WARNING with wait", "WARNING", true, false},
+		{"FAILED with wait", "FAILED", true, true},
+		{"KILLED with wait", "KILLED", true, true},
+		{"CANCELLED with wait", "CANCELLED", true, true},
+		{"FAILED without wait", "FAILED", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := fmt.Sprintf(
+				`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"%s"}}`,
+				tt.state,
+			)
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(response))
+			}))
+			t.Cleanup(server.Close)
+
+			var out bytes.Buffer
+			renderer := newJSONRenderer(&out)
+
+			err := runExecutionsRun(
+				newTestClient(t, server.URL),
+				"my.ns",
+				"my-flow",
+				tt.wait,
+				nil,
+				renderer,
+			)
+
+			if tt.expectError && err == nil {
+				t.Fatal("expected an error for failed execution")
+			}
+
+			if !tt.expectError && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if tt.expectError && !strings.Contains(err.Error(), tt.state) {
+				t.Errorf("expected error to contain %s, got: %v", tt.state, err)
+			}
+
+			if !strings.Contains(out.String(), "exec-1") {
+				t.Errorf("expected execution output to be rendered, got:\n%s", out.String())
+			}
+			if !strings.Contains(out.String(), tt.state) {
+				t.Errorf("expected execution state %s to be rendered, got:\n%s", tt.state, out.String())
+			}
+		})
+	}
+}
