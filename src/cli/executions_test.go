@@ -1782,7 +1782,28 @@ func TestRunExecutionsRun_WaitExitCodeByState(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			response := fmt.Sprintf(
-				`{"id":"exec-1","namespace":"my.ns","flowId":"my-flow","state":{"current":"%s"}}`,
+				`{
+					"id":"exec-1",
+					"namespace":"my.ns",
+					"flowId":"my-flow",
+					"flowRevision":1,
+					"originalId":"exec-1",
+					"deleted":false,
+					"metadata":{
+						"attemptNumber":1,
+						"originalCreatedDate":"2026-01-01T00:00:00Z"
+					},
+					"state":{
+						"current":"%s",
+						"histories":[
+							{
+								"state":"%s",
+								"date":"2026-01-01T00:00:00Z"
+							}
+						]
+					}
+				}`,
+				tt.state,
 				tt.state,
 			)
 

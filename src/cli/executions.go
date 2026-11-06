@@ -964,7 +964,8 @@ func newExecutionsRunCommand() *cobra.Command {
 		Long: `Trigger a flow execution in the specified namespace.
 
 The command returns immediately by default. Use --wait to poll until
-the execution completes (SUCCESS, FAILED, or other terminal state).
+the execution completes. When --wait is used, the command returns a
+non-zero exit code if the execution ends in FAILED, KILLED, or CANCELLED.
 
 Flow inputs are passed with --input key=value (repeatable). Repeating the
 same key overwrites the previous value; for array/multiselect inputs, pass
@@ -1101,11 +1102,11 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 
 	if wait {
 		if state, ok := execution["state"].(map[string]any); ok {
-			if current, ok := state["current"].(string); ok {
-				switch strings.ToUpper(current) {
-				case "FAILED", "KILLED", "CANCELLED":
-					return fmt.Errorf("execution ended with state: %s", strings.ToUpper(current))
-				}
+			current := strings.ToUpper(stringify(state["current"]))
+
+			switch current {
+			case "FAILED", "KILLED", "CANCELLED":
+				return fmt.Errorf("execution ended with state: %s", current)
 			}
 		}
 	}

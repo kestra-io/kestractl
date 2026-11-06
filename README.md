@@ -390,6 +390,10 @@ kestractl executions run my.namespace my-flow --input branch=main --input dry_ru
 # Trigger and wait for completion
 kestractl executions run my.namespace my-flow --wait
 
+When --wait is used, the command waits for the execution to complete.
+It exits with a non-zero status if the execution ends in `FAILED`,
+`KILLED`, or `CANCELLED`, and exits successfully for `SUCCESS` or `WARNING`.
+
 # Get execution details (aliases: show, describe)
 kestractl executions get 2TLGqHrXC9k8BczKJe5djX
 
