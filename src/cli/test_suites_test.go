@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestTestSuitesListCommand_ClientError(t *testing.T) {
@@ -498,6 +500,9 @@ func TestRunByQueryOutcomes(t *testing.T) {
 				if !strings.Contains(buf.String(), state) {
 					t.Fatalf("missing result: %s", &buf)
 				}
+				if format == "table" && (!strings.Contains(buf.String(), "NAMESPACE") || !strings.Contains(buf.String(), "SUITE") || !strings.Contains(buf.String(), "STATE") || !strings.Contains(buf.String(), "Ran 1 test suite(s)")) {
+					t.Fatalf("missing table summary or headers: %s", &buf)
+				}
 				if format == "json" {
 					var decoded map[string]any
 					if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
@@ -603,6 +608,54 @@ func TestTestSuiteFailuresPropagate(t *testing.T) {
 				}
 				if scenario != "writer" && buf.Len() != 0 {
 					t.Fatalf("rendered success after request failure: %s", &buf)
+				}
+			})
+		}
+	}
+}
+
+func TestTestSuiteOutcomeErrorsSuppressUsage(t *testing.T) {
+	originalClient, originalOutput := newClientFunc, globalFlags.Output
+	defer func() { newClientFunc, globalFlags.Output = originalClient, originalOutput }()
+	file := t.TempDir() + "/suite.yaml"
+	if err := os.WriteFile(file, []byte("id: suite\nnamespace: ns\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		command  func() *cobra.Command
+		args     []string
+		response string
+	}{
+		{"run", newTestSuitesRunCommand, []string{"ns", "suite"}, `{"id":"result","testSuiteId":"suite","namespace":"ns","flowId":"flow","startDate":"2026-10-30T00:00:00Z","endDate":"2026-10-30T00:00:01Z","state":"FAILED","results":[]}`},
+		{"run-by-query", newTestSuitesRunByQueryCommand, nil, `{"numberOfTestSuitesToBeRun":1,"numberOfTestCasesToBeRun":0,"results":[{"id":"result","testSuiteId":"suite","namespace":"ns","flowId":"flow","startDate":"2026-10-30T00:00:00Z","endDate":"2026-10-30T00:00:01Z","state":"FAILED"}]}`},
+		{"validate", newTestSuitesValidateCommand, []string{"--file", file}, `{"index":0,"constraints":"invalid suite"}`},
+	} {
+		for _, format := range []string{"table", "json"} {
+			t.Run(tc.name+"/"+format, func(t *testing.T) {
+				globalFlags.Output = format
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("Content-Type", "application/json")
+					w.Write([]byte(tc.response))
+				}))
+				defer server.Close()
+				newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+				cmd := tc.command()
+				var stdout, stderr bytes.Buffer
+				cmd.SetOut(&stdout)
+				cmd.SetErr(&stderr)
+				cmd.SetArgs(tc.args)
+				if err := cmd.Execute(); err == nil {
+					t.Fatal("expected failed outcome to return an error")
+				}
+				if strings.Contains(stdout.String()+stderr.String(), "Usage:") {
+					t.Fatalf("unexpected usage: %s", &stderr)
+				}
+				if stdout.Len() == 0 {
+					t.Fatalf("missing rendered outcome; stderr: %s", &stderr)
+				}
+				if format == "json" && !json.Valid(stdout.Bytes()) {
+					t.Fatalf("invalid JSON: %s", &stdout)
 				}
 			})
 		}

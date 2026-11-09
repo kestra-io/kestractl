@@ -213,8 +213,9 @@ func newTestSuitesRunCommand() *cobra.Command {
 	var testCases []string
 
 	cmd := &cobra.Command{
-		Use:   "run <namespace> <id>",
-		Short: "Run a test suite.",
+		SilenceUsage: true,
+		Use:          "run <namespace> <id>",
+		Short:        "Run a test suite.",
 		Example: `  kestractl test-suites run my.namespace my-test-suite
   kestractl test-suites run my.namespace my-test-suite --test-case case1 --test-case case2
   kestractl test-suites run my.namespace my-test-suite --output json`,
@@ -402,8 +403,9 @@ func newTestSuitesValidateCommand() *cobra.Command {
 	var filePath string
 
 	cmd := &cobra.Command{
-		Use:   "validate",
-		Short: "Validate a test suite YAML definition.",
+		SilenceUsage: true,
+		Use:          "validate",
+		Short:        "Validate a test suite YAML definition.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
 				return err
@@ -709,9 +711,10 @@ func newTestSuitesRunByQueryCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "run-by-query",
-		Short: "Run test suites matching a query.",
-		Long:  "Run multiple test suites that match the given namespace/flow filters.",
+		SilenceUsage: true,
+		Use:          "run-by-query",
+		Short:        "Run test suites matching a query.",
+		Long:         "Run multiple test suites that match the given namespace/flow filters.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
 				return err
@@ -772,7 +775,8 @@ func runTestSuitesRunByQuery(client *Client, namespace, flowID string, includeCh
 		"results":                   resp.GetResults(),
 		"numberOfTestCasesToBeRun":  caseCount,
 	}, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Requested %d test suite(s) with %d test case(s).\n", count, caseCount)
+		fmt.Fprintf(w, "Ran %d test suite(s) with %d test case(s).\n", count, caseCount)
+		fmt.Fprintln(w, "NAMESPACE\tSUITE\tSTATE")
 		for _, result := range resp.GetResults() {
 			fmt.Fprintf(w, "%s\t%s\t%s\n", result.GetNamespace(), result.GetTestSuiteId(), result.GetState())
 		}
