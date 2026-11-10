@@ -38,6 +38,9 @@ jobs:
     uses: kestra-io/actions/.github/workflows/security-scan.yml@main
     with:
       metadata: ${{ github.event.inputs.metadata }}
+      # Go test files hold deliberate fake credentials (e.g. the SENTINEL-SECRET-VALUE leaky flow fixtures).
+      exclude-path: |
+        **/*_test.go
       components: |
         backend=**
       java-sbom-path: ''

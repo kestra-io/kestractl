@@ -57,14 +57,14 @@ jobs:
             name: e2e-tests
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # `stable`, not go.mod's `go 1.26.0`: govulncheck v1.8+ itself requires Go
       # >= 1.26 to build. Note this scans the standard library of the *current*
       # toolchain, while releases are built with 1.27 (see the `go-version`
       # pins in tests.yml and release.yml) — worth keeping those in step.
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "stable"
           cache: true
@@ -82,7 +82,7 @@ jobs:
         run: govulncheck -format sarif ./... > "${RUNNER_TEMP}/govulncheck.sarif"
 
       - name: Upload govulncheck results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         if: ${{ always() }}
         with:
           sarif_file: ${{ runner.temp }}/govulncheck.sarif
@@ -111,7 +111,7 @@ jobs:
         image: ["kestra/kestractl:latest", "kestra/kestractl:latest-static"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # Pinned by digest, same pin as kestra-io/kestra uses.
       - name: Docker Vulnerabilities Check
@@ -124,7 +124,7 @@ jobs:
           output: "trivy-results.sarif"
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         if: ${{ always() }}
         with:
           sarif_file: "trivy-results.sarif"
