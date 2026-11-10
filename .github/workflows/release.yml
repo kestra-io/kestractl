@@ -15,6 +15,16 @@ on:
         description: Tag to build and release.
         type: string
         required: true
+    # Declared so auto-tag.yml can pass them one by one instead of `secrets: inherit`.
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_PASSWORD:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+      SLACK_WEBHOOK_URL:
+        required: false
   # Manual entry point, doubling as the retry path. Leave `tag` empty for a dry
   # run -- builds the binaries and both container images and exercises the
   # registry logins, publishing nothing. Pass a tag to re-run a release that
@@ -88,7 +98,7 @@ jobs:
           echo "Releasing: ${tag:-<dry run>}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # GoReleaser requires HEAD to sit exactly on the tag it is releasing,
           # and fetch-depth 0 brings the tags and the changelog history with it.
@@ -96,7 +106,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.27"
           cache: true
@@ -106,20 +116,20 @@ jobs:
         uses: kestra-io/actions/composite/setup-docker@main
 
       - name: Login to Docker Hub
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PASSWORD || secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7
         with:
           version: latest
           # `--snapshot` builds the container images without pushing them, which is
@@ -135,7 +145,7 @@ jobs:
       # rebuilding them, so every tag stays byte-identical across architectures.
       - name: Install regctl
         if: steps.target.outputs.dry_run == 'false'
-        uses: regclient/actions/regctl-installer@main
+        uses: regclient/actions/regctl-installer@dd58ad94f76adb73d8ac1bf75ed25f01545d5b32 # main
 
       - name: Add rolling Docker tags
         if: steps.target.outputs.dry_run == 'false'

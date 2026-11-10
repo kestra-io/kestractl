@@ -965,7 +965,9 @@ func fileSHA1(path string) (string, error) {
 		return "", fmt.Errorf("cannot open file: %w", err)
 	}
 	defer f.Close()
-	hasher := sha1.New()
+	// SHA-1 because Maven repositories publish <artifact>.sha1: this detects a corrupt or truncated
+	// download, it is not a signature check (the checksum comes from the same server as the jar).
+	hasher := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
 	if _, err := io.Copy(hasher, f); err != nil {
 		return "", fmt.Errorf("cannot read file: %w", err)
 	}
