@@ -387,7 +387,7 @@ kestractl executions run my.namespace my-flow
 # Trigger a flow with inputs (repeatable)
 kestractl executions run my.namespace my-flow --input branch=main --input dry_run=true
 
-# Trigger and wait for completion
+# Trigger and wait for completion (exits non-zero if the execution ends in FAILED, KILLED or CANCELLED)
 kestractl executions run my.namespace my-flow --wait
 
 # Get execution details (aliases: show, describe)
