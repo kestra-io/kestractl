@@ -3,9 +3,9 @@ module github.com/kestra-io/kestractl
 go 1.26.0
 
 require (
-	github.com/posthog/posthog-go v1.35.1
+	github.com/posthog/posthog-go v1.42.0
 	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
+	github.com/spf13/pflag v1.1.0
 	github.com/spf13/viper v1.21.0
 	gopkg.in/yaml.v3 v3.0.1
 )
