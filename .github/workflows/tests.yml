@@ -7,7 +7,8 @@ on:
   workflow_call:
     secrets:
       GCP_SERVICE_ACCOUNT:
-        required: true
+        description: "DEPRECATED, unused (SEC-2311: the EE image is pulled as ci-reader through WIF). Kept so callers still passing it do not fail."
+        required: false
       KESTRA_EE_UNIT_TEST_LICENSE_FILE:
         required: true
       KESTRA_EE_UNIT_TEST_LICENSE_LEGACY_FILE:
@@ -108,10 +109,14 @@ jobs:
 
   e2e-tests:
     needs: list-versions
-    # Fork PRs don't receive secrets (GCP creds for the private EE image, EE license), so e2e cannot run.
+    # Fork PRs get neither secrets (EE license) nor an OIDC token (GCP access to the private EE image), so e2e cannot run.
     # Skip them. workflow_dispatch/workflow_call and internal PRs still run.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
+    # id-token: write mints the GitHub OIDC token for the ci-reader WIF exchange (SEC-2311).
+    permissions:
+      contents: read
+      id-token: write
     strategy:
       fail-fast: false
       matrix:
@@ -134,10 +139,15 @@ jobs:
           go-version: "1.27"
           cache: true
 
-      - name: GCP - Auth with github service account
+      # SEC-2311: read-only ci-reader through Workload Identity Federation, no key. Default options:
+      # the action writes a WIF credential config and points gcloud at it, so the configure-docker
+      # step below pulls the EE image as ci-reader. No continue-on-error: a failed exchange must fail
+      # the job.
+      - name: GCP - Auth with ci-reader (Workload Identity Federation)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
-          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          workload_identity_provider: projects/230725787862/locations/global/workloadIdentityPools/github/providers/github
+          service_account: ci-reader@kestra-host.iam.gserviceaccount.com
       - name: configure docker access to GCP registry for EE image
         run: gcloud auth configure-docker europe-west1-docker.pkg.dev
 
