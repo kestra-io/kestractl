@@ -2178,7 +2178,7 @@ func TestDeployFlow_ExistenceCheckConnectionDropped(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	result := deployFlow(newTestClient(t, server.URL), writeTempFlowFile(t), "", "", true, false)
+	result := deployFlow(newTestClient(t, server.URL), writeTempFlowFile(t), "", "", false, true)
 	if result.Success {
 		t.Fatal("expected deploy to fail when the existence check gets no response")
 	}
@@ -2195,7 +2195,7 @@ func TestDeployFlow_ExistenceCheckConnectionRefused(t *testing.T) {
 	url := server.URL
 	server.Close()
 
-	result := deployFlow(newTestClient(t, url), writeTempFlowFile(t), "", "", true, false)
+	result := deployFlow(newTestClient(t, url), writeTempFlowFile(t), "", "", false, true)
 	if result.Success {
 		t.Fatal("expected deploy to fail when the server is unreachable")
 	}
