@@ -3112,7 +3112,8 @@ multipart request, so each file must contain exactly one flow (multi-document fi
 rejected) and each flow must live in only one file. Hidden files and directories are skipped,
 subdirectories are scanned unless --recursive=false, and symlinked directories are not
 followed. A directory without any .yaml/.yml file is an error, so that --delete can never
-empty a namespace by mistake. Every flow's namespace must match <namespace>.`,
+empty a namespace by mistake. Every flow's namespace must match <namespace>. With --delete, the returned list (JSON output)
+also contains the deleted flows.`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
 
@@ -3121,7 +3122,8 @@ empty a namespace by mistake. Every flow's namespace must match <namespace>.`,
 
   # Sync the top-level files of a directory and delete flows not present in it
   kestractl flows namespace-sync prod.analytics ./flows --recursive=false --delete`,
-		Args: cobra.ExactArgs(2),
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
 				return err
@@ -3244,7 +3246,15 @@ func runFlowsNamespaceSyncDir(client *Client, namespace, dir string, deleteMissi
 	}
 
 	return renderer.Render(results, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Namespace '%s' synced: %d flow(s) updated (%d file(s) sent).\n", namespace, len(results), len(files))
+		// Each file holds exactly one flow (multi-document files are rejected above and the
+		// server rejects duplicate ids), so files == created/updated flows. The server returns
+		// Stream.concat(deleted, updatedOrCreated) and deleted flows still report deleted=false,
+		// so the deleted count is whatever exceeds the number of files.
+		deleted := len(results) - len(files)
+		if deleted < 0 {
+			deleted = 0
+		}
+		fmt.Fprintf(w, "Namespace '%s' synced from %d file(s): %d flow(s) created or updated, %d deleted.\n", namespace, len(files), len(files), deleted)
 		return nil
 	})
 }

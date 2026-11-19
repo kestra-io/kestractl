@@ -27,7 +27,7 @@ func TestFlowsNamespaceSync_directory(t *testing.T) {
 
 	stdout, stderr, err := RunAuthenticatedCliCmd(t, "flows", "namespace-sync", namespace, dir)
 	require.NoError(t, err, stderr)
-	require.Contains(t, stdout, "2 flow(s) updated")
+	require.Contains(t, stdout, "2 flow(s) created or updated, 0 deleted")
 
 	for _, id := range []string{"flow-a", "flow-b"} {
 		_, stderr, err = RunAuthenticatedCliCmd(t, "flows", "get", namespace, id)
@@ -38,7 +38,7 @@ func TestFlowsNamespaceSync_directory(t *testing.T) {
 	require.NoError(t, os.Remove(filepath.Join(dir, "flow-b.yaml")))
 	stdout, stderr, err = RunAuthenticatedCliCmd(t, "flows", "namespace-sync", namespace, dir, "--delete")
 	require.NoError(t, err, stderr)
-	require.Contains(t, stdout, "1 flow(s) updated")
+	require.Contains(t, stdout, "1 flow(s) created or updated, 1 deleted")
 
 	_, _, err = RunAuthenticatedCliCmd(t, "flows", "get", namespace, "flow-a")
 	require.NoError(t, err, "flow-a should still exist")

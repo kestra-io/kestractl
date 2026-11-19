@@ -2332,7 +2332,7 @@ func TestRunFlowsNamespaceSync_Directory(t *testing.T) {
 		}
 	}
 	out := buf.String()
-	if !strings.Contains(out, "2 flow(s) updated") || !strings.Contains(out, "2 file(s) sent") {
+	if !strings.Contains(out, "synced from 2 file(s): 2 flow(s) created or updated, 0 deleted.") {
 		t.Errorf("unexpected output: %s", out)
 	}
 }
@@ -2502,5 +2502,27 @@ func TestRunFlowsNamespaceSync_DirectoryEscapesPath(t *testing.T) {
 	}
 	if got.rawPath != "/api/v1/my%20tenant/flows/a%2Fb%20c" {
 		t.Errorf("raw path = %q", got.rawPath)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryCountsDeleted(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	// The server lists deleted flows first, still with deleted=false.
+	server := syncDirServer(t, 200, `[{"id":"old","namespace":"prod","flowId":"old"},{"id":"a","namespace":"prod","flowId":"a"},{"id":"b","namespace":"prod","flowId":"b"}]`, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n", "b.yaml": "id: b\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2 flow(s) created or updated, 1 deleted") {
+		t.Errorf("unexpected output: %s", buf.String())
+	}
+}
+
+func TestFlowsNamespaceSyncCommand_SilencesUsage(t *testing.T) {
+	if !newFlowsNamespaceSyncCommand().SilenceUsage {
+		t.Error("expected SilenceUsage")
 	}
 }
