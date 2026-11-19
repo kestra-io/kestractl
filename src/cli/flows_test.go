@@ -1883,6 +1883,8 @@ func TestFlowsNamespaceSyncCommand_DeprecatedOverride(t *testing.T) {
 		t.Fatalf("pipe: %v", err)
 	}
 	os.Stderr = w
+	// Safety net: a panic in Execute must not leave os.Stderr on a closed pipe.
+	t.Cleanup(func() { os.Stderr = originalStderr })
 	stdout, execErr := captureStdout(cmd.Execute)
 	os.Stderr = originalStderr
 	_ = w.Close()
@@ -1916,8 +1918,9 @@ func TestFlowsNamespaceSyncCommand_Help(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("help error: %v", err)
 	}
-	if !strings.Contains(buf.String(), "(default false)") {
-		t.Errorf("expected delete default in help, got:\n%s", buf.String())
+	// Assert on the flag's own usage: the command's Long text also says "(default false)".
+	if u := cmd.Flags().Lookup("delete").Usage; !strings.Contains(u, "(default false)") {
+		t.Errorf("expected delete default in flag usage, got: %q", u)
 	}
 	if strings.Contains(buf.String(), "--override") {
 		t.Errorf("deprecated --override must be hidden from help, got:\n%s", buf.String())
