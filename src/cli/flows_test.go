@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -2149,5 +2150,56 @@ func TestConfirmFixtureDecodeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("fixture fails to decode for the wrong reason (want a missing-draft error): %v", err)
+	}
+}
+
+func writeTempFlowFile(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "flow-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = f.WriteString("id: a\nnamespace: x.y\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
+	f.Close()
+	return f.Name()
+}
+
+func TestDeployFlow_ExistenceCheckConnectionDropped(t *testing.T) {
+	var posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			panic(http.ErrAbortHandler)
+		case http.MethodPost:
+			posts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"a","namespace":"x.y","revision":1}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result := deployFlow(newTestClient(t, server.URL), writeTempFlowFile(t), "", "", true, false)
+	if result.Success {
+		t.Fatal("expected deploy to fail when the existence check gets no response")
+	}
+	if !strings.HasPrefix(result.Error, `Get "`) {
+		t.Errorf("expected error from the GET, got: %s", result.Error)
+	}
+	if n := posts.Load(); n != 0 {
+		t.Errorf("expected no create POST, got %d", n)
+	}
+}
+
+func TestDeployFlow_ExistenceCheckConnectionRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := server.URL
+	server.Close()
+
+	result := deployFlow(newTestClient(t, url), writeTempFlowFile(t), "", "", true, false)
+	if result.Success {
+		t.Fatal("expected deploy to fail when the server is unreachable")
+	}
+	if !strings.HasPrefix(result.Error, `Get "`) {
+		t.Errorf("expected error attributed to the GET, got: %s", result.Error)
 	}
 }
