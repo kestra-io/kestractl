@@ -2174,6 +2174,8 @@ func TestDeployFlow_ExistenceCheckConnectionDropped(t *testing.T) {
 			posts.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"a","namespace":"x.y","revision":1}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
 		}
 	}))
 	t.Cleanup(server.Close)
