@@ -15,6 +15,9 @@ func writeSyncFlow(t *testing.T, dir, namespace, id string) {
 }
 
 func TestFlowsNamespaceSync_directory(t *testing.T) {
+	// The multipart overload of POST /flows/{namespace} was backported to 1.0.x
+	// (v1.0.24) and 1.2.x (v1.2.1) but never to 1.1.x, which answers 401.
+	skipOnKestra(t, 1, 1, "no multipart overload of POST /flows/{namespace} on the 1.1 line")
 	namespace := "e2e.sync." + randomId()[:8]
 	dir := t.TempDir()
 	writeSyncFlow(t, dir, namespace, "flow-a")
