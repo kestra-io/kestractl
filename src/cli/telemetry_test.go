@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
+	"github.com/posthog/posthog-go"
 )
 
 func TestFetchPosthogConfig(t *testing.T) {
@@ -227,4 +229,26 @@ func TestTelemetryEventName(t *testing.T) {
 			t.Fatalf("expected %q, got %q", telemetryEventCommandDone, event)
 		}
 	})
+}
+
+type captureClient struct {
+	posthog.Client
+	got posthog.Capture
+}
+
+func (c *captureClient) Enqueue(m posthog.Message) error {
+	c.got = m.(posthog.Capture)
+	return nil
+}
+
+func TestCaptureCommandSkillSource(t *testing.T) {
+	for _, tc := range []struct{ env, want string }{{"kestra-ops", "kestra-ops"}, {"", ""}} {
+		t.Setenv(telemetrySkillSourceEnv, tc.env)
+		c := &captureClient{}
+		posthogTelemetry{client: c, distinctID: "id"}.CaptureCommand("flows list", nil, time.Millisecond)
+		got, _ := c.got.Properties["skill_source"].(string)
+		if got != tc.want {
+			t.Fatalf("env %q: skill_source = %q, want %q", tc.env, got, tc.want)
+		}
+	}
 }

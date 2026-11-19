@@ -197,6 +197,8 @@ kestractl sends anonymous telemetry to help the Kestra team understand real usag
 
 Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 
+When an AI agent skill drives kestractl, it can set `KESTRACTL_SKILL_SOURCE=<skill-name>` (for example `kestra-ops`). The value is sent as the `skill_source` property so skill usage can be told apart from direct use.
+
 ### Update Notifications
 
 kestractl warns on stderr when a newer release is available. The lookup runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so all but the first command you run after a full day are served from that cache with no network call at all.

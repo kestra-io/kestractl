@@ -20,6 +20,7 @@ import (
 const (
 	telemetryDisabledEnv      = "KESTRACTL_TELEMETRY_DISABLED"
 	telemetryGitHubActionEnv  = "KESTRACTL_GITHUB_ACTION"
+	telemetrySkillSourceEnv   = "KESTRACTL_SKILL_SOURCE"
 	telemetryEventCommandDone = "cli_command_executed"
 	telemetryEventGHADone     = "gha_command_executed"
 	installationIDFileName    = "installation_id"
@@ -46,6 +47,10 @@ func (t posthogTelemetry) CaptureCommand(commandPath string, commandErr error, d
 		Set("success", commandErr == nil).
 		Set("duration_ms", duration.Milliseconds()).
 		Set("$process_person_profile", false)
+
+	if v := os.Getenv(telemetrySkillSourceEnv); v != "" {
+		properties.Set("skill_source", v)
+	}
 
 	if commandErr != nil {
 		properties.Set("error_type", telemetryErrorType(commandErr))
