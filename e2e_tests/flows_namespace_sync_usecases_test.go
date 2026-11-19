@@ -21,8 +21,8 @@ func TestFlowsNamespaceSync_directory(t *testing.T) {
 	writeSyncFlow(t, dir, namespace, "flow-b")
 
 	t.Cleanup(func() {
-		_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", namespace, "flow-a")
-		_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", namespace, "flow-b")
+		_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", namespace, "flow-a", "--yes")
+		_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", namespace, "flow-b", "--yes")
 	})
 
 	stdout, stderr, err := RunAuthenticatedCliCmd(t, "flows", "namespace-sync", namespace, dir)

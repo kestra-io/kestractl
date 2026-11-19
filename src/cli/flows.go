@@ -3112,8 +3112,8 @@ multipart request, so each file must contain exactly one flow (multi-document fi
 rejected) and each flow must live in only one file. Hidden files and directories are skipped,
 subdirectories are scanned unless --recursive=false, and symlinked directories are not
 followed. A directory without any .yaml/.yml file is an error, so that --delete can never
-empty a namespace by mistake. Every flow's namespace must match <namespace>. With --delete, the returned list (JSON output)
-also contains the deleted flows.`,
+empty a namespace by mistake. Every flow's namespace must match <namespace>.
+With --delete, the returned list (JSON output) also contains the deleted flows.`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
 
@@ -3265,31 +3265,31 @@ func escapeMultipartQuotes(s string) string {
 
 // isMultiDocumentYAML reports whether content holds more than one YAML document.
 //
-// Heuristic: a line that is exactly "---" (trailing blanks or a trailing comment
-// allowed) starts a new document. Such a line only counts when real content came
-// before it AND real content follows it, so a leading "---" or a trailing one is
-// not a second document. Block scalar content must be indented, so an unindented
-// "---" is always a document marker and cannot be a false positive there.
+// It uses the YAML decoder rather than scanning for "---", so directives (%YAML),
+// "--- key: value" starts, tags and block scalars are handled by the parser. Empty
+// (null) documents, such as the one after a trailing "---", are not counted. A parse
+// error after the first document means a second document exists, so it counts as
+// multi-document; an error inside the first one is left for the server to report.
 func isMultiDocumentYAML(content string) bool {
-	hasContent, separated := false, false
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimRight(line, "\r")
-		trimmed := strings.TrimSpace(line)
-		if line == "---" || strings.HasPrefix(line, "--- ") && (strings.TrimSpace(line[3:]) == "" || strings.HasPrefix(strings.TrimSpace(line[3:]), "#")) {
-			if hasContent {
-				separated = true
-			}
+	decoder := yaml.NewDecoder(strings.NewReader(content))
+	documents := 0
+	for {
+		var node yaml.Node
+		err := decoder.Decode(&node)
+		if errors.Is(err, io.EOF) {
+			return false
+		}
+		if err != nil {
+			return documents >= 1
+		}
+		if len(node.Content) == 0 || (node.Content[0].Kind == yaml.ScalarNode && node.Content[0].Tag == "!!null") {
 			continue
 		}
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if separated {
+		documents++
+		if documents > 1 {
 			return true
 		}
-		hasContent = true
 	}
-	return false
 }
 
 func boolPtr(b bool) *bool { return &b }
