@@ -31,10 +31,19 @@ var errRateLimited = errors.New("rate limited by repository (429)")
 // Exposed as a var so tests can override it to avoid sleeping.
 var rateLimitWaits = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second}
 
-// pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
+// errArtifactNotFound is returned by downloadJAR when the repository answers 404 for the JAR,
+// so the next repository can be tried.
+var errArtifactNotFound = errors.New("artifact not found")
+
+// errChecksumNotPublished is returned by fetchExpectedSHA1 when the repository has no .sha1 for the JAR.
+var errChecksumNotPublished = errors.New("no .sha1 published")
+
+// pluginsAPIBase and pluginsMavenRepositories are vars so tests can point them at a local httptest server.
 var (
-	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
-	pluginsMavenBase = "https://repo1.maven.org/maven2"
+	pluginsAPIBase = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
+	// pluginsMavenRepositories are tried in order when no --maven-repository is given: a plugin
+	// version may live on any of them (older releases on Maven Central, newer ones elsewhere).
+	pluginsMavenRepositories = []string{"https://repo1.maven.org/maven2"}
 )
 
 // validCoordinatePart matches Maven-style groupId/artifactId/version segments:
@@ -81,7 +90,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var edition string
 	var keepOnlyLastVersion bool
 	var globalTimeout time.Duration
-	var mavenRepository string
+	var mavenRepositories []string
 	var mavenUsername string
 	var mavenPassword string
 	var pluginsList []string
@@ -112,7 +121,14 @@ A coordinate that pins its own version keeps it, and the ignored --compatible-fo
 is reported. --edition still filters the catalog used for resolution.
 
 By default plugins are fetched from Maven Central. Use --maven-repository to
-point at a custom registry (mirror, internal Nexus/Artifactory, etc.).
+point at a custom registry (mirror, internal Nexus/Artifactory, etc.). Repeat it to
+use several repositories: each JAR is looked up in the order given, and the next
+repository is tried only when one answers 404. --maven-username, --maven-password
+and --header are sent to every repository listed.
+
+  kestractl plugins download 1.3.9 \
+    --maven-repository https://repo1.maven.org/maven2 \
+    --maven-repository https://nexus.example.com/repository/kestra
 
 Authentication:
 
@@ -186,7 +202,7 @@ Authentication:
 				return nil
 			}
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers, explicit)
+			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepositories, mavenUsername, mavenPassword, headers, explicit)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -197,7 +213,7 @@ Authentication:
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
-	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
 	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup). The version may be omitted when --compatible-for or a version argument is given")
@@ -262,7 +278,7 @@ func newPluginsGetCommand() *cobra.Command {
 	var pluginsDir string
 	var forceRedownload bool
 	var globalTimeout time.Duration
-	var mavenRepository string
+	var mavenRepositories []string
 	var mavenUsername string
 	var mavenPassword string
 	var compatibleFor string
@@ -292,7 +308,7 @@ prints. An artifact absent from that set is an error naming it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
+			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepositories, mavenUsername, mavenPassword, globalTimeout)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -300,7 +316,7 @@ prints. An artifact absent from that set is an error naming it.`,
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download the plugin even if it already exists")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for the download")
-	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central)")
 	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
 	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
 	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve the coordinate's version against when it is given as groupId:artifactId")
@@ -435,11 +451,8 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepository string, mavenUsername string, mavenPassword string, headers []string, explicitPlugins []pluginArtifact) error {
-	effectiveMavenBase := pluginsMavenBase
-	if mavenRepository != "" {
-		effectiveMavenBase = mavenRepository
-	}
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepositories []string, mavenUsername string, mavenPassword string, headers []string, explicitPlugins []pluginArtifact) error {
+	repositories := effectiveMavenRepositories(mavenRepositories)
 
 	parsedHeaders, err := parseHeaders(headers)
 	if err != nil {
@@ -502,7 +515,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 					continue
 				default:
 				}
-				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+				n, skipped, err := downloadJARFromRepositories(ctx, logf, j.plugin, pluginsDir, forceRedownload, repositories, mavenUsername, mavenPassword, parsedHeaders)
 				results <- downloadResult{index: j.index, plugin: j.plugin, bytes: n, err: err, skipped: skipped}
 			}
 		}()
@@ -576,7 +589,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	return nil
 }
 
-func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
+func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, pluginsDir string, forceRedownload bool, headers []string, mavenRepositories []string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
 	p, err := parsePluginCoordinate(coordinate, true)
 	if err != nil {
 		return err
@@ -587,10 +600,7 @@ func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, plugi
 	}
 	p = resolved[0]
 
-	effectiveMavenBase := pluginsMavenBase
-	if mavenRepository != "" {
-		effectiveMavenBase = mavenRepository
-	}
+	repositories := effectiveMavenRepositories(mavenRepositories)
 
 	parsedHeaders, err := parseHeaders(headers)
 	if err != nil {
@@ -609,7 +619,7 @@ func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, plugi
 
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
-	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+	n, skipped, err := downloadJARFromRepositories(ctx, logf, p, pluginsDir, forceRedownload, repositories, mavenUsername, mavenPassword, parsedHeaders)
 
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", label, err)
@@ -846,6 +856,44 @@ func pluginFileName(p pluginArtifact) string {
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
 }
 
+// effectiveMavenRepositories returns the repositories given with --maven-repository, or the
+// default ones when none was given.
+func effectiveMavenRepositories(mavenRepositories []string) []string {
+	var repositories []string
+	for _, r := range mavenRepositories {
+		if r = strings.TrimSuffix(strings.TrimSpace(r), "/"); r != "" {
+			repositories = append(repositories, r)
+		}
+	}
+	if len(repositories) == 0 {
+		return pluginsMavenRepositories
+	}
+	return repositories
+}
+
+// downloadJARFromRepositories downloads the plugin JAR from the first repository that has it.
+// Only a 404 moves on to the next repository: any other failure (rate limit, server error,
+// checksum mismatch) is returned as is, so a broken repository is never silently skipped.
+func downloadJARFromRepositories(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, repositories []string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
+	var notFound []error
+	for _, base := range repositories {
+		n, skipped, err := downloadJAR(ctx, logf, p, destDir, forceRedownload, base, mavenUsername, mavenPassword, headers)
+		if !errors.Is(err, errArtifactNotFound) {
+			return n, skipped, err
+		}
+		notFound = append(notFound, err)
+	}
+	if len(notFound) == 1 {
+		return 0, false, notFound[0]
+	}
+	urls := make([]string, len(repositories))
+	for i, base := range repositories {
+		urls[i] = mavenJARURL(p, base)
+	}
+	return 0, false, fmt.Errorf("%w in any of the %d repositories (HTTP 404 at %s), check that the groupId, artifactId and version exist on one of them",
+		errArtifactNotFound, len(repositories), strings.Join(urls, ", "))
+}
+
 func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
 	url := mavenJARURL(p, mavenBase)
@@ -857,6 +905,12 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 		}
 	}
 	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
+	// A missing .sha1 is only worth a warning once this repository turns out to have the JAR:
+	// when it has neither, the next repository is tried and the warning would be noise.
+	checksumNotPublished := errors.Is(err, errChecksumNotPublished)
+	if checksumNotPublished {
+		err = nil
+	}
 	if err != nil {
 		if errors.Is(err, errRateLimited) {
 			return 0, false, err
@@ -906,9 +960,12 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				return 0, false, fmt.Errorf("artifact not found at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", url)
+				return 0, false, fmt.Errorf("%w at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", errArtifactNotFound, url)
 			}
 			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
+		}
+		if checksumNotPublished {
+			logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
 		}
 
 		f, err := os.CreateTemp(destDir, filepath.Base(destPath)+".part*")
@@ -1013,8 +1070,7 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
-				return "", nil
+				return "", errChecksumNotPublished
 			}
 			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
 		}
