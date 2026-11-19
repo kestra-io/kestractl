@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -3088,19 +3094,33 @@ func newFlowsNamespaceSyncCommand() *cobra.Command {
 	var (
 		deleteMissing bool
 		override      bool
+		recursive     bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "namespace-sync <namespace> <file>",
-		Short: "Sync all flows in a namespace from a YAML file.",
-		Long: `Create or update all flows in the given namespace from a YAML file.
-Existing flows are always updated. Flows already in the namespace but not present in the file
-are deleted only if --delete is set (default false).`,
+		Use:   "namespace-sync <namespace> <path>",
+		Short: "Sync all flows in a namespace from a YAML file or a directory.",
+		Long: `Create or update all flows in the given namespace from a YAML file or a directory.
+Existing flows are always updated. Flows already in the namespace but not present in the
+source are deleted only if --delete is set (default false).
+
+If <path> is a file, it is sent as a single YAML body and may contain several flows
+separated by '---'.
+
+If <path> is a directory, every .yaml/.yml file in it is sent as its own part of a single
+multipart request, so each file must contain exactly one flow (multi-document files are
+rejected) and each flow must live in only one file. Hidden files and directories are skipped,
+subdirectories are scanned unless --recursive=false, and symlinked directories are not
+followed. A directory without any .yaml/.yml file is an error, so that --delete can never
+empty a namespace by mistake. Every flow's namespace must match <namespace>.`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
 
-  # Sync and delete flows not present in the file
-  kestractl flows namespace-sync prod.analytics flows.yaml --delete`,
+  # Sync flows in namespace prod.analytics from a directory of flow files
+  kestractl flows namespace-sync prod.analytics ./flows
+
+  # Sync the top-level files of a directory and delete flows not present in it
+  kestractl flows namespace-sync prod.analytics ./flows --recursive=false --delete`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := validateOutputFormat(); err != nil {
@@ -3115,18 +3135,27 @@ are deleted only if --delete is set (default false).`,
 				return err
 			}
 			_ = override
-			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, renderer)
+			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, recursive, renderer)
 		},
 	}
 
-	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the file (default false)")
+	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the source (default false)")
+	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
 	cmd.Flags().BoolVar(&override, "override", false, "Has no effect")
 	_ = cmd.Flags().MarkDeprecated("override", "it has no effect, existing flows are always updated")
 	return cmd
 }
 
-func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMissing bool, renderer *Renderer) error {
-	content, err := os.ReadFile(filePath)
+func runFlowsNamespaceSync(client *Client, namespace, path string, deleteMissing, recursive bool, renderer *Renderer) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to access path '%s': %w", path, err)
+	}
+	if info.IsDir() {
+		return runFlowsNamespaceSyncDir(client, namespace, path, deleteMissing, recursive, renderer)
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
@@ -3144,6 +3173,113 @@ func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMis
 		fmt.Fprintf(w, "Namespace '%s' synced: %d flow(s) updated.\n", namespace, len(results))
 		return nil
 	})
+}
+
+// runFlowsNamespaceSyncDir sends every flow file of a directory as its own part of
+// one multipart request. The Go SDK only exposes the YAML overload, so this goes
+// through the raw request path (same base URL, auth and HTTP client).
+func runFlowsNamespaceSyncDir(client *Client, namespace, dir string, deleteMissing, recursive bool, renderer *Renderer) error {
+	files, err := collectFlowFiles(dir, recursive)
+	if err != nil {
+		return fmt.Errorf("failed to scan directory '%s': %w", dir, err)
+	}
+	// Must fail before any request: with delete=true an empty part list would
+	// delete every flow of the namespace.
+	if len(files) == 0 {
+		return fmt.Errorf("no .yaml or .yml files found in directory '%s'", dir)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("failed to read file '%s': %w", file, err)
+		}
+		if isMultiDocumentYAML(string(content)) {
+			return fmt.Errorf("file '%s' contains several YAML documents ('---'): in a directory each file must hold exactly one flow; split it, or sync it as a single file", file)
+		}
+		rel, err := filepath.Rel(dir, file)
+		if err != nil {
+			rel = filepath.Base(file)
+		}
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="flows"; filename="%s"`, escapeMultipartQuotes(filepath.ToSlash(rel))))
+		header.Set("Content-Type", "application/x-yaml")
+		part, err := mw.CreatePart(header)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(content); err != nil {
+			return err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	// delete is always sent explicitly: the server defaults a missing value to true.
+	// override=false: true would rewrite every flow's namespace, which this command does not offer.
+	query := url.Values{}
+	query.Set("delete", strconv.FormatBool(deleteMissing))
+	query.Set("override", "false")
+	path := client.tenantAPIPath(query, "flows", namespace)
+
+	respBody, status, err := client.doRawRequestPathBody(http.MethodPost, path, &buf, mw.FormDataContentType())
+	if err != nil {
+		return formatSDKError(err)
+	}
+	switch {
+	case status == http.StatusRequestEntityTooLarge:
+		return fmt.Errorf("request too large: the server rejected the %d flow file(s) as one request; split the sync into smaller directories (note that --delete only keeps the flows of the directory being synced)", len(files))
+	case status == http.StatusUnsupportedMediaType:
+		return fmt.Errorf("the server does not accept multipart flow uploads; concatenate the flows into a single YAML file (separated by '---') and sync that file instead")
+	case status >= 400:
+		return formatErrorBody(respBody, fmt.Sprintf("status %d", status))
+	}
+
+	var results []kestra.FlowInterface
+	if err := json.Unmarshal(respBody, &results); err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		fmt.Fprintf(w, "Namespace '%s' synced: %d flow(s) updated (%d file(s) sent).\n", namespace, len(results), len(files))
+		return nil
+	})
+}
+
+func escapeMultipartQuotes(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s)
+}
+
+// isMultiDocumentYAML reports whether content holds more than one YAML document.
+//
+// Heuristic: a line that is exactly "---" (trailing blanks or a trailing comment
+// allowed) starts a new document. Such a line only counts when real content came
+// before it AND real content follows it, so a leading "---" or a trailing one is
+// not a second document. Block scalar content must be indented, so an unindented
+// "---" is always a document marker and cannot be a false positive there.
+func isMultiDocumentYAML(content string) bool {
+	hasContent, separated := false, false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmed := strings.TrimSpace(line)
+		if line == "---" || strings.HasPrefix(line, "--- ") && (strings.TrimSpace(line[3:]) == "" || strings.HasPrefix(strings.TrimSpace(line[3:]), "#")) {
+			if hasContent {
+				separated = true
+			}
+			continue
+		}
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if separated {
+			return true
+		}
+		hasContent = true
+	}
+	return false
 }
 
 func boolPtr(b bool) *bool { return &b }

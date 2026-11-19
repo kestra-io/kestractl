@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1830,7 +1831,7 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
 
 	var buf bytes.Buffer
-	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, newTableRenderer(&buf))
+	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, true, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runFlowsNamespaceSync error: %v", err)
 	}
@@ -1854,7 +1855,7 @@ func TestRunFlowsNamespaceSync_Delete(t *testing.T) {
 	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
 
 	var buf bytes.Buffer
-	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), true, newTableRenderer(&buf)); err != nil {
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), true, true, newTableRenderer(&buf)); err != nil {
 		t.Fatalf("runFlowsNamespaceSync error: %v", err)
 	}
 	if got := gotQuery.Get("delete"); got != "true" {
@@ -2244,5 +2245,262 @@ func TestConfirmFixtureDecodeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("fixture fails to decode for the wrong reason (want a missing-draft error): %v", err)
+	}
+}
+
+// syncDirRequest captures what the multipart namespace-sync sent.
+type syncDirRequest struct {
+	method, path, rawPath, contentType string
+	query                              url.Values
+	parts                              map[string]string // filename -> content
+	partNames                          []string
+}
+
+func syncDirServer(t *testing.T, status int, response string, got *syncDirRequest, calls *int) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		got.method = r.Method
+		got.path = r.URL.Path
+		got.rawPath = r.URL.EscapedPath()
+		got.query = r.URL.Query()
+		got.contentType = r.Header.Get("Content-Type")
+		got.parts = map[string]string{}
+		if mr, err := r.MultipartReader(); err == nil {
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				b, _ := io.ReadAll(p)
+				// Part.FileName() strips directories; read the raw header instead.
+				_, params, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+				got.parts[params["filename"]] = string(b)
+				got.partNames = append(got.partNames, p.FormName())
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func writeSyncDir(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const syncOKResponse = `[{"id":"a","namespace":"prod","flowId":"a"},{"id":"b","namespace":"prod","flowId":"b"}]`
+
+func TestRunFlowsNamespaceSync_Directory(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n", "sub/b.yml": "id: b\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if calls != 1 || got.method != http.MethodPost || got.path != "/api/v1/main/flows/prod" {
+		t.Fatalf("unexpected request: calls=%d %s %s", calls, got.method, got.path)
+	}
+	if !strings.HasPrefix(got.contentType, "multipart/form-data") {
+		t.Errorf("content type = %q", got.contentType)
+	}
+	if got.query.Get("delete") != "false" || got.query.Get("override") != "false" {
+		t.Errorf("expected explicit delete=false&override=false, got %v", got.query)
+	}
+	if len(got.parts) != 2 || got.parts["a.yaml"] == "" || got.parts["sub/b.yml"] == "" {
+		t.Errorf("unexpected parts: %v", got.parts)
+	}
+	for _, n := range got.partNames {
+		if n != "flows" {
+			t.Errorf("part name = %q, want flows", n)
+		}
+	}
+	out := buf.String()
+	if !strings.Contains(out, "2 flow(s) updated") || !strings.Contains(out, "2 file(s) sent") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryDelete(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if got.query.Get("delete") != "true" {
+		t.Errorf("expected delete=true, got %v", got.query)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryNotRecursiveAndHidden(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{
+		"a.yaml":       "id: a\nnamespace: prod\n",
+		"sub/b.yaml":   "id: b\nnamespace: prod\n",
+		".hidden.yaml": "id: h\nnamespace: prod\n",
+		".git/c.yaml":  "id: c\nnamespace: prod\n",
+		"notes.txt":    "ignored",
+	})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, false, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(got.parts) != 1 || got.parts["a.yaml"] == "" {
+		t.Errorf("expected only a.yaml, got %v", got.parts)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryNoFilesNoRequest(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+
+	for name, files := range map[string]map[string]string{
+		"empty":   {},
+		"no yaml": {"notes.txt": "x"},
+		"hidden":  {".a.yaml": "id: a"},
+		"subdir":  {"sub/a.yaml": "id: a"}, // ignored when not recursive
+	} {
+		dir := writeSyncDir(t, files)
+		recursive := name != "subdir"
+		var buf bytes.Buffer
+		err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, recursive, newTableRenderer(&buf))
+		if name == "subdir" {
+			if err == nil {
+				t.Errorf("%s: expected error", name)
+			}
+			continue
+		}
+		if name == "empty" || name == "no yaml" || name == "hidden" {
+			if err == nil || !strings.Contains(err.Error(), "no .yaml or .yml files") {
+				t.Errorf("%s: expected no-files error, got %v", name, err)
+			}
+		}
+	}
+	if calls != 0 {
+		t.Errorf("no request must be sent, got %d", calls)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryMultiDocRejected(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{
+		"ok.yaml":    "id: a\nnamespace: prod\n",
+		"multi.yaml": "id: a\nnamespace: prod\n---\nid: b\nnamespace: prod\n",
+	})
+
+	var buf bytes.Buffer
+	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf))
+	if err == nil || !strings.Contains(err.Error(), "multi.yaml") {
+		t.Fatalf("expected error naming multi.yaml, got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("no request must be sent, got %d", calls)
+	}
+}
+
+func TestIsMultiDocumentYAML(t *testing.T) {
+	tests := map[string]struct {
+		in   string
+		want bool
+	}{
+		"single":                {"id: a\n", false},
+		"leading separator":     {"---\nid: a\n", false},
+		"leading comment+sep":   {"# c\n---\nid: a\n", false},
+		"trailing separator":    {"id: a\n---\n", false},
+		"two docs":              {"id: a\n---\nid: b\n", true},
+		"two docs crlf":         {"id: a\r\n---\r\nid: b\r\n", true},
+		"separator trailing sp": {"id: a\n---  \nid: b\n", true},
+		"separator comment":     {"id: a\n--- # next\nid: b\n", true},
+		"in block scalar":       {"id: a\ndescription: |\n  ---\n  text\n", false},
+		"dashes in value":       {"id: a\nmessage: ---\n", false},
+	}
+	for name, tc := range tests {
+		if got := isMultiDocumentYAML(tc.in); got != tc.want {
+			t.Errorf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestRunFlowsNamespaceSync_FileStillYAML(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !strings.Contains(contentType, "application/x-yaml") {
+		t.Errorf("content type = %q, want application/x-yaml", contentType)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryHTTPErrors(t *testing.T) {
+	tests := []struct {
+		status int
+		body   string
+		want   string
+	}{
+		{413, ``, "request too large"},
+		{415, ``, "concatenate"},
+		{422, `{"message":"flow namespace is invalid"}`, "flow namespace is invalid"},
+	}
+	for _, tc := range tests {
+		var got syncDirRequest
+		calls := 0
+		server := syncDirServer(t, tc.status, tc.body, &got, &calls)
+		dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n"})
+		var buf bytes.Buffer
+		err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("status %d: expected %q, got %v", tc.status, tc.want, err)
+		}
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryEscapesPath(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, `[]`, &got, &calls)
+	client := newTestClient(t, server.URL)
+	client.Tenant = "my tenant"
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: x\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(client, "a/b c", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if got.rawPath != "/api/v1/my%20tenant/flows/a%2Fb%20c" {
+		t.Errorf("raw path = %q", got.rawPath)
 	}
 }
