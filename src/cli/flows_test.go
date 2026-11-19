@@ -2439,6 +2439,10 @@ func TestIsMultiDocumentYAML(t *testing.T) {
 		"separator comment":     {"id: a\n--- # next\nid: b\n", true},
 		"in block scalar":       {"id: a\ndescription: |\n  ---\n  text\n", false},
 		"dashes in value":       {"id: a\nmessage: ---\n", false},
+		"inline doc start":      {"id: a\n--- id: b\n", true},
+		"inline doc tag":        {"id: a\n--- !!map\nid: b\n", true},
+		"directive":             {"%YAML 1.2\n---\nid: a\nnamespace: prod\n", false},
+		"directive two docs":    {"%YAML 1.2\n---\nid: a\n---\nid: b\n", true},
 	}
 	for name, tc := range tests {
 		if got := isMultiDocumentYAML(tc.in); got != tc.want {

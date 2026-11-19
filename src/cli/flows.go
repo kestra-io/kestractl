@@ -3265,31 +3265,39 @@ func escapeMultipartQuotes(s string) string {
 
 // isMultiDocumentYAML reports whether content holds more than one YAML document.
 //
-// It uses the YAML decoder rather than scanning for "---", so directives (%YAML),
-// "--- key: value" starts, tags and block scalars are handled by the parser. Empty
-// (null) documents, such as the one after a trailing "---", are not counted. A parse
-// error after the first document means a second document exists, so it counts as
-// multi-document; an error inside the first one is left for the server to report.
+// It is a line scan, not a parse: yaml.v3 rejects valid streams (%YAML 1.2
+// directives, "--- key: value") before reporting any document, so a decoder cannot
+// be used here. An unindented line that is exactly "---" or starts with "---" and a
+// blank is a document marker; whatever follows the marker on that line (e.g.
+// "--- id: b") is content of the new document. Block scalar content must be
+// indented, so an unindented marker cannot be a false positive inside one.
+// Documents with no content (a leading or trailing "---") are not counted, and
+// unindented "%" lines are directives, not content.
 func isMultiDocumentYAML(content string) bool {
-	decoder := yaml.NewDecoder(strings.NewReader(content))
 	documents := 0
-	for {
-		var node yaml.Node
-		err := decoder.Decode(&node)
-		if errors.Is(err, io.EOF) {
-			return false
-		}
-		if err != nil {
-			return documents >= 1
-		}
-		if len(node.Content) == 0 || (node.Content[0].Kind == yaml.ScalarNode && node.Content[0].Tag == "!!null") {
+	current := false // whether the current document has content so far
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "%") {
 			continue
 		}
-		documents++
-		if documents > 1 {
-			return true
+		if line == "---" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "---\t") {
+			if current {
+				documents++
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "---"))
+			current = rest != "" && !strings.HasPrefix(rest, "#")
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			current = true
 		}
 	}
+	if current {
+		documents++
+	}
+	return documents > 1
 }
 
 func boolPtr(b bool) *bool { return &b }
