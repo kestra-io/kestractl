@@ -341,6 +341,11 @@ kestractl flows import flows.zip
 # Sync an entire namespace from a YAML file (delete flows absent from the file)
 kestractl flows namespace-sync my.namespace flows.yaml --delete
 
+# Sync an entire namespace from a directory: each .yaml/.yml file (one flow per
+# file) is sent as its own part of a single multipart request
+kestractl flows namespace-sync my.namespace ./flows
+kestractl flows namespace-sync my.namespace ./flows --recursive=false --delete
+
 # View and manage flow revisions
 kestractl flows revisions my.namespace my-flow
 kestractl flows delete-revisions my.namespace my-flow --before-revision 5
