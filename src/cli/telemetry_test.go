@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -242,13 +243,23 @@ func (c *captureClient) Enqueue(m posthog.Message) error {
 }
 
 func TestCaptureCommandSkillSource(t *testing.T) {
-	for _, tc := range []struct{ env, want string }{{"kestra-ops", "kestra-ops"}, {"", ""}} {
+	for _, tc := range []struct {
+		env, want string
+		present   bool
+	}{
+		{"kestra-ops", "kestra-ops", true},
+		{" Kestra-Ops\n", "kestra-ops", true},
+		{"/home/me/my project", "other", true},
+		{strings.Repeat("a", 65), "other", true},
+		{"", "", false},
+		{"   ", "", false},
+	} {
 		t.Setenv(telemetrySkillSourceEnv, tc.env)
 		c := &captureClient{}
 		posthogTelemetry{client: c, distinctID: "id"}.CaptureCommand("flows list", nil, time.Millisecond)
-		got, _ := c.got.Properties["skill_source"].(string)
-		if got != tc.want {
-			t.Fatalf("env %q: skill_source = %q, want %q", tc.env, got, tc.want)
+		got, ok := c.got.Properties["skill_source"].(string)
+		if ok != tc.present || got != tc.want {
+			t.Fatalf("env %q: skill_source = %q (present %v), want %q (present %v)", tc.env, got, ok, tc.want, tc.present)
 		}
 	}
 }
