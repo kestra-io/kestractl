@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -1802,25 +1803,34 @@ func TestFlowsNamespaceSyncCommand_NoArgs(t *testing.T) {
 	}
 }
 
-func TestRunFlowsNamespaceSync(t *testing.T) {
-	var gotMethod string
+func writeNamespaceSyncFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "flows.yaml")
+	if err := os.WriteFile(path, []byte("id: flow-one\nnamespace: prod\n"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	return path
+}
+
+func namespaceSyncServer(t *testing.T, gotMethod *string, gotQuery *url.Values) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
+		*gotMethod = r.Method
+		*gotQuery = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"id":"f1","namespace":"prod","flowId":"flow-one"}]`))
 	}))
 	t.Cleanup(server.Close)
+	return server
+}
 
-	tmpFile, err := os.CreateTemp("", "flows-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	_, _ = tmpFile.WriteString("id: flow-one\nnamespace: prod\n")
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
+func TestRunFlowsNamespaceSync(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
 
 	var buf bytes.Buffer
-	err = runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", tmpFile.Name(), false, false, newTableRenderer(&buf))
+	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runFlowsNamespaceSync error: %v", err)
 	}
@@ -1829,6 +1839,88 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "prod") {
 		t.Errorf("expected namespace in output, got:\n%s", buf.String())
+	}
+	if got := gotQuery.Get("delete"); got != "false" {
+		t.Errorf("expected delete=false, got query %v", gotQuery)
+	}
+	if _, ok := gotQuery["override"]; ok {
+		t.Errorf("override must not be sent, got query %v", gotQuery)
+	}
+}
+
+func TestRunFlowsNamespaceSync_Delete(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runFlowsNamespaceSync error: %v", err)
+	}
+	if got := gotQuery.Get("delete"); got != "true" {
+		t.Errorf("expected delete=true, got query %v", gotQuery)
+	}
+}
+
+func TestFlowsNamespaceSyncCommand_DeprecatedOverride(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+	defer func() { newClientFunc = original }()
+
+	// Cobra writes flag deprecation notices to its output writer, which defaults to
+	// os.Stderr when SetOut is not called (as in the real binary). Leave it unset and
+	// capture os.Stderr so the test proves the warning stays off stdout.
+	cmd := newFlowsNamespaceSyncCommand()
+	cmd.SetArgs([]string{"prod", writeNamespaceSyncFile(t), "--override"})
+
+	originalStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	stdout, execErr := captureStdout(cmd.Execute)
+	os.Stderr = originalStderr
+	_ = w.Close()
+	stderrBytes, _ := io.ReadAll(r)
+	_ = r.Close()
+	stderr := string(stderrBytes)
+
+	if execErr != nil {
+		t.Fatalf("--override must still be accepted, got: %v", execErr)
+	}
+	if !strings.Contains(stderr, "Flag --override has been deprecated") {
+		t.Errorf("expected deprecation warning on stderr, got:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "deprecated") {
+		t.Errorf("deprecation warning leaked to stdout:\n%s", stdout)
+	}
+	if _, ok := gotQuery["override"]; ok {
+		t.Errorf("override must not be sent, got query %v", gotQuery)
+	}
+	if got := gotQuery.Get("delete"); got != "false" {
+		t.Errorf("expected delete=false, got query %v", gotQuery)
+	}
+}
+
+func TestFlowsNamespaceSyncCommand_Help(t *testing.T) {
+	cmd := newFlowsNamespaceSyncCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "(default false)") {
+		t.Errorf("expected delete default in help, got:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "--override") {
+		t.Errorf("deprecated --override must be hidden from help, got:\n%s", buf.String())
 	}
 }
 

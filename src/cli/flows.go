@@ -3094,17 +3094,18 @@ func newFlowsNamespaceSyncCommand() *cobra.Command {
 		Use:   "namespace-sync <namespace> <file>",
 		Short: "Sync all flows in a namespace from a YAML file.",
 		Long: `Create or update all flows in the given namespace from a YAML file.
-Flows in the namespace that are not present in the file can optionally be deleted with --delete.`,
+Existing flows are always updated. Flows already in the namespace but not present in the file
+are deleted only if --delete is set (default false).`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
 
   # Sync and delete flows not present in the file
-  kestractl flows namespace-sync prod.analytics flows.yaml --delete
-
-  # Override existing flows
-  kestractl flows namespace-sync prod.analytics flows.yaml --override`,
+  kestractl flows namespace-sync prod.analytics flows.yaml --delete`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateOutputFormat(); err != nil {
+				return err
+			}
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -3113,16 +3114,18 @@ Flows in the namespace that are not present in the file can optionally be delete
 			if err != nil {
 				return err
 			}
-			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, override, renderer)
+			_ = override
+			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, renderer)
 		},
 	}
 
-	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the file")
-	cmd.Flags().BoolVar(&override, "override", false, "Override existing flows")
+	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the file (default false)")
+	cmd.Flags().BoolVar(&override, "override", false, "Has no effect")
+	_ = cmd.Flags().MarkDeprecated("override", "it has no effect, existing flows are always updated")
 	return cmd
 }
 
-func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMissing, override bool, renderer *Renderer) error {
+func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMissing bool, renderer *Renderer) error {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
@@ -3130,7 +3133,9 @@ func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMis
 
 	results, err := client.Kestra.Flows().UpdateFlowsInNamespace(
 		client.Ctx, namespace, client.Tenant, string(content),
-		boolPtr(deleteMissing), boolPtr(override))
+		// delete is always sent explicitly: the server defaults a missing value to true.
+		// override is not sent: the YAML endpoint ignores it.
+		boolPtr(deleteMissing), nil)
 	if err != nil {
 		return formatSDKError(err)
 	}
