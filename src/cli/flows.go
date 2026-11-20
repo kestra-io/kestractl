@@ -3093,7 +3093,6 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 func newFlowsNamespaceSyncCommand() *cobra.Command {
 	var (
 		deleteMissing bool
-		override      bool
 		recursive     bool
 	)
 
@@ -3113,6 +3112,8 @@ rejected) and each flow must live in only one file. Hidden files and directories
 subdirectories are scanned unless --recursive=false, and symlinked directories are not
 followed. A directory without any .yaml/.yml file is an error, so that --delete can never
 empty a namespace by mistake. Every flow's namespace must match <namespace>.
+Directory sync needs Kestra 1.0.24+ (1.0 line), 1.2.1+ or 2.x: the 1.1 line has no multipart
+upload and answers with 401 Unauthorized, so sync a single file there instead.
 With --delete, the returned list (JSON output) also contains the deleted flows.`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
@@ -3125,9 +3126,6 @@ With --delete, the returned list (JSON output) also contains the deleted flows.`
 		Args:         cobra.ExactArgs(2),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateOutputFormat(); err != nil {
-				return err
-			}
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
 				return err
@@ -3136,14 +3134,13 @@ With --delete, the returned list (JSON output) also contains the deleted flows.`
 			if err != nil {
 				return err
 			}
-			_ = override
 			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, recursive, renderer)
 		},
 	}
 
 	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the source (default false)")
 	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
-	cmd.Flags().BoolVar(&override, "override", false, "Has no effect")
+	cmd.Flags().Bool("override", false, "Has no effect")
 	_ = cmd.Flags().MarkDeprecated("override", "it has no effect, existing flows are always updated")
 	return cmd
 }
@@ -3206,7 +3203,9 @@ func runFlowsNamespaceSyncDir(client *Client, namespace, dir string, deleteMissi
 			rel = filepath.Base(file)
 		}
 		header := make(textproto.MIMEHeader)
-		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name="flows"; filename="%s"`, escapeMultipartQuotes(filepath.ToSlash(rel))))
+		// FileContentDisposition escapes quotes and backslashes, and percent-encodes CR/LF
+		// so a file name cannot inject part headers.
+		header.Set("Content-Disposition", multipart.FileContentDisposition("flows", filepath.ToSlash(rel)))
 		header.Set("Content-Type", "application/x-yaml")
 		part, err := mw.CreatePart(header)
 		if err != nil {
@@ -3257,10 +3256,6 @@ func runFlowsNamespaceSyncDir(client *Client, namespace, dir string, deleteMissi
 		fmt.Fprintf(w, "Namespace '%s' synced from %d file(s): %d flow(s) created or updated, %d deleted.\n", namespace, len(files), len(files), deleted)
 		return nil
 	})
-}
-
-func escapeMultipartQuotes(s string) string {
-	return strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(s)
 }
 
 // isMultiDocumentYAML reports whether content holds more than one YAML document.

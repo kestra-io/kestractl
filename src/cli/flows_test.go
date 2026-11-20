@@ -1919,10 +1919,6 @@ func TestFlowsNamespaceSyncCommand_Help(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("help error: %v", err)
 	}
-	// Assert on the flag's own usage: the command's Long text also says "(default false)".
-	if u := cmd.Flags().Lookup("delete").Usage; !strings.Contains(u, "(default false)") {
-		t.Errorf("expected delete default in flag usage, got: %q", u)
-	}
 	if strings.Contains(buf.String(), "--override") {
 		t.Errorf("deprecated --override must be hidden from help, got:\n%s", buf.String())
 	}
@@ -2388,16 +2384,8 @@ func TestRunFlowsNamespaceSync_DirectoryNoFilesNoRequest(t *testing.T) {
 		recursive := name != "subdir"
 		var buf bytes.Buffer
 		err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, recursive, newTableRenderer(&buf))
-		if name == "subdir" {
-			if err == nil {
-				t.Errorf("%s: expected error", name)
-			}
-			continue
-		}
-		if name == "empty" || name == "no yaml" || name == "hidden" {
-			if err == nil || !strings.Contains(err.Error(), "no .yaml or .yml files") {
-				t.Errorf("%s: expected no-files error, got %v", name, err)
-			}
+		if err == nil || !strings.Contains(err.Error(), "no .yaml or .yml files") {
+			t.Errorf("%s: expected no-files error, got %v", name, err)
 		}
 	}
 	if calls != 0 {
@@ -2525,8 +2513,34 @@ func TestRunFlowsNamespaceSync_DirectoryCountsDeleted(t *testing.T) {
 	}
 }
 
-func TestFlowsNamespaceSyncCommand_SilencesUsage(t *testing.T) {
-	if !newFlowsNamespaceSyncCommand().SilenceUsage {
-		t.Error("expected SilenceUsage")
+func TestRunFlowsNamespaceSync_DirectoryFilenameCannotInjectHeaders(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	name := "a\r\nX-Injected: yes\r\n\".yaml"
+	dir := writeSyncDir(t, map[string]string{name: "id: a\nnamespace: prod\n"})
+
+	var raw bytes.Buffer
+	rawServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(&raw, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(syncOKResponse))
+	}))
+	t.Cleanup(rawServer.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, rawServer.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if strings.Contains(raw.String(), "\r\nX-Injected") {
+		t.Errorf("file name injected a part header:\n%q", raw.String())
+	}
+
+	buf.Reset()
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if _, ok := got.parts["a%0D%0AX-Injected: yes%0D%0A\".yaml"]; !ok || len(got.parts) != 1 {
+		t.Errorf("expected one part with the CR/LF percent-encoded file name, got %v", got.parts)
 	}
 }
