@@ -91,6 +91,19 @@ func skipBelowKestra(t *testing.T, major, minor int, reason string) {
 	}
 }
 
+// skipOnKestra skips the test when the server is exactly the given major.minor
+// line. Use it for a gap confined to one line, e.g. a fix backported to the
+// lines around it but not to that one, where skipBelowKestra would also skip
+// the older lines that do have it.
+func skipOnKestra(t *testing.T, major, minor int, reason string) {
+	t.Helper()
+
+	haveMajor, haveMinor := serverKestraVersion(t)
+	if haveMajor == major && haveMinor == minor {
+		t.Skipf("not supported on Kestra %d.%d: %s", major, minor, reason)
+	}
+}
+
 /*
 *
 this function will build a KestraCtl cli with go build in a tmp dir, and run it using exec.CommandContext, then returns stdout and stderr

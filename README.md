@@ -339,7 +339,13 @@ kestractl flows export-by-query --namespace my.namespace --output-file export.zi
 kestractl flows import flows.zip
 
 # Sync an entire namespace from a YAML file (delete flows absent from the file)
-kestractl flows namespace-sync my.namespace flows.yaml --delete --override
+kestractl flows namespace-sync my.namespace flows.yaml --delete
+
+# Sync an entire namespace from a directory: each .yaml/.yml file (one flow per
+# file) is sent as its own part of a single multipart request. Needs Kestra
+# 1.0.24+, 1.2.1+ or 2.x: the 1.1 line answers 401, so sync a single file there.
+kestractl flows namespace-sync my.namespace ./flows
+kestractl flows namespace-sync my.namespace ./flows --recursive=false --delete
 
 # View and manage flow revisions
 kestractl flows revisions my.namespace my-flow
