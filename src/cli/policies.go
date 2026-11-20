@@ -296,10 +296,10 @@ func newPoliciesExportCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "export [policy_id...]",
-		Short: "Export policies as an archive.",
-		Long:  "Export all policies of the active tenant, or only the given IDs, as a ZIP archive.",
-		Example: `  kestractl policies export --output-file policies.zip
-  kestractl policies export my-policy other-policy --output-file policies.zip`,
+		Short: "Export policies as YAML.",
+		Long:  "Export all policies of the active tenant, or only the given IDs, as YAML.",
+		Example: `  kestractl policies export --output-file policies.yml
+  kestractl policies export my-policy other-policy --output-file policies.yml`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, err := newClientFunc()
 			if err != nil {
@@ -309,7 +309,7 @@ func newPoliciesExportCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&outputFile, "output-file", "", "File to write the archive to (required)")
+	cmd.Flags().StringVar(&outputFile, "output-file", "", "File to write the YAML to (required)")
 	_ = cmd.MarkFlagRequired("output-file")
 	return cmd
 }

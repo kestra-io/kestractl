@@ -746,7 +746,7 @@ kestractl apps disable <uid>
 # Delete an app (alias: rm)
 kestractl apps delete <uid>
 
-# Export all apps as a ZIP archive
+# Export all apps as YAML
 kestractl apps export --output-file apps.zip
 
 # Import apps from a ZIP archive
@@ -1107,9 +1107,9 @@ kestractl policies validate --file policy.yml
 # Delete (alias: rm), prompts for confirmation unless --yes
 kestractl policies delete <policy_id> --yes
 
-# Export all policies, or only the given IDs, as a ZIP archive
-kestractl policies export --output-file policies.zip
-kestractl policies export <id1> <id2> --output-file policies.zip
+# Export all policies, or only the given IDs, as YAML
+kestractl policies export --output-file policies.yml
+kestractl policies export <id1> <id2> --output-file policies.yml
 ```
 
 ### Service Accounts (Enterprise Edition)

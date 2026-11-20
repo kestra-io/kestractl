@@ -150,10 +150,10 @@ func TestRunPoliciesExport(t *testing.T) {
 	var gotPath string
 	s := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
-		_, _ = w.Write([]byte("zipbytes"))
+		_, _ = w.Write([]byte("id: p1"))
 	})
 	c := newTestClient(t, s.URL)
-	out := filepath.Join(t.TempDir(), "p.zip")
+	out := filepath.Join(t.TempDir(), "p.yml")
 
 	if err := runPoliciesExport(c, nil, out); err != nil {
 		t.Fatal(err)
@@ -161,7 +161,7 @@ func TestRunPoliciesExport(t *testing.T) {
 	if !strings.HasSuffix(gotPath, "/policies/export") {
 		t.Errorf("path %s", gotPath)
 	}
-	if b, _ := os.ReadFile(out); string(b) != "zipbytes" {
+	if b, _ := os.ReadFile(out); string(b) != "id: p1" {
 		t.Errorf("file content %q", b)
 	}
 
