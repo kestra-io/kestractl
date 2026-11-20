@@ -1092,6 +1092,26 @@ kestractl roles delete <role_id>
 kestractl roles delete <role_id> --yes
 ```
 
+### Policies (Enterprise Edition)
+
+Policy management requires Kestra Enterprise Edition. This covers tenant-scoped
+policies; policies are created from YAML files, like flows.
+
+```bash
+kestractl policies list
+kestractl policies get <policy_id>
+kestractl policies create --file policy.yml
+kestractl policies update <policy_id> --file policy.yml
+kestractl policies validate --file policy.yml
+
+# Delete (alias: rm), prompts for confirmation unless --yes
+kestractl policies delete <policy_id> --yes
+
+# Export all policies, or only the given IDs, as a ZIP archive
+kestractl policies export --output-file policies.zip
+kestractl policies export <id1> <id2> --output-file policies.zip
+```
+
 ### Service Accounts (Enterprise Edition)
 
 Service account management requires Kestra Enterprise Edition. Service accounts
