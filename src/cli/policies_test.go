@@ -50,17 +50,23 @@ func TestRunPoliciesList(t *testing.T) {
 	}
 }
 
-func TestRunPoliciesList_HidesNamespaceScoped(t *testing.T) {
+func TestRunPoliciesList_FiltersTenantScopeOnServer(t *testing.T) {
+	var gotQuery string
 	s := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"results":[{"id":"p1","scope":"TENANT","rules":{}},{"id":"ns1","scope":"NAMESPACE","rules":{}}],"total":2}`))
+		_, _ = w.Write([]byte(`{"results":[{"id":"p1","scope":"TENANT","rules":{}}],"total":250}`))
 	})
 	var buf bytes.Buffer
-	if err := runPoliciesList(newTestClient(t, s.URL), 1, 100, nil, newTableRenderer(&buf)); err != nil {
+	if err := runPoliciesList(newTestClient(t, s.URL), 1, 1, nil, newTableRenderer(&buf)); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(buf.String(), "ns1") || !strings.Contains(buf.String(), "Total policies: 1") {
-		t.Errorf("namespace policy not filtered:\n%s", buf.String())
+	if !strings.Contains(gotQuery, "policyScope") || !strings.Contains(gotQuery, "TENANT") {
+		t.Errorf("scope filter not sent to the server: %s", gotQuery)
+	}
+	// total is the server total, larger than the page size
+	if !strings.Contains(buf.String(), "Total policies: 250") {
+		t.Errorf("expected server total:\n%s", buf.String())
 	}
 }
 
