@@ -3,6 +3,8 @@ package cli
 import (
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,6 +25,12 @@ type bulkDeployServer struct {
 	bulkTypes      []string
 	searches       []string // namespace of each search
 	perFlow        []string // "METHOD path" of per-flow requests
+
+	nsPosts     []string // "namespace delete=..| content-type" of namespace-endpoint requests
+	nsBodies    []string
+	failNS      func(ns string) bool // true -> answer 403
+	bulkStatus  int                  // status of a failing bulk request (default 500)
+	bulkMessage string               // body of a failing bulk request
 
 	violations   string                     // JSON array returned by /validate
 	existing     map[string][]string        // namespace -> existing flow ids
@@ -66,8 +74,12 @@ func (s *bulkDeployServer) start(t *testing.T) *httptest.Server {
 			s.bulkQueries = append(s.bulkQueries, r.URL.Query())
 			s.bulkTypes = append(s.bulkTypes, r.Header.Get("Content-Type"))
 			if s.failBulk != nil && s.failBulk(len(s.bulkBodies)) {
-				w.WriteHeader(http.StatusInternalServerError)
-				_, _ = w.Write([]byte(`{"message":"boom"}`))
+				status, msg := s.bulkStatus, s.bulkMessage
+				if status == 0 {
+					status, msg = http.StatusInternalServerError, `{"message":"boom"}`
+				}
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte(msg))
 				return
 			}
 			if s.bulkResponse != nil {
@@ -78,6 +90,35 @@ func (s *bulkDeployServer) start(t *testing.T) *httptest.Server {
 			for _, doc := range strings.Split(string(body), "\n---\n") {
 				ns, id := docIdentity(doc)
 				out = append(out, fmt.Sprintf(`{"id":%q,"namespace":%q,"revision":1,"labels":[{"key":"a","value":"b"}]}`, id, ns))
+			}
+			_, _ = w.Write([]byte("[" + strings.Join(out, ",") + "]"))
+		case r.Method == http.MethodPost && strings.Contains(path, "/flows/") && len(strings.Split(strings.SplitN(path, "/flows/", 2)[1], "/")) == 1:
+			ns := strings.SplitN(path, "/flows/", 2)[1]
+			ct := r.Header.Get("Content-Type")
+			s.nsPosts = append(s.nsPosts, ns+" delete="+r.URL.Query().Get("delete")+" override="+r.URL.Query().Get("override")+" "+strings.SplitN(ct, ";", 2)[0])
+			var joined []string
+			if _, params, err := mime.ParseMediaType(ct); err == nil {
+				mr := multipart.NewReader(strings.NewReader(string(body)), params["boundary"])
+				for {
+					p, err := mr.NextPart()
+					if err != nil {
+						break
+					}
+					b, _ := io.ReadAll(p)
+					joined = append(joined, string(b))
+				}
+			}
+			body = []byte(strings.Join(joined, "\n---\n"))
+			s.nsBodies = append(s.nsBodies, string(body))
+			if s.failNS != nil && s.failNS(ns) {
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+				return
+			}
+			out := []string{}
+			for _, doc := range strings.Split(string(body), "\n---\n") {
+				dns, id := docIdentity(doc)
+				out = append(out, fmt.Sprintf(`{"id":%q,"namespace":%q,"revision":5}`, id, dns))
 			}
 			_, _ = w.Write([]byte("[" + strings.Join(out, ",") + "]"))
 		default:
@@ -321,7 +362,7 @@ func TestDeployBulk_FailFastStopsAfterFailedChunkWithoutFallback(t *testing.T) {
 	if len(s.perFlow) != 0 {
 		t.Fatalf("fail-fast must not fall back, got %v", s.perFlow)
 	}
-	if len(results) != 100 || results[0].Success || !strings.Contains(results[0].Error, "boom") {
+	if len(results) != 100 || results[0].Success || !strings.Contains(results[0].Error, "rejected") {
 		t.Fatalf("expected the 100 files of the failed chunk reported, got %d: %+v", len(results), results[0])
 	}
 }
@@ -407,5 +448,156 @@ func TestRunFlowsDeploy_RoutesByPathKind(t *testing.T) {
 	}
 	if len(s2.bulkBodies) != 1 || len(s2.perFlow) != 0 {
 		t.Fatalf("expected one bulk request, got bulk=%d perFlow=%v", len(s2.bulkBodies), s2.perFlow)
+	}
+}
+
+func TestDeployBulk_ForbiddenBulkSwitchesToNamespaceEndpoint(t *testing.T) {
+	s := &bulkDeployServer{bulkStatus: http.StatusForbidden, bulkMessage: `{"message":"Forbidden"}`, failBulk: func(int) bool { return true }}
+	files := numberedFlows("ns.one", 120)
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("other-%d", i)
+		files[id+".yaml"] = flowYAML("ns.two", id)
+	}
+	dir := writeFlowDir(t, files)
+	results := deployDir(t, s, dir, "", "", false, true, false)
+
+	requireSuccess(t, results, 125)
+	if len(s.bulkBodies) != 1 {
+		t.Fatalf("bulk must be tried once, then skipped for later chunks; got %d", len(s.bulkBodies))
+	}
+	if len(s.perFlow) != 0 {
+		t.Fatalf("no per-flow requests expected, got %d", len(s.perFlow))
+	}
+	// 125 flows = chunks of 100 + 25; grouped by namespace per chunk.
+	for _, p := range s.nsPosts {
+		if !strings.Contains(p, "delete=false override=false multipart/form-data") {
+			t.Fatalf("namespace request must send delete=false, override=false, multipart: %s", p)
+		}
+	}
+	if len(s.nsPosts) < 3 {
+		t.Fatalf("expected one request per namespace and chunk, got %v", s.nsPosts)
+	}
+	if results[0].Revision != 5 {
+		t.Fatalf("revision must come from the namespace response, got %d", results[0].Revision)
+	}
+	for _, b := range s.nsBodies {
+		if strings.Contains(b, "namespace: ns.one") && strings.Contains(b, "namespace: ns.two") {
+			t.Fatal("a namespace request must only hold flows of that namespace")
+		}
+	}
+}
+
+func TestDeployBulk_ServerErrorDoesNotSwitchEndpoint(t *testing.T) {
+	s := &bulkDeployServer{failBulk: func(int) bool { return true }}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 3)), "", "", false, true, false)
+	requireSuccess(t, results, 3)
+	if len(s.nsPosts) != 0 || len(s.perFlow) == 0 {
+		t.Fatalf("a 500 must go per flow, got ns=%v perFlow=%v", s.nsPosts, s.perFlow)
+	}
+}
+
+func TestDeployBulk_NamespaceEndpointFailureFallsBackPerFlow(t *testing.T) {
+	s := &bulkDeployServer{
+		bulkStatus: http.StatusForbidden, bulkMessage: `{"message":"Forbidden"}`, failBulk: func(int) bool { return true },
+		failNS:      func(string) bool { return true },
+		failPerFlow: map[string]int{"flow-001": http.StatusForbidden},
+	}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 3)), "", "", false, true, false)
+	if !results[0].Success || !results[2].Success || results[1].Success || !strings.Contains(results[1].Error, "denied") {
+		t.Fatalf("per-flow errors expected: %+v", results)
+	}
+}
+
+func TestDeployBulk_FailFastNamespaceEndpointFailureAttributedToItsNamespace(t *testing.T) {
+	s := &bulkDeployServer{
+		bulkStatus: http.StatusForbidden, bulkMessage: `{"message":"Forbidden"}`, failBulk: func(int) bool { return true },
+		failNS: func(ns string) bool { return ns == "qa.forbidden" },
+	}
+	dir := writeFlowDir(t, map[string]string{
+		"a.yaml": flowYAML("qa.allowed", "a"),
+		"b.yaml": flowYAML("qa.forbidden", "b"),
+		"c.yaml": flowYAML("qa.zlast", "c"),
+	})
+	results := deployDir(t, s, dir, "", "", false, true, true)
+
+	if len(s.perFlow) != 0 {
+		t.Fatal("fail-fast must not fall back per flow")
+	}
+	if !results[0].Success {
+		t.Fatalf("qa.allowed was written before the failure: %+v", results[0])
+	}
+	if results[1].Success || !strings.Contains(results[1].Error, "Forbidden") {
+		t.Fatalf("qa.forbidden must carry the error: %+v", results[1])
+	}
+	if results[2].Success || strings.Contains(results[2].Error, "Forbidden") || !strings.Contains(results[2].Error, "skipped") {
+		t.Fatalf("unattempted file must be reported as skipped: %+v", results[2])
+	}
+}
+
+func TestDeployBulk_FailFastBulkErrorOnlyOnFilesItNames(t *testing.T) {
+	s := &bulkDeployServer{
+		bulkStatus: http.StatusBadRequest, bulkMessage: `{"message":"namespace qa.forbidden is not allowed"}`,
+		failBulk: func(int) bool { return true },
+	}
+	dir := writeFlowDir(t, map[string]string{
+		"a.yaml": flowYAML("qa.allowed", "a"),
+		"b.yaml": flowYAML("qa.forbidden", "b"),
+	})
+	results := deployDir(t, s, dir, "", "", false, true, true)
+	if strings.Contains(results[0].Error, "qa.forbidden") || !strings.Contains(results[0].Error, "not deployed") {
+		t.Fatalf("qa.allowed must not inherit the message: %+v", results[0])
+	}
+	if !strings.Contains(results[1].Error, "qa.forbidden") {
+		t.Fatalf("qa.forbidden must carry the message: %+v", results[1])
+	}
+}
+
+func TestDeployBulk_FailFastValidationLeavesValidFilesMarkedSkipped(t *testing.T) {
+	s := &bulkDeployServer{violations: `[{"index":2,"constraints":"bad"}]`}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 3)), "", "", false, false, true)
+	if len(results) != 3 {
+		t.Fatalf("got %+v", results)
+	}
+	for _, r := range results[:2] {
+		if r.Success || !strings.Contains(r.Error, "skipped (--fail-fast)") {
+			t.Fatalf("valid but unwritten file must say why: %+v", r)
+		}
+	}
+}
+
+func TestPrepareFlowDeploy_SourceIsNormalized(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.yaml")
+	if err := os.WriteFile(path, []byte("---\n"+flowYAML("my.ns", "f")+"\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, src := prepareFlowDeploy(path, "", "", false, false)
+	if src != strings.TrimSpace(flowYAML("my.ns", "f")) {
+		t.Fatalf("source must match what the bulk endpoint stores, got %q", src)
+	}
+}
+
+func TestDeployFlow_SendsTrimmedSource(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+		_, _ = w.Write([]byte(`{"id":"f","namespace":"my.ns","revision":1,"tasks":[]}`))
+	}))
+	t.Cleanup(server.Close)
+	path := filepath.Join(t.TempDir(), "f.yaml")
+	if err := os.WriteFile(path, []byte(flowYAML("my.ns", "f")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if r := deployFlow(newTestClient(t, server.URL), path, "", "", false, false); !r.Success {
+		t.Fatal(r.Error)
+	}
+	if strings.HasSuffix(got, "\n") {
+		t.Fatalf("per-flow body must not keep the trailing newline: %q", got)
 	}
 }

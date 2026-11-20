@@ -1500,7 +1500,7 @@ func prepareFlowDeploy(filePath string, namespaceOverride string, namespacePrefi
 	}
 	result.Namespace = namespace
 
-	return result, yamlContent
+	return result, normalizeFlowSource(yamlContent)
 }
 
 // deployFlow deploys a single flow file and returns the result.

@@ -2,6 +2,7 @@ package e2e_tests
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -66,4 +67,10 @@ func TestFlowsDeploy_directoryBulk(t *testing.T) {
 		require.True(t, again[id].Success, "%s: %s", id, again[id].Error)
 		require.Equal(t, first[id].Revision, again[id].Revision)
 	}
+
+	// A single-file deploy of an unchanged file takes the per-flow path and must
+	// not create a revision either.
+	stdout, stderr, err = RunAuthenticatedCliCmd(t, "flows", "deploy", filepath.Join(dir, "flow-a.yaml"), "--override", "--output", "json")
+	require.NoError(t, err, stderr)
+	require.Equal(t, first["flow-a"].Revision, deployRows(t, stdout)["flow-a"].Revision)
 }

@@ -1,9 +1,14 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"strings"
 
@@ -49,7 +54,17 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 		}
 		return false
 	}
-	finish := func() []DeployResult { return results[:processed] }
+	// finish reports the processed files. A file that is neither deployed nor
+	// failed was never attempted (fail-fast stopped the run before its write),
+	// so say so rather than show a failure with no reason.
+	finish := func() []DeployResult {
+		for i := 0; i < processed; i++ {
+			if !results[i].Success && results[i].Error == "" {
+				results[i].Error = "not deployed: skipped (--fail-fast) because another flow failed"
+			}
+		}
+		return results[:processed]
+	}
 
 	// Stage 1 and 2: local preparation and local guards.
 	items := make([]bulkDeployItem, 0, len(files))
@@ -133,41 +148,101 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 		}
 	}
 
-	// Stage 5 and 6: bulk write, falling back flow by flow per failed chunk.
+	// Stage 5 and 6: bulk write, falling back per failed chunk.
+	//
+	// When the server refuses /flows/bulk itself (see bulkEndpointUnusable) the
+	// remaining writes go through POST /flows/{namespace} instead.
+	useNamespaceEndpoint := false
 	for start := 0; start < len(items); start += validateBatchSize {
 		chunk := items[start:min(start+validateBatchSize, len(items))]
-		revisions, err := postFlowsBulk(client, chunk)
-		if err != nil {
-			if failFast {
-				for _, item := range chunk {
-					results[item.index].Error = err.Error()
+
+		var units [][]bulkDeployItem
+		var post func(unit []bulkDeployItem) (map[string]int32, error)
+		var err error
+		var revisions map[string]int32
+
+		if !useNamespaceEndpoint {
+			revisions, err = postFlowsBulk(client, chunk)
+			if err != nil && bulkEndpointUnusable(err) {
+				useNamespaceEndpoint = true
+			}
+		}
+
+		if useNamespaceEndpoint {
+			units = groupByNamespace(results, chunk)
+			post = func(unit []bulkDeployItem) (map[string]int32, error) {
+				return postFlowsNamespace(client, results[unit[0].index].Namespace, unit)
+			}
+		} else {
+			units = [][]bulkDeployItem{chunk}
+			post = func([]bulkDeployItem) (map[string]int32, error) { return revisions, err }
+		}
+
+		for _, unit := range units {
+			unitRevisions, unitErr := post(unit)
+			if unitErr == nil {
+				for _, item := range unit {
+					revision, ok := unitRevisions[flowKey(results[item.index].Namespace, results[item.index].FlowID)]
+					if !ok {
+						// Saved as far as the server says, but not echoed back: ask again.
+						results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
+						continue
+					}
+					results[item.index].Revision = revision
+					results[item.index].Success = true
 				}
-				// Report everything up to the last file of the failed chunk.
+				continue
+			}
+			if failFast {
+				for _, item := range unit {
+					results[item.index].Error = attributeWriteError(results[item.index].Namespace, unitErr, useNamespaceEndpoint)
+				}
+				// Everything up to the end of this chunk has been attempted or
+				// is reported as skipped.
 				processed = chunk[len(chunk)-1].index + 1
 				return finish()
 			}
 			// "Already exists" was decided in stage 4 and stands, so the
-			// fallback upserts. Flows the failed chunk already saved are re-sent
+			// fallback upserts. Flows the failed request already saved are re-sent
 			// with the same source, which returns their existing revision.
-			for _, item := range chunk {
+			for _, item := range unit {
 				results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
 			}
-			continue
-		}
-		for _, item := range chunk {
-			key := flowKey(results[item.index].Namespace, results[item.index].FlowID)
-			revision, ok := revisions[key]
-			if !ok {
-				// Saved as far as the server says, but not echoed back: ask again.
-				results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
-				continue
-			}
-			results[item.index].Revision = revision
-			results[item.index].Success = true
 		}
 	}
 
 	return finish()
+}
+
+// attributeWriteError builds the per-file error of a failed write request under
+// --fail-fast. A namespace request fails for exactly its own namespace. A bulk
+// request spans several namespaces and the server does not say which flow it
+// refused, so its message is kept only for files whose namespace it names; the
+// others are told the batch was rejected and they were not deployed.
+func attributeWriteError(namespace string, err error, perNamespace bool) string {
+	if perNamespace || strings.Contains(err.Error(), namespace) {
+		return err.Error()
+	}
+	return "not deployed: the bulk request holding this flow was rejected by the server (--fail-fast)"
+}
+
+// groupByNamespace splits a chunk into one unit per final namespace, in order of
+// first appearance.
+func groupByNamespace(results []DeployResult, chunk []bulkDeployItem) [][]bulkDeployItem {
+	var order []string
+	byNamespace := make(map[string][]bulkDeployItem)
+	for _, item := range chunk {
+		ns := results[item.index].Namespace
+		if _, ok := byNamespace[ns]; !ok {
+			order = append(order, ns)
+		}
+		byNamespace[ns] = append(byNamespace[ns], item)
+	}
+	units := make([][]bulkDeployItem, 0, len(order))
+	for _, ns := range order {
+		units = append(units, byNamespace[ns])
+	}
+	return units
 }
 
 // deployItemsSequentially deploys prepared items with the per-flow path. Under
@@ -183,29 +258,110 @@ func deployItemsSequentially(client *Client, results []DeployResult, items []bul
 	return results
 }
 
+// bulkRequestError is a non-2xx answer to a flow write request.
+type bulkRequestError struct {
+	status int
+	err    error
+}
+
+func (e *bulkRequestError) Error() string { return e.err.Error() }
+func (e *bulkRequestError) Unwrap() error { return e.err }
+
+// bulkEndpointUnusable reports whether a refused /flows/bulk request means the
+// endpoint itself cannot be used, as opposed to a problem with these flows.
+//
+//   - 404 / 405 / 415: the route or the content type is not served.
+//   - 403: Kestra EE 1.3 answers a bare 403 to every /flows/bulk call, even for
+//     an admin. A genuine permission denial also lands here, but the namespace
+//     endpoint needs at least the same permissions, so it fails the same way
+//     and the per-flow fallback then reports each file's own error.
+//
+// 400/413/5xx and transport errors point at the content or the server, not the
+// route, and go straight to the per-flow fallback.
+func bulkEndpointUnusable(err error) bool {
+	var reqErr *bulkRequestError
+	if !errors.As(err, &reqErr) {
+		return false
+	}
+	switch reqErr.status {
+	case http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusUnsupportedMediaType:
+		return true
+	}
+	return false
+}
+
 // postFlowsBulk upserts one chunk through POST /flows/bulk and returns the
 // revision of each flow keyed by namespace/id.
 //
 // delete is always sent explicitly because the server defaults it to true, and
 // no namespace is sent so flows keep their own. The body must be
-// application/yaml: Kestra 1.x rejects application/x-yaml here. The response is
-// decoded by hand to avoid the generated client's label decode failure (#83).
+// application/yaml: Kestra 1.x rejects application/x-yaml here.
 func postFlowsBulk(client *Client, chunk []bulkDeployItem) (map[string]int32, error) {
-	documents := make([]string, len(chunk))
+	query := url.Values{}
+	query.Set("delete", "false")
+	return postFlowsBody(client, client.tenantAPIPath(query, "flows", "bulk"), strings.NewReader(joinFlowDocuments(chunk)), "application/yaml")
+}
+
+// postFlowsNamespace upserts flows that all belong to namespace through the
+// multipart variant of POST /flows/{namespace}, the request `flows
+// namespace-sync` sends. It is the fallback for servers that refuse /flows/bulk.
+//
+// Read from the Kestra 1.3 sources: the endpoint upserts every flow (findById,
+// then update or create), so it matches the existence decision already made
+// here; its `override` parameter rewrites each flow's namespace, so it is sent
+// as false; delete must be explicit because the server default is true. Flows
+// must sit exactly in the path namespace, hence one request per namespace. The
+// server trims each uploaded file, like the bulk endpoint. The YAML variant of
+// the same route is not used: Kestra EE 1.3 checks CREATE, UPDATE and DELETE on
+// the namespace there, and refuses the request with a bare 403, as it does for
+// /flows/bulk. The route is deprecated on 2.x, which is why it is only used
+// once /flows/bulk has been refused.
+func postFlowsNamespace(client *Client, namespace string, chunk []bulkDeployItem) (map[string]int32, error) {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
 	for i, item := range chunk {
-		documents[i] = trimDocumentMarkers(item.source)
+		header := make(textproto.MIMEHeader)
+		header.Set("Content-Disposition", multipart.FileContentDisposition("flows", fmt.Sprintf("flow-%d.yaml", i)))
+		header.Set("Content-Type", "application/x-yaml")
+		part, err := mw.CreatePart(header)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := part.Write([]byte(item.source)); err != nil {
+			return nil, err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return nil, err
 	}
 
 	query := url.Values{}
 	query.Set("delete", "false")
-	path := client.tenantAPIPath(query, "flows", "bulk")
+	query.Set("override", "false")
+	return postFlowsBody(client, client.tenantAPIPath(query, "flows", namespace), &buf, mw.FormDataContentType())
+}
 
-	body, status, err := client.doRawRequestPathBody(http.MethodPost, path, strings.NewReader(strings.Join(documents, "\n---\n")), "application/yaml")
+// joinFlowDocuments builds the multi-document body of /flows/bulk. The server
+// splits it exactly like /validate and trims each document, which is why sources
+// are normalised by normalizeFlowSource before they get here.
+func joinFlowDocuments(chunk []bulkDeployItem) string {
+	documents := make([]string, len(chunk))
+	for i, item := range chunk {
+		documents[i] = trimDocumentMarkers(item.source)
+	}
+	return strings.Join(documents, "\n---\n")
+}
+
+// postFlowsBody sends a flow write request and decodes the revisions. The
+// response is decoded by hand to avoid the generated client's label decode
+// failure (#83).
+func postFlowsBody(client *Client, path string, reqBody io.Reader, contentType string) (map[string]int32, error) {
+	body, status, err := client.doRawRequestPathBody(http.MethodPost, path, reqBody, contentType)
 	if err != nil {
 		return nil, formatSDKError(err)
 	}
 	if status < 200 || status >= 300 {
-		return nil, formatErrorBody(body, fmt.Sprintf("status %d", status))
+		return nil, &bulkRequestError{status: status, err: formatErrorBody(body, fmt.Sprintf("status %d", status))}
 	}
 
 	var flows []struct {
@@ -221,6 +377,15 @@ func postFlowsBulk(client *Client, chunk []bulkDeployItem) (map[string]int32, er
 		revisions[flowKey(f.Namespace, f.ID)] = f.Revision
 	}
 	return revisions, nil
+}
+
+// normalizeFlowSource returns the source as the bulk and namespace endpoints
+// store it: document markers and surrounding whitespace removed (the server
+// trims each document, like Java's String.trim, i.e. every char <= U+0020).
+// Sending the same text on the per-flow path keeps a repeated deploy of an
+// unchanged file on the same revision, whichever path carries it.
+func normalizeFlowSource(source string) string {
+	return strings.TrimFunc(trimDocumentMarkers(source), func(r rune) bool { return r <= ' ' })
 }
 
 // listFlowIDsInNamespace pages through the flows of one namespace and returns
