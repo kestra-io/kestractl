@@ -50,6 +50,20 @@ func TestRunPoliciesList(t *testing.T) {
 	}
 }
 
+func TestRunPoliciesList_HidesNamespaceScoped(t *testing.T) {
+	s := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"id":"p1","scope":"TENANT","rules":{}},{"id":"ns1","scope":"NAMESPACE","rules":{}}],"total":2}`))
+	})
+	var buf bytes.Buffer
+	if err := runPoliciesList(newTestClient(t, s.URL), 1, 100, nil, newTableRenderer(&buf)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "ns1") || !strings.Contains(buf.String(), "Total policies: 1") {
+		t.Errorf("namespace policy not filtered:\n%s", buf.String())
+	}
+}
+
 func TestRunPoliciesGet(t *testing.T) {
 	s := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/main/policies/p1" {

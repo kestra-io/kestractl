@@ -40,7 +40,7 @@ func newPoliciesListCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "list",
-		Short:   "List policies.",
+		Short:   "List tenant-scoped policies.",
 		Aliases: []string{"ls"},
 		Example: `  kestractl policies list
   kestractl policies list --output json`,
@@ -70,9 +70,13 @@ func runPoliciesList(client *Client, page, size int, sort []string, renderer *Re
 		return formatSDKError(err)
 	}
 
-	results := resp.GetResults()
-	if results == nil {
-		results = []kestra.ApiPolicySummary{}
+	// The tenant search also returns namespace-scoped policies, which get,
+	// update and delete cannot reach through the tenant endpoints. Hide them.
+	results := []kestra.ApiPolicySummary{}
+	for _, p := range resp.GetResults() {
+		if p.Scope == "" || p.Scope == "TENANT" {
+			results = append(results, p)
+		}
 	}
 
 	return renderer.Render(results, func(w *tabwriter.Writer) error {
@@ -81,7 +85,7 @@ func runPoliciesList(client *Client, page, size int, sort []string, renderer *Re
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%d\n",
 				p.Id, p.DisplayName, p.Scope, p.Enforcement, p.Rules.Validate, p.Rules.Mutate)
 		}
-		fmt.Fprintf(w, "\nTotal policies: %d\n", resp.GetTotal())
+		fmt.Fprintf(w, "\nTotal policies: %d\n", len(results))
 		return nil
 	})
 }
