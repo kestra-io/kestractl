@@ -169,12 +169,115 @@ func TestRunPluginsGet_ServerErrorDoesNotFallThrough(t *testing.T) {
 	}
 }
 
-func TestEffectiveMavenRepositories(t *testing.T) {
-	if got := effectiveMavenRepositories(nil); len(got) != len(pluginsMavenRepositories) || got[0] != pluginsMavenRepositories[0] {
-		t.Errorf("expected the default repositories without --maven-repository, got %v", got)
+func TestResolveMavenRepositories(t *testing.T) {
+	got, err := resolveMavenRepositories(nil, "", "", nil)
+	if err != nil || len(got) != len(pluginsMavenRepositories) || got[0].url != pluginsMavenRepositories[0] {
+		t.Errorf("expected the default repositories without --maven-repository, got %v (%v)", got, err)
 	}
-	got := effectiveMavenRepositories([]string{"https://a.example/maven2/", " ", "https://b.example/maven"})
-	if strings.Join(got, ",") != "https://a.example/maven2,https://b.example/maven" {
-		t.Errorf("expected blank entries dropped and trailing slashes trimmed, got %v", got)
+
+	got, err = resolveMavenRepositories([]string{"https://a.example/maven2/", " ", "https://alice:s%3Acr3t@b.example/maven"}, "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 || got[0].url != "https://a.example/maven2" || got[1].url != "https://b.example/maven" {
+		t.Errorf("expected blank entries dropped, trailing slashes and credentials stripped, got %+v", got)
+	}
+	if got[0].username != "" || got[1].username != "alice" || got[1].password != "s:cr3t" {
+		t.Errorf("expected the URL credentials on their own repository only, got %+v", got)
+	}
+}
+
+// Shared credentials sent to several repositories would leak a private repository's password
+// to the public ones, Maven Central included.
+func TestResolveMavenRepositories_SharedCredentialsNeedASingleRepository(t *testing.T) {
+	two := []string{"https://repo1.maven.org/maven2", "https://nexus.example.com/repository/kestra"}
+	for name, call := range map[string]func() error{
+		"username": func() error { _, err := resolveMavenRepositories(two, "alice", "", nil); return err },
+		"password": func() error { _, err := resolveMavenRepositories(two, "", "s3cr3t", nil); return err },
+		"header": func() error {
+			_, err := resolveMavenRepositories(two, "", "", map[string]string{"Authorization": "Bearer x"})
+			return err
+		},
+	} {
+		if err := call(); err == nil || !strings.Contains(err.Error(), "own URL") {
+			t.Errorf("%s with two repositories: expected an error pointing at per-URL credentials, got %v", name, err)
+		}
+	}
+
+	got, err := resolveMavenRepositories(two[1:], "alice", "s3cr3t", map[string]string{"Authorization": "Bearer x"})
+	if err != nil || got[0].username != "alice" || got[0].headers["Authorization"] != "Bearer x" {
+		t.Errorf("expected shared credentials to apply to a single repository, got %+v (%v)", got, err)
+	}
+}
+
+func TestResolveMavenRepositories_InvalidURLDoesNotPrintIt(t *testing.T) {
+	_, err := resolveMavenRepositories([]string{"https://repo1.maven.org/maven2", "alice:s3cr3t@nexus"}, "", "", nil)
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") {
+		t.Errorf("expected an error that does not print the URL, got %v", err)
+	}
+}
+
+func TestRunPluginsGet_URLCredentialsGoToTheirRepositoryOnly(t *testing.T) {
+	var centralAuth []string
+	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		centralAuth = append(centralAuth, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(central.Close)
+	var privateUser, privatePassword string
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		privateUser, privatePassword, _ = r.BasicAuth()
+		if !strings.HasSuffix(r.URL.Path, ".jar") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		fmt.Fprint(w, "private")
+	}))
+	t.Cleanup(private.Close)
+	privateWithCredentials := strings.Replace(private.URL, "http://", "http://alice:s3cr3t@", 1)
+
+	var out bytes.Buffer
+	if err := runPluginsGet(&out, splitPlugin("4.0.0"), "", t.TempDir(), false, nil, []string{central.URL, privateWithCredentials}, "", "", 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out.String())
+	}
+
+	for _, auth := range centralAuth {
+		if auth != "" {
+			t.Errorf("expected no credentials sent to the first repository, got %q", auth)
+		}
+	}
+	if privateUser != "alice" || privatePassword != "s3cr3t" {
+		t.Errorf("expected the URL credentials sent to their repository, got %q:%q", privateUser, privatePassword)
+	}
+	if strings.Contains(out.String(), "s3cr3t") {
+		t.Errorf("expected the password never printed, got:\n%s", out.String())
+	}
+}
+
+// A repository without the artifact costs one request (the JAR, not its .sha1 first), and a .sha1
+// error there is not reported, since that repository does not serve the JAR anyway.
+func TestRunPluginsGet_RepositoryMissCostsOneRequestAndNoWarning(t *testing.T) {
+	var centralRequests []string
+	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		centralRequests = append(centralRequests, r.URL.Path)
+		if strings.HasSuffix(r.URL.Path, ".sha1") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(central.Close)
+	kestra := newFakeMavenRepository(t, "kestra", "4.0.0")
+
+	var out bytes.Buffer
+	if err := runPluginsGet(&out, splitPlugin("4.0.0"), "", t.TempDir(), false, nil, []string{central.URL, kestra.server.URL}, "", "", 5*time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v\n%s", err, out.String())
+	}
+
+	if len(centralRequests) != 1 || !strings.HasSuffix(centralRequests[0], ".jar") {
+		t.Errorf("expected a single JAR request to the repository without the artifact, got %v", centralRequests)
+	}
+	if strings.Contains(strings.ToLower(out.String()), "[warn]") {
+		t.Errorf("expected no warning, got:\n%s", out.String())
 	}
 }
