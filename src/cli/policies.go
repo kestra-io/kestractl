@@ -288,7 +288,14 @@ func runPoliciesValidate(client *Client, filePath string, renderer *Renderer) er
 	if err != nil {
 		return formatSDKError(err)
 	}
-	return renderValidateConstraintViolation(result, renderer)
+	if err := renderValidateConstraintViolation(result, renderer); err != nil {
+		return err
+	}
+	// Exit non-zero on an invalid policy so CI steps fail.
+	if result != nil && result.GetConstraints() != "" {
+		return fmt.Errorf("policy %s is invalid", filePath)
+	}
+	return nil
 }
 
 func newPoliciesExportCommand() *cobra.Command {

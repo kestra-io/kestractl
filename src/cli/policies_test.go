@@ -172,3 +172,20 @@ func TestRunPoliciesExport(t *testing.T) {
 		t.Errorf("path %s", gotPath)
 	}
 }
+
+func TestRunPoliciesValidate_Invalid(t *testing.T) {
+	s := policyServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"index":0,"constraints":"bad enforcement"}`))
+	})
+	file := filepath.Join(t.TempDir(), "p.yml")
+	_ = os.WriteFile(file, []byte("id: p1\n"), 0o600)
+	var buf bytes.Buffer
+	err := runPoliciesValidate(newTestClient(t, s.URL), file, newTableRenderer(&buf))
+	if err == nil {
+		t.Fatal("expected error for invalid policy")
+	}
+	if !strings.Contains(buf.String(), "bad enforcement") {
+		t.Errorf("constraints not rendered:\n%s", buf.String())
+	}
+}

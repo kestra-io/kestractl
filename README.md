@@ -746,7 +746,7 @@ kestractl apps disable <uid>
 # Delete an app (alias: rm)
 kestractl apps delete <uid>
 
-# Export all apps as YAML
+# Export all apps as a ZIP archive
 kestractl apps export --output-file apps.zip
 
 # Import apps from a ZIP archive
