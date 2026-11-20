@@ -2,6 +2,7 @@ package e2e_tests
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -36,10 +37,16 @@ func TestFlowsDeploy_directoryBulk(t *testing.T) {
 	for _, id := range ids {
 		writeSyncFlow(t, dir, namespace, id)
 	}
+	// The same flow id in two namespaces: Kestra 1.x rejects a bulk body that
+	// repeats an id, so the CLI must put them in separate requests.
+	otherNamespace := namespace + ".other"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "other"), 0o755))
+	writeSyncFlow(t, filepath.Join(dir, "other"), otherNamespace, "flow-a")
 	t.Cleanup(func() {
 		for _, id := range ids {
 			_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", namespace, id, "--yes")
 		}
+		_, _, _ = RunAuthenticatedCliCmd(t, "flows", "delete", otherNamespace, "flow-a", "--yes")
 	})
 
 	stdout, stderr, err := RunAuthenticatedCliCmd(t, "flows", "deploy", dir, "--output", "json")

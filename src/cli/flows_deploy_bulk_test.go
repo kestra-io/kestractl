@@ -96,6 +96,18 @@ func (s *bulkDeployServer) start(t *testing.T) *httptest.Server {
 		case strings.HasSuffix(path, "/flows/bulk"):
 			s.bulkBodies = append(s.bulkBodies, string(body))
 			s.bulkQueries = append(s.bulkQueries, r.URL.Query())
+			// Like Kestra 1.x: a repeated flow id fails the whole request, even
+			// across namespaces.
+			seenIDs := map[string]bool{}
+			for _, doc := range strings.Split(string(body), "\n---\n") {
+				_, id := docIdentity(doc)
+				if seenIDs[id] {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					_, _ = w.Write([]byte(`{"message":"Duplicate flow id"}`))
+					return
+				}
+				seenIDs[id] = true
+			}
 			s.bulkTypes = append(s.bulkTypes, r.Header.Get("Content-Type"))
 			if s.failBulk != nil && s.failBulk(len(s.bulkBodies)) {
 				status, msg := s.bulkStatus, s.bulkMessage
@@ -732,5 +744,75 @@ func TestDeployBulk_FailFastMissingFlowStillRecordsTheOthersInTheResponse(t *tes
 	}
 	if len(s.perFlow) != 0 {
 		t.Fatal("fail-fast must not re-send per flow")
+	}
+}
+
+func TestDeployBulk_SameFlowIDAcrossNamespacesUsesSeparateRequests(t *testing.T) {
+	s := &bulkDeployServer{}
+	files := map[string]string{
+		"a.yaml": flowYAML("ns.a", "hello"),
+		"b.yaml": flowYAML("ns.b", "hello"),
+		"c.yaml": flowYAML("ns.c", "hello"),
+	}
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("other-%d", i)
+		files[id+".yaml"] = flowYAML("ns.a", id)
+	}
+	results := deployDir(t, s, writeFlowDir(t, files), "", "", false, true, false)
+
+	requireSuccess(t, results, 8)
+	if len(s.bulkBodies) != 3 {
+		t.Fatalf("hello x3 needs exactly 3 bulk requests, got %d", len(s.bulkBodies))
+	}
+	if len(s.perFlow) != 0 || len(s.nsPosts) != 0 {
+		t.Fatalf("no fallback expected: perFlow=%v ns=%v", s.perFlow, s.nsPosts)
+	}
+}
+
+func TestBuildBulkChunks_CapsSizeAndKeepsIDsUnique(t *testing.T) {
+	results := make([]DeployResult, 0, 205)
+	items := make([]bulkDeployItem, 0, 205)
+	for i := 0; i < 205; i++ {
+		results = append(results, DeployResult{FlowID: fmt.Sprintf("f%d", i%150)})
+		items = append(items, bulkDeployItem{index: i})
+	}
+	chunks := buildBulkChunks(results, items)
+	total := 0
+	for _, c := range chunks {
+		if len(c) > validateBatchSize {
+			t.Fatalf("chunk of %d exceeds the cap", len(c))
+		}
+		seen := map[string]bool{}
+		for _, it := range c {
+			id := results[it.index].FlowID
+			if seen[id] {
+				t.Fatalf("id %s repeated in a chunk", id)
+			}
+			seen[id] = true
+		}
+		total += len(c)
+	}
+	if total != 205 || len(chunks) != 3 {
+		t.Fatalf("expected 205 flows in 3 chunks, got %d in %d", total, len(chunks))
+	}
+}
+
+func TestDeployBulk_SourceWithSeparatorStaysOutOfBulkBody(t *testing.T) {
+	s := &bulkDeployServer{}
+	files := numberedFlows("my.ns", 2)
+	files["noted.yaml"] = flowYAML("my.ns", "noted") + "# --- triggers ---\n"
+	results := deployDir(t, s, writeFlowDir(t, files), "", "", false, true, false)
+
+	requireSuccess(t, results, 3)
+	for _, b := range s.bulkBodies {
+		if strings.Contains(b, "--- triggers ---") || strings.Contains(b, "id: noted") {
+			t.Fatalf("a source holding --- must not be in a bulk body: %s", b)
+		}
+	}
+	if len(s.bulkBodies) != 1 || len(s.nsPosts) != 1 || !strings.Contains(s.nsBodies[0], "id: noted") {
+		t.Fatalf("expected 1 bulk + 1 namespace request, got bulk=%d ns=%v", len(s.bulkBodies), s.nsPosts)
+	}
+	if len(s.perFlow) != 0 {
+		t.Fatalf("no per-flow requests expected, got %v", s.perFlow)
 	}
 }

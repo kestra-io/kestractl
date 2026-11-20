@@ -150,83 +150,137 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 		}
 	}
 
-	// Stage 5 and 6: bulk write, falling back per failed chunk.
+	// Stage 5 and 6: write, falling back per failed request.
 	//
-	// When the server refuses /flows/bulk itself (see bulkEndpointUnusable) the
-	// remaining writes go through POST /flows/{namespace} instead.
-	useNamespaceEndpoint := false
-	for start := 0; start < len(items); start += validateBatchSize {
-		chunk := items[start:min(start+validateBatchSize, len(items))]
+	// maxAttempted is the last file index a write was tried for; under
+	// --fail-fast, files after it are reported as skipped.
+	maxAttempted := -1
 
-		var units [][]bulkDeployItem
-		var post func(unit []bulkDeployItem) (map[string]int32, error)
-		var err error
-		var revisions map[string]int32
-
-		if !useNamespaceEndpoint {
-			revisions, err = postFlowsBulk(client, chunk)
-			if err != nil && bulkEndpointUnusable(err) {
-				useNamespaceEndpoint = true
-			}
+	// settle records the outcome of one write request and reports whether a
+	// fail-fast run must stop. perNamespace tells whether the request held a
+	// single namespace, which decides how a failure is attributed.
+	settle := func(unit []bulkDeployItem, revisions map[string]int32, err error, perNamespace bool) bool {
+		for _, item := range unit {
+			maxAttempted = max(maxAttempted, item.index)
 		}
-
-		if useNamespaceEndpoint {
-			units = groupByNamespace(results, chunk)
-			post = func(unit []bulkDeployItem) (map[string]int32, error) {
-				return postFlowsNamespace(client, results[unit[0].index].Namespace, unit)
-			}
-		} else {
-			units = [][]bulkDeployItem{chunk}
-			post = func([]bulkDeployItem) (map[string]int32, error) { return revisions, err }
-		}
-
-		for _, unit := range units {
-			unitRevisions, unitErr := post(unit)
-			if unitErr == nil {
-				// Process the whole response before stopping: flows after a
-				// missing one were saved too, and must be reported as such.
-				missing := false
-				for _, item := range unit {
-					revision, ok := unitRevisions[flowKey(results[item.index].Namespace, results[item.index].FlowID)]
-					if ok {
-						results[item.index].Revision = revision
-						results[item.index].Success = true
-						continue
-					}
-					if failFast {
-						// No per-flow retry under --fail-fast: report the unknown outcome.
-						results[item.index].Error = "outcome unknown: the server did not return this flow in its response, so it may or may not be deployed (--fail-fast)"
-						missing = true
-						continue
-					}
+		if err == nil {
+			// Process the whole response before stopping: flows after a
+			// missing one were saved too, and must be reported as such.
+			missing := false
+			for _, item := range unit {
+				revision, ok := revisions[flowKey(results[item.index].Namespace, results[item.index].FlowID)]
+				switch {
+				case ok:
+					results[item.index].Revision = revision
+					results[item.index].Success = true
+				case failFast:
+					// No per-flow retry under --fail-fast: report the unknown outcome.
+					results[item.index].Error = "outcome unknown: the server did not return this flow in its response, so it may or may not be deployed (--fail-fast)"
+					missing = true
+				default:
 					// Saved as far as the server says, but not echoed back: ask again.
 					results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
 				}
-				if missing {
-					processed = chunk[len(chunk)-1].index + 1
+			}
+			if missing {
+				processed = maxAttempted + 1
+			}
+			return missing
+		}
+		if failFast {
+			for _, item := range unit {
+				results[item.index].Error = attributeWriteError(results[item.index].Namespace, err, perNamespace)
+			}
+			processed = maxAttempted + 1
+			return true
+		}
+		// "Already exists" was decided in stage 4 and stands, so the fallback
+		// upserts. Flows the failed request already saved are re-sent with the
+		// same source, which returns their existing revision.
+		for _, item := range unit {
+			results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
+		}
+		return false
+	}
+
+	// A source holding "---" anywhere must stay out of a /flows/bulk body:
+	// Kestra 1.x up to 1.3.48 splits that body on a raw "---", which would cut
+	// a "# --- notes ---" comment or an "a---b" value into fragments. The
+	// multipart namespace route does not split part content (checked on 1.0.24,
+	// 1.2.1 and 1.3.39), so those flows go through it.
+	var bulkItems, separatorItems []bulkDeployItem
+	for _, item := range items {
+		if strings.Contains(item.source, "---") {
+			separatorItems = append(separatorItems, item)
+		} else {
+			bulkItems = append(bulkItems, item)
+		}
+	}
+
+	// When the server refuses /flows/bulk itself (see bulkEndpointUnusable) the
+	// remaining writes go through POST /flows/{namespace} instead.
+	useNamespaceEndpoint := false
+	for _, chunk := range buildBulkChunks(results, bulkItems) {
+		if !useNamespaceEndpoint {
+			revisions, err := postFlowsBulk(client, chunk)
+			if err == nil || !bulkEndpointUnusable(err) {
+				if settle(chunk, revisions, err, false) {
 					return finish()
 				}
 				continue
 			}
-			if failFast {
-				for _, item := range unit {
-					results[item.index].Error = attributeWriteError(results[item.index].Namespace, unitErr, useNamespaceEndpoint)
-				}
-				// Everything up to the end of this chunk has been attempted or
-				// is reported as skipped.
-				processed = chunk[len(chunk)-1].index + 1
+			useNamespaceEndpoint = true
+		}
+		// Files of this chunk not yet written are reported as skipped on stop.
+		for _, item := range chunk {
+			maxAttempted = max(maxAttempted, item.index)
+		}
+		for _, unit := range groupByNamespace(results, chunk) {
+			revisions, err := postFlowsNamespace(client, results[unit[0].index].Namespace, unit)
+			if settle(unit, revisions, err, true) {
 				return finish()
 			}
-			// "Already exists" was decided in stage 4 and stands, so the
-			// fallback upserts. Flows the failed request already saved are re-sent
-			// with the same source, which returns their existing revision.
-			for _, item := range unit {
-				results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
+		}
+	}
+
+	for _, group := range groupByNamespace(results, separatorItems) {
+		for start := 0; start < len(group); start += validateBatchSize {
+			unit := group[start:min(start+validateBatchSize, len(group))]
+			revisions, err := postFlowsNamespace(client, results[unit[0].index].Namespace, unit)
+			if settle(unit, revisions, err, true) {
+				return finish()
 			}
 		}
 	}
 
 	return finish()
+}
+
+// buildBulkChunks packs items into requests of at most validateBatchSize flows
+// in which no flow ID appears twice. Kestra 1.0 up to at least 2.0.11 rejects a
+// bulk body that repeats an ID even across namespaces, so a/hello and b/hello
+// must travel in different requests. First fit keeps the request count at the
+// minimum unless IDs repeat.
+func buildBulkChunks(results []DeployResult, items []bulkDeployItem) [][]bulkDeployItem {
+	var chunks [][]bulkDeployItem
+	var ids []map[string]bool
+	for _, item := range items {
+		id := results[item.index].FlowID
+		placed := false
+		for i := range chunks {
+			if len(chunks[i]) < validateBatchSize && !ids[i][id] {
+				chunks[i] = append(chunks[i], item)
+				ids[i][id] = true
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			chunks = append(chunks, []bulkDeployItem{item})
+			ids = append(ids, map[string]bool{id: true})
+		}
+	}
+	return chunks
 }
 
 // attributeWriteError builds the per-file error of a failed write request under
