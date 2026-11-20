@@ -18,6 +18,7 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/dustin/go-humanize"
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -126,6 +127,10 @@ point at a custom registry (mirror, internal Nexus/Artifactory, etc.). Repeat it
 use several repositories: each JAR is looked up in the order given, and the next
 repository is tried only when one answers 404.
 
+--maven-repository, --maven-username and --maven-password can also be set with the
+KESTRACTL_MAVEN_REPOSITORY (space- or comma-separated), KESTRACTL_MAVEN_USERNAME and
+KESTRACTL_MAVEN_PASSWORD environment variables; a flag given on the command line wins.
+
 --maven-username, --maven-password and --header need a single repository. With
 several, put each repository's credentials in its own URL, so they are sent to that
 repository only:
@@ -205,6 +210,7 @@ Authentication:
 				fmt.Fprintln(cmd.OutOrStdout(), "No core plugins required by the provided configuration (all configured backends are bundled in Kestra).")
 				return nil
 			}
+			mavenRepositories, mavenUsername, mavenPassword = mavenFlagsFromEnv(cmd, mavenRepositories, mavenUsername, mavenPassword)
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
 			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepositories, mavenUsername, mavenPassword, headers, explicit)
 		},
@@ -217,9 +223,9 @@ Authentication:
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
-	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central)")
-	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
-	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central, env: KESTRACTL_MAVEN_REPOSITORY)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication (env: KESTRACTL_MAVEN_USERNAME)")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication (env: KESTRACTL_MAVEN_PASSWORD)")
 	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup). The version may be omitted when --compatible-for or a version argument is given")
 	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve unversioned --plugins coordinates against, using the same compatibility catalog as \"plugins list\"")
 	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Download only the core plugins (storage, secret manager, queue/repository backend) required by one or more Kestra configuration files; requires a version argument")
@@ -297,7 +303,11 @@ This lets users install a single plugin into their plugins/ directory without pu
 
 The version may be omitted (groupId:artifactId) when --compatible-for <kestra-version>
 is given: it is then resolved from the same compatibility catalog "plugins list"
-prints. An artifact absent from that set is an error naming it.`,
+prints. An artifact absent from that set is an error naming it.
+
+--maven-repository, --maven-username and --maven-password can also be set with the
+KESTRACTL_MAVEN_REPOSITORY (space- or comma-separated), KESTRACTL_MAVEN_USERNAME and
+KESTRACTL_MAVEN_PASSWORD environment variables; a flag given on the command line wins.`,
 		Example: `  # Download only the Kafka plugin version 1.6.0
   kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
 
@@ -311,6 +321,7 @@ prints. An artifact absent from that set is an error naming it.`,
     --maven-password mypassword`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mavenRepositories, mavenUsername, mavenPassword = mavenFlagsFromEnv(cmd, mavenRepositories, mavenUsername, mavenPassword)
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
 			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepositories, mavenUsername, mavenPassword, globalTimeout)
 		},
@@ -320,9 +331,9 @@ prints. An artifact absent from that set is an error naming it.`,
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download the plugin even if it already exists")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for the download")
-	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central)")
-	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
-	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central, env: KESTRACTL_MAVEN_REPOSITORY)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication (env: KESTRACTL_MAVEN_USERNAME)")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication (env: KESTRACTL_MAVEN_PASSWORD)")
 	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve the coordinate's version against when it is given as groupId:artifactId")
 
 	return cmd
@@ -862,6 +873,31 @@ func pluginFileName(p pluginArtifact) string {
 	groupID := strings.ReplaceAll(p.GroupID, ".", "_")
 	version := strings.ReplaceAll(p.Version, ".", "_")
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
+}
+
+// mavenFlagsFromEnv fills --maven-repository, --maven-username and --maven-password from their KESTRACTL_*
+// environment variables when they are not given on the command line. The plugin commands are offline, so they
+// skip initializeConfig, which is what binds the other commands' flags to the environment. This keeps the
+// password out of the process arguments, e.g. in CI.
+func mavenFlagsFromEnv(cmd *cobra.Command, repositories []string, username string, password string) ([]string, string, string) {
+	if value, ok := envForFlag(cmd, "maven-repository"); ok {
+		repositories = strings.FieldsFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	}
+	if value, ok := envForFlag(cmd, "maven-username"); ok {
+		username = value
+	}
+	if value, ok := envForFlag(cmd, "maven-password"); ok {
+		password = value
+	}
+	return repositories, username, password
+}
+
+// envForFlag returns the KESTRACTL_<FLAG> environment variable, unless the flag was given on the command line.
+func envForFlag(cmd *cobra.Command, flag string) (string, bool) {
+	if cmd.Flags().Changed(flag) {
+		return "", false
+	}
+	return os.LookupEnv(envPrefix + "_" + strings.ToUpper(strings.ReplaceAll(flag, "-", "_")))
 }
 
 // mavenRepository is a repository plugins are downloaded from, with the credentials sent to it only.
