@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -32,6 +33,11 @@ type bulkDeployServer struct {
 	bulkStatus  int                  // status of a failing bulk request (default 500)
 	bulkMessage string               // body of a failing bulk request
 
+	searchPageSize int // when set, search answers at most this many results per page
+	searchCalls    int
+	failSearch     func(ns string) bool // true -> answer 500
+	validateStatus int                  // when set, /validate answers this status
+
 	violations   string                     // JSON array returned by /validate
 	existing     map[string][]string        // namespace -> existing flow ids
 	failBulk     func(call int) bool        // true -> answer 500
@@ -51,6 +57,11 @@ func (s *bulkDeployServer) start(t *testing.T) *httptest.Server {
 		switch {
 		case strings.HasSuffix(path, "/flows/validate"):
 			s.validateBodies = append(s.validateBodies, string(body))
+			if s.validateStatus != 0 {
+				w.WriteHeader(s.validateStatus)
+				_, _ = w.Write([]byte(`{"message":"validate down"}`))
+				return
+			}
 			if s.violations == "" {
 				_, _ = w.Write([]byte("[]"))
 				return
@@ -64,11 +75,24 @@ func (s *bulkDeployServer) start(t *testing.T) *httptest.Server {
 				}
 			}
 			s.searches = append(s.searches, ns)
+			s.searchCalls++
+			if s.failSearch != nil && s.failSearch(ns) {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"search down"}`))
+				return
+			}
 			results := []string{}
-			for _, id := range s.existing[ns] {
+			ids := s.existing[ns]
+			total := len(ids)
+			if s.searchPageSize > 0 {
+				page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+				lo := min((page-1)*s.searchPageSize, total)
+				ids = ids[lo:min(lo+s.searchPageSize, total)]
+			}
+			for _, id := range ids {
 				results = append(results, fmt.Sprintf(`{"id":%q,"namespace":%q,"revision":1,"labels":[{"key":"a","value":"b"}]}`, id, ns))
 			}
-			_, _ = fmt.Fprintf(w, `{"results":[%s],"total":%d}`, strings.Join(results, ","), len(results))
+			_, _ = fmt.Fprintf(w, `{"results":[%s],"total":%d}`, strings.Join(results, ","), total)
 		case strings.HasSuffix(path, "/flows/bulk"):
 			s.bulkBodies = append(s.bulkBodies, string(body))
 			s.bulkQueries = append(s.bulkQueries, r.URL.Query())
@@ -362,7 +386,7 @@ func TestDeployBulk_FailFastStopsAfterFailedChunkWithoutFallback(t *testing.T) {
 	if len(s.perFlow) != 0 {
 		t.Fatalf("fail-fast must not fall back, got %v", s.perFlow)
 	}
-	if len(results) != 100 || results[0].Success || !strings.Contains(results[0].Error, "rejected") {
+	if len(results) != 100 || results[0].Success || !strings.Contains(results[0].Error, "outcome unknown") {
 		t.Fatalf("expected the 100 files of the failed chunk reported, got %d: %+v", len(results), results[0])
 	}
 }
@@ -536,7 +560,7 @@ func TestDeployBulk_FailFastNamespaceEndpointFailureAttributedToItsNamespace(t *
 
 func TestDeployBulk_FailFastBulkErrorOnlyOnFilesItNames(t *testing.T) {
 	s := &bulkDeployServer{
-		bulkStatus: http.StatusBadRequest, bulkMessage: `{"message":"namespace qa.forbidden is not allowed"}`,
+		bulkStatus: http.StatusBadRequest, bulkMessage: `{"message":"namespace 'qa.forbidden' is not allowed"}`,
 		failBulk: func(int) bool { return true },
 	}
 	dir := writeFlowDir(t, map[string]string{
@@ -599,5 +623,95 @@ func TestDeployFlow_SendsTrimmedSource(t *testing.T) {
 	}
 	if strings.HasSuffix(got, "\n") {
 		t.Fatalf("per-flow body must not keep the trailing newline: %q", got)
+	}
+}
+
+func TestListFlowIDsInNamespace_FetchesEveryPage(t *testing.T) {
+	s := &bulkDeployServer{searchPageSize: 2, existing: map[string][]string{"my.ns": {"a", "b", "c"}}}
+	server := s.start(t)
+	ids, err := listFlowIDsInNamespace(newTestClient(t, server.URL), "my.ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 3 || !ids["c"] {
+		t.Fatalf("expected all 3 ids across pages, got %v", ids)
+	}
+	if s.searchCalls != 2 {
+		t.Fatalf("expected 2 search pages, got %d", s.searchCalls)
+	}
+}
+
+func TestDeployBulk_ExistenceSearchFailureIsPerNamespace(t *testing.T) {
+	s := &bulkDeployServer{failSearch: func(ns string) bool { return ns == "ns.bad" }}
+	dir := writeFlowDir(t, map[string]string{
+		"a.yaml": flowYAML("ns.bad", "a"),
+		"b.yaml": flowYAML("ns.bad", "b"),
+		"c.yaml": flowYAML("ns.good", "c"),
+	})
+	results := deployDir(t, s, dir, "", "", false, false, false)
+	for _, r := range results[:2] {
+		if r.Success || !strings.Contains(r.Error, "failed to check whether flow") {
+			t.Fatalf("expected an existence-check failure, got %+v", r)
+		}
+	}
+	if !results[2].Success {
+		t.Fatalf("the other namespace must deploy: %+v", results[2])
+	}
+	if s.searchCalls != 2 {
+		t.Fatalf("a failing namespace must be searched once, got %d searches", s.searchCalls)
+	}
+	if strings.Contains(s.bulkBodies[0], "id: a") {
+		t.Fatal("unchecked flows must not be written")
+	}
+}
+
+func TestDeployBulk_ValidateFailureFallsBackPerFlow(t *testing.T) {
+	s := &bulkDeployServer{validateStatus: http.StatusInternalServerError}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 3)), "", "", false, false, false)
+	requireSuccess(t, results, 3)
+	if len(s.bulkBodies) != 0 || len(s.perFlow) == 0 {
+		t.Fatalf("expected per-flow deploys only, got bulk=%d perFlow=%v", len(s.bulkBodies), s.perFlow)
+	}
+}
+
+func TestDeployBulk_FailFastNamespaceMatchedAsWholeToken(t *testing.T) {
+	s := &bulkDeployServer{
+		bulkStatus: http.StatusBadRequest, bulkMessage: `{"message":"namespace 'qa.forbidden' is not allowed"}`,
+		failBulk: func(int) bool { return true },
+	}
+	dir := writeFlowDir(t, map[string]string{
+		"a.yaml": flowYAML("qa", "a"),
+		"b.yaml": flowYAML("qa.forbidden", "b"),
+	})
+	results := deployDir(t, s, dir, "", "", false, true, true)
+	if strings.Contains(results[0].Error, "qa.forbidden") || !strings.Contains(results[0].Error, "rejected") {
+		t.Fatalf("namespace qa must not inherit the qa.forbidden message: %+v", results[0])
+	}
+	if !strings.Contains(results[1].Error, "qa.forbidden") {
+		t.Fatalf("qa.forbidden must carry the message: %+v", results[1])
+	}
+}
+
+func TestDeployBulk_FailFastUnreadableResponseIsOutcomeUnknown(t *testing.T) {
+	s := &bulkDeployServer{bulkResponse: func(string) string { return "not json" }}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 2)), "", "", false, true, true)
+	for _, r := range results {
+		if r.Success || !strings.Contains(r.Error, "outcome unknown") || strings.Contains(r.Error, "rejected") {
+			t.Fatalf("expected an unknown outcome, got %+v", r)
+		}
+	}
+	if len(s.perFlow) != 0 {
+		t.Fatal("fail-fast must not retry per flow")
+	}
+}
+
+func TestDeployBulk_FailFastFlowMissingFromResponseIsNotRetried(t *testing.T) {
+	s := &bulkDeployServer{bulkResponse: func(string) string { return `[{"id":"flow-000","namespace":"my.ns","revision":4}]` }}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 2)), "", "", false, true, true)
+	if !results[0].Success || results[1].Success || !strings.Contains(results[1].Error, "outcome unknown") {
+		t.Fatalf("unexpected results: %+v", results)
+	}
+	if len(s.perFlow) != 0 {
+		t.Fatalf("fail-fast must not re-send per flow, got %v", s.perFlow)
 	}
 }

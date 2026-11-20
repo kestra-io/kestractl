@@ -945,8 +945,9 @@ Use --override to update existing flows.
 
 A directory of several flows is deployed in batches: flows are validated, checked
 for existing flows (without --override) and then written with a few bulk requests
-(100 flows each) instead of two requests per flow. Because of this, each file in a
-directory must hold exactly one flow ('---' separated files are rejected; use
+(100 flows each) instead of two requests per flow; the existence check is best-effort,
+so a flow created by someone else in the meantime is updated rather than rejected.
+Each file in a directory must hold exactly one flow ('---' separated files are rejected; use
 'flows bulk-update' or 'flows namespace-sync' for those), and two files cannot define
 the same namespace and flow ID. If the server refuses the bulk endpoint, flows are
 sent with one request per namespace instead. If a request still fails, its flows are

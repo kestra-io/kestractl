@@ -115,7 +115,9 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 		}
 	}
 
-	// Stage 4: existence check, one search per namespace.
+	// Stage 4: existence check, one search per namespace. It is best-effort: a
+	// flow created by someone else between this search and the write is updated
+	// instead of rejected, as the GET-then-POST of the per-flow path already allows.
 	if !override && len(items) > 0 {
 		existing := make(map[string]map[string]bool)
 		kept := items[:0]
@@ -184,6 +186,13 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 				for _, item := range unit {
 					revision, ok := unitRevisions[flowKey(results[item.index].Namespace, results[item.index].FlowID)]
 					if !ok {
+						if failFast {
+							// No per-flow retry under --fail-fast: report the unknown
+							// outcome and stop.
+							results[item.index].Error = "outcome unknown: the server did not return this flow in its response, so it may or may not be deployed (--fail-fast)"
+							processed = chunk[len(chunk)-1].index + 1
+							return finish()
+						}
 						// Saved as far as the server says, but not echoed back: ask again.
 						results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
 						continue
@@ -217,13 +226,26 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 // attributeWriteError builds the per-file error of a failed write request under
 // --fail-fast. A namespace request fails for exactly its own namespace. A bulk
 // request spans several namespaces and the server does not say which flow it
-// refused, so its message is kept only for files whose namespace it names; the
-// others are told the batch was rejected and they were not deployed.
+// refused, so its message is kept only for files whose namespace it names (as a
+// whole quoted token, so 'qa' does not match 'qa.forbidden'). Other files are
+// told the batch was rejected when the server answered 4xx; for anything else
+// (transport error, unreadable 2xx body, 5xx) the outcome is unknown, because
+// the endpoint is not transactional and part of the batch may be saved.
 func attributeWriteError(namespace string, err error, perNamespace bool) string {
-	if perNamespace || strings.Contains(err.Error(), namespace) {
+	if perNamespace || namesNamespace(err.Error(), namespace) {
 		return err.Error()
 	}
-	return "not deployed: the bulk request holding this flow was rejected by the server (--fail-fast)"
+	var reqErr *bulkRequestError
+	if errors.As(err, &reqErr) && reqErr.status >= 400 && reqErr.status < 500 {
+		return "not deployed: the bulk request holding this flow was rejected by the server (--fail-fast)"
+	}
+	return "outcome unknown: the bulk request holding this flow failed or its response could not be read, so it may be partly deployed (--fail-fast)"
+}
+
+// namesNamespace reports whether message quotes namespace as a whole token, the
+// way the server writes it ('ns' or "ns").
+func namesNamespace(message, namespace string) bool {
+	return strings.Contains(message, "'"+namespace+"'") || strings.Contains(message, `"`+namespace+`"`)
 }
 
 // groupByNamespace splits a chunk into one unit per final namespace, in order of
