@@ -1483,7 +1483,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		// The generated client cannot decode array-format labels (#83), but a
 		// body that parses to a flow means it exists — proceed to the update.
 		exists = true
-	} else if resp != nil && resp.StatusCode != 404 {
+	} else if resp == nil || resp.StatusCode != 404 {
 		result.Error = formatSDKError(checkErr).Error()
 		return result
 	}
