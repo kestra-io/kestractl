@@ -267,7 +267,9 @@ kestractl flows deploy path/to/flow.yaml
 
 # Deploy all flows in a directory (recursive). Flows are validated and written in
 # bulk requests of 100 instead of two requests per flow, so each file must hold
-# exactly one flow; if a bulk request fails, its flows are deployed one by one.
+# exactly one flow (use 'flows namespace-sync' or 'flows bulk-update' for
+# multi-document files). If the server refuses the bulk endpoint, flows are sent
+# one request per namespace; if a request still fails, they are deployed one by one.
 kestractl flows deploy ./flows/
 
 # Deploy with namespace override (all flows go to specified namespace)

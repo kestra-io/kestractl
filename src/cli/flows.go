@@ -948,8 +948,9 @@ for existing flows (without --override) and then written with a few bulk request
 (100 flows each) instead of two requests per flow. Because of this, each file in a
 directory must hold exactly one flow ('---' separated files are rejected; use
 'flows bulk-update' or 'flows namespace-sync' for those), and two files cannot define
-the same namespace and flow ID. If a bulk request fails, its flows are deployed one
-by one so each file gets its own error.
+the same namespace and flow ID. If the server refuses the bulk endpoint, flows are
+sent with one request per namespace instead. If a request still fails, its flows are
+deployed one by one so each file gets its own error.
 
 By default, when deploying multiple flows, all files are processed even if some fail.
 Use --fail-fast to stop on the first error. For a directory, --fail-fast writes
