@@ -943,8 +943,18 @@ Hidden files and directories (starting with .) are skipped.
 By default, the deployment will fail if a flow already exists.
 Use --override to update existing flows.
 
+A directory of several flows is deployed in batches: flows are validated, checked
+for existing flows (without --override) and then written with a few bulk requests
+(100 flows each) instead of two requests per flow. Because of this, each file in a
+directory must hold exactly one flow ('---' separated files are rejected; use
+'flows bulk-update' or 'flows namespace-sync' for those), and two files cannot define
+the same namespace and flow ID. If a bulk request fails, its flows are deployed one
+by one so each file gets its own error.
+
 By default, when deploying multiple flows, all files are processed even if some fail.
-Use --fail-fast to stop on the first error.
+Use --fail-fast to stop on the first error. For a directory, --fail-fast writes
+nothing when any file fails a local, validation or existence check, and stops after
+the first failed bulk request.
 
 --namespace forces every flow to one target namespace. --namespace-prefix
 instead prepends a prefix to each flow's own namespace, keeping their
@@ -1369,15 +1379,22 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 		files = []string{path}
 	}
 
-	// Deploy all flows
-	results := make([]DeployResult, 0, len(files))
-	for _, file := range files {
-		result := deployFlow(client, file, namespaceOverride, namespacePrefix, disableTriggers, override)
-		results = append(results, result)
+	// A directory of several flows goes through the bulk endpoint; a single
+	// file, or a directory holding one, keeps the per-flow path since batching
+	// saves nothing there.
+	var results []DeployResult
+	if info.IsDir() && len(files) >= 2 {
+		results = deployFlowsBulk(client, files, namespaceOverride, namespacePrefix, disableTriggers, override, failFast)
+	} else {
+		results = make([]DeployResult, 0, len(files))
+		for _, file := range files {
+			result := deployFlow(client, file, namespaceOverride, namespacePrefix, disableTriggers, override)
+			results = append(results, result)
 
-		if !result.Success && failFast {
-			// Stop on first error when fail-fast is enabled
-			break
+			if !result.Success && failFast {
+				// Stop on first error when fail-fast is enabled
+				break
+			}
 		}
 	}
 
@@ -1420,8 +1437,15 @@ func collectFlowFiles(rootPath string, recursive bool) ([]string, error) {
 	return files, nil
 }
 
-// deployFlow deploys a single flow file and returns the result.
-func deployFlow(client *Client, filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, override bool) DeployResult {
+// prepareFlowDeploy is the local half of a deploy: read, parse, apply the
+// namespace override or prefix and the trigger switch. It sends nothing. On
+// failure the returned result carries the error and Success stays false; on
+// success Error is empty and source is what must be sent to the server.
+//
+// singleDocument rejects a file holding several YAML documents. A directory
+// deploy joins sources into one multi-document body, so a multi-document file
+// would split into several flows and break the file-to-flow mapping.
+func prepareFlowDeploy(filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, singleDocument bool) (DeployResult, string) {
 	result := DeployResult{
 		FilePath: filePath,
 		Success:  false,
@@ -1430,26 +1454,31 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to read file: %v", err)
-		return result
+		return result, ""
 	}
 
 	yamlContent := string(content)
+	if singleDocument && isMultiDocumentYAML(yamlContent) {
+		result.Error = "file contains several YAML documents ('---'): in a directory each file must hold exactly one flow; split it, or use 'flows bulk-update' / 'flows namespace-sync' for multi-document files"
+		return result, ""
+	}
+
 	namespace, flowID, err := parseFlowYAML(yamlContent)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return result, ""
 	}
 
 	result.FlowID = flowID
 
 	// Apply namespace override or prefix if provided; the two are mutually
-	// exclusive, enforced by the command before deployFlow is ever called.
+	// exclusive, enforced by the command before this is ever called.
 	if namespaceOverride != "" {
 		// Modify YAML content to use the overridden namespace
 		yamlContent, err = replaceNamespaceInYAML(yamlContent, namespaceOverride)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to override namespace: %v", err)
-			return result
+			return result, ""
 		}
 		namespace = namespaceOverride
 	} else if namespacePrefix != "" {
@@ -1457,7 +1486,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		yamlContent, err = replaceNamespaceInYAML(yamlContent, prefixedNamespace)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to apply namespace prefix: %v", err)
-			return result
+			return result, ""
 		}
 		namespace = prefixedNamespace
 	}
@@ -1466,10 +1495,27 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		yamlContent, err = disableTriggersInYAML(yamlContent)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to disable triggers: %v", err)
-			return result
+			return result, ""
 		}
 	}
 	result.Namespace = namespace
+
+	return result, yamlContent
+}
+
+// deployFlow deploys a single flow file and returns the result.
+func deployFlow(client *Client, filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, override bool) DeployResult {
+	result, yamlContent := prepareFlowDeploy(filePath, namespaceOverride, namespacePrefix, disableTriggers, false)
+	if result.Error != "" {
+		return result
+	}
+	return deployPreparedFlow(client, result, yamlContent, override)
+}
+
+// deployPreparedFlow is the network half of a single-flow deploy: an existence
+// check followed by an update or a create.
+func deployPreparedFlow(client *Client, result DeployResult, yamlContent string, override bool) DeployResult {
+	namespace, flowID := result.Namespace, result.FlowID
 
 	// Check if flow exists
 	exists := false

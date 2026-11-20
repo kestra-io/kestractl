@@ -265,7 +265,9 @@ kestractl flows task my.namespace my-flow my-task-id
 # Deploy a single flow from YAML (aliases: create, apply)
 kestractl flows deploy path/to/flow.yaml
 
-# Deploy all flows in a directory (recursive)
+# Deploy all flows in a directory (recursive). Flows are validated and written in
+# bulk requests of 100 instead of two requests per flow, so each file must hold
+# exactly one flow; if a bulk request fails, its flows are deployed one by one.
 kestractl flows deploy ./flows/
 
 # Deploy with namespace override (all flows go to specified namespace)
@@ -282,7 +284,8 @@ kestractl flows deploy ./flows/ --disable-triggers
 # Override existing flows
 kestractl flows deploy ./flows/ --override
 
-# Stop on first error (fail-fast)
+# Stop on first error (fail-fast). For a directory, nothing is written when any
+# file fails a local, validation or existence check.
 kestractl flows deploy ./flows/ --fail-fast
 
 # Validate a single flow or directory
