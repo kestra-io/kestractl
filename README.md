@@ -270,6 +270,8 @@ kestractl flows deploy path/to/flow.yaml
 # exactly one flow (use 'flows namespace-sync' or 'flows bulk-update' for
 # multi-document files). If the server refuses the bulk endpoint, flows are sent
 # one request per namespace; if a request still fails, they are deployed one by one.
+# Without --override the existence check is best-effort: a flow created by someone
+# else in the meantime is updated rather than rejected.
 kestractl flows deploy ./flows/
 
 # Deploy with namespace override (all flows go to specified namespace)

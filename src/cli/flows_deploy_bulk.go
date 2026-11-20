@@ -183,22 +183,28 @@ func deployFlowsBulk(client *Client, files []string, namespaceOverride, namespac
 		for _, unit := range units {
 			unitRevisions, unitErr := post(unit)
 			if unitErr == nil {
+				// Process the whole response before stopping: flows after a
+				// missing one were saved too, and must be reported as such.
+				missing := false
 				for _, item := range unit {
 					revision, ok := unitRevisions[flowKey(results[item.index].Namespace, results[item.index].FlowID)]
-					if !ok {
-						if failFast {
-							// No per-flow retry under --fail-fast: report the unknown
-							// outcome and stop.
-							results[item.index].Error = "outcome unknown: the server did not return this flow in its response, so it may or may not be deployed (--fail-fast)"
-							processed = chunk[len(chunk)-1].index + 1
-							return finish()
-						}
-						// Saved as far as the server says, but not echoed back: ask again.
-						results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
+					if ok {
+						results[item.index].Revision = revision
+						results[item.index].Success = true
 						continue
 					}
-					results[item.index].Revision = revision
-					results[item.index].Success = true
+					if failFast {
+						// No per-flow retry under --fail-fast: report the unknown outcome.
+						results[item.index].Error = "outcome unknown: the server did not return this flow in its response, so it may or may not be deployed (--fail-fast)"
+						missing = true
+						continue
+					}
+					// Saved as far as the server says, but not echoed back: ask again.
+					results[item.index] = deployPreparedFlow(client, results[item.index], item.source, true)
+				}
+				if missing {
+					processed = chunk[len(chunk)-1].index + 1
+					return finish()
 				}
 				continue
 			}

@@ -715,3 +715,22 @@ func TestDeployBulk_FailFastFlowMissingFromResponseIsNotRetried(t *testing.T) {
 		t.Fatalf("fail-fast must not re-send per flow, got %v", s.perFlow)
 	}
 }
+
+func TestDeployBulk_FailFastMissingFlowStillRecordsTheOthersInTheResponse(t *testing.T) {
+	s := &bulkDeployServer{bulkResponse: func(string) string {
+		return `[{"id":"flow-001","namespace":"my.ns","revision":4},{"id":"flow-002","namespace":"my.ns","revision":6}]`
+	}}
+	results := deployDir(t, s, writeFlowDir(t, numberedFlows("my.ns", 3)), "", "", false, true, true)
+	if len(results) != 3 {
+		t.Fatalf("got %+v", results)
+	}
+	if results[0].Success || !strings.Contains(results[0].Error, "outcome unknown") {
+		t.Fatalf("the missing flow must be unknown: %+v", results[0])
+	}
+	if !results[1].Success || results[1].Revision != 4 || !results[2].Success || results[2].Revision != 6 {
+		t.Fatalf("flows present in the response must be recorded: %+v", results)
+	}
+	if len(s.perFlow) != 0 {
+		t.Fatal("fail-fast must not re-send per flow")
+	}
+}
