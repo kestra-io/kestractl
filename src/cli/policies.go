@@ -40,7 +40,7 @@ func newPoliciesListCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "list",
-		Short:   "List policies.",
+		Short:   "List tenant-scoped policies.",
 		Aliases: []string{"ls"},
 		Example: `  kestractl policies list
   kestractl policies list --output json`,
@@ -65,15 +65,21 @@ func newPoliciesListCommand() *cobra.Command {
 }
 
 func runPoliciesList(client *Client, page, size int, sort []string, renderer *Renderer) error {
-	resp, err := client.Kestra.Policies().SearchTenantPolicies(client.Ctx, client.Tenant, &page, &size, sort, nil)
+	// The tenant search also returns namespace-scoped policies, which get,
+	// update and delete cannot reach through the tenant endpoints. Filter on the
+	// server so paging and the total stay correct. The SDK has no constant for
+	// the policy scope field, and "scope" is parsed as a flow scope.
+	filters := []kestra.SearchFilter{{
+		Field:     kestra.SearchFilterField("policyScope"),
+		Operation: kestra.OpEquals,
+		Value:     "TENANT",
+	}}
+	resp, err := client.Kestra.Policies().SearchTenantPolicies(client.Ctx, client.Tenant, &page, &size, sort, filters)
 	if err != nil {
 		return formatSDKError(err)
 	}
 
 	results := resp.GetResults()
-	if results == nil {
-		results = []kestra.ApiPolicySummary{}
-	}
 
 	return renderer.Render(results, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "ID\tNAME\tSCOPE\tENFORCEMENT\tVALIDATE\tMUTATE")
