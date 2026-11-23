@@ -964,7 +964,8 @@ func newExecutionsRunCommand() *cobra.Command {
 		Long: `Trigger a flow execution in the specified namespace.
 
 The command returns immediately by default. Use --wait to poll until
-the execution completes (SUCCESS, FAILED, or other terminal state).
+the execution completes. When --wait is used, the command returns a
+non-zero exit code if the execution ends in FAILED, KILLED, or CANCELLED.
 
 Flow inputs are passed with --input key=value (repeatable). Repeating the
 same key overwrites the previous value; for array/multiselect inputs, pass
@@ -1081,7 +1082,7 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		}
 	}
 
-	return renderer.Render(execution, func(w *tabwriter.Writer) error {
+	renderErr := renderer.Render(execution, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "Execution triggered successfully!")
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "Execution ID: %s\n", stringify(execution["id"]))
@@ -1095,6 +1096,22 @@ func runExecutionsRun(client *Client, namespace, flowID string, wait bool, input
 		printTaskRunList(w, execution)
 		return nil
 	})
+	if renderErr != nil {
+		return renderErr
+	}
+
+	if wait {
+		if state, ok := execution["state"].(map[string]any); ok {
+			current := strings.ToUpper(stringify(state["current"]))
+
+			switch current {
+			case "FAILED", "KILLED", "CANCELLED":
+				return fmt.Errorf("execution ended with state: %s", current)
+			}
+		}
+	}
+
+	return nil
 }
 
 // taskRunListToMaps converts SDK TaskRun entries into the map shape used for

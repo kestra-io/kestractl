@@ -281,6 +281,21 @@ func normalizeHost(host string) string {
 // Because that HTTP client is the shared compat transport, a request issued here
 // gets the same --verbose masked dump as any SDK call.
 func (c *Client) doRawRequestPath(method string, path string) ([]byte, error) {
+	body, status, err := c.doRawRequestPathBody(method, path, nil, "")
+	if err != nil {
+		return nil, err
+	}
+	if status >= 400 {
+		return nil, formatErrorBody(body, fmt.Sprintf("status %d", status))
+	}
+	return body, nil
+}
+
+// doRawRequestPathBody is doRawRequestPath with an optional request body. It
+// returns the response body and HTTP status without interpreting the status, so
+// callers that need to map specific codes (413, 415...) can do so; only
+// transport failures come back as err. contentType is set when reqBody is non-nil.
+func (c *Client) doRawRequestPathBody(method string, path string, reqBody io.Reader, contentType string) ([]byte, int, error) {
 	cfg := c.API.GetConfig()
 
 	base := ""
@@ -294,11 +309,14 @@ func (c *Client) doRawRequestPath(method string, path string) ([]byte, error) {
 
 	endpoint := base + path
 
-	req, err := http.NewRequestWithContext(c.Ctx, method, endpoint, nil)
+	req, err := http.NewRequestWithContext(c.Ctx, method, endpoint, reqBody)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if reqBody != nil && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 
 	// Reuse the auth the SDK stored on the context.
 	if auth, ok := c.Ctx.Value(kestra.ContextBasicAuth).(kestra.BasicAuth); ok {
@@ -318,18 +336,30 @@ func (c *Client) doRawRequestPath(method string, path string) ([]byte, error) {
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, 0, fmt.Errorf("failed to read response body: %w", err)
 	}
-	if resp.StatusCode >= 400 {
-		return nil, formatErrorBody(body, fmt.Sprintf("status %d", resp.StatusCode))
+	return body, resp.StatusCode, nil
+}
+
+// tenantAPIPath builds /api/v1/{tenant}/{segments...} with every segment
+// escaped, plus the query string if any.
+func (c *Client) tenantAPIPath(query url.Values, segments ...string) string {
+	escaped := make([]string, 0, len(segments)+1)
+	escaped = append(escaped, url.PathEscape(c.Tenant))
+	for _, segment := range segments {
+		escaped = append(escaped, url.PathEscape(segment))
 	}
-	return body, nil
+	endpoint := "/api/v1/" + strings.Join(escaped, "/")
+	if len(query) > 0 {
+		endpoint += "?" + query.Encode()
+	}
+	return endpoint
 }
 
 // doRawRequest issues a request the generated SDK cannot express usefully and
@@ -347,16 +377,7 @@ func (c *Client) doRawRequestPath(method string, path string) ([]byte, error) {
 // namespace or flow id containing a slash or space cannot break out of its
 // position. query, if non-nil, is appended as the URL's query string.
 func (c *Client) doRawRequest(method string, query url.Values, segments ...string) ([]byte, error) {
-	escaped := make([]string, 0, len(segments)+1)
-	escaped = append(escaped, url.PathEscape(c.Tenant))
-	for _, segment := range segments {
-		escaped = append(escaped, url.PathEscape(segment))
-	}
-	endpoint := "/api/v1/" + strings.Join(escaped, "/")
-	if len(query) > 0 {
-		endpoint += "?" + query.Encode()
-	}
-	return c.doRawRequestPath(method, endpoint)
+	return c.doRawRequestPath(method, c.tenantAPIPath(query, segments...))
 }
 
 // doRawRequestNoTenant is like doRawRequest but for endpoints that are

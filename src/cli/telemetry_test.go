@@ -6,9 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
+	"github.com/posthog/posthog-go"
 )
 
 func TestFetchPosthogConfig(t *testing.T) {
@@ -227,4 +230,36 @@ func TestTelemetryEventName(t *testing.T) {
 			t.Fatalf("expected %q, got %q", telemetryEventCommandDone, event)
 		}
 	})
+}
+
+type captureClient struct {
+	posthog.Client
+	got posthog.Capture
+}
+
+func (c *captureClient) Enqueue(m posthog.Message) error {
+	c.got = m.(posthog.Capture)
+	return nil
+}
+
+func TestCaptureCommandSkillSource(t *testing.T) {
+	for _, tc := range []struct {
+		env, want string
+		present   bool
+	}{
+		{"kestra-ops", "kestra-ops", true},
+		{" Kestra-Ops\n", "kestra-ops", true},
+		{"/home/me/my project", "other", true},
+		{strings.Repeat("a", 65), "other", true},
+		{"", "", false},
+		{"   ", "", false},
+	} {
+		t.Setenv(telemetrySkillSourceEnv, tc.env)
+		c := &captureClient{}
+		posthogTelemetry{client: c, distinctID: "id"}.CaptureCommand("flows list", nil, time.Millisecond)
+		got, ok := c.got.Properties["skill_source"].(string)
+		if ok != tc.present || got != tc.want {
+			t.Fatalf("env %q: skill_source = %q (present %v), want %q (present %v)", tc.env, got, ok, tc.want, tc.present)
+		}
+	}
 }

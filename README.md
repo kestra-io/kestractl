@@ -205,6 +205,8 @@ kestractl sends anonymous telemetry to help the Kestra team understand real usag
 
 Set `KESTRACTL_TELEMETRY_DISABLED=true` to disable telemetry.
 
+When an AI agent skill drives kestractl, it can set `KESTRACTL_SKILL_SOURCE=<skill-name>` (for example `kestra-ops`) on each command. The value is sent as the `skill_source` property so skill usage can be told apart from direct use. Set it inline (`KESTRACTL_SKILL_SOURCE=kestra-ops kestractl flows list`), not with `export`, or every command you later type by hand in the same shell is counted as skill-driven. The value is lowercased and trimmed, and anything that is not a short slug (`a-z`, `0-9`, `.`, `_`, `-`, up to 64 characters) is sent as `other`.
+
 ### Update Notifications
 
 kestractl warns on stderr when a newer release is available. The lookup runs **at most once every 24 hours** — the result is cached in `~/.kestractl/check_for_new_available_version.json`, so all but the first command you run after a full day are served from that cache with no network call at all.
@@ -273,7 +275,13 @@ kestractl flows task my.namespace my-flow my-task-id
 # Deploy a single flow from YAML (aliases: create, apply)
 kestractl flows deploy path/to/flow.yaml
 
-# Deploy all flows in a directory (recursive)
+# Deploy all flows in a directory (recursive). Flows are validated and written in
+# bulk requests of 100 instead of two requests per flow, so each file must hold
+# exactly one flow (use 'flows namespace-sync' or 'flows bulk-update' for
+# multi-document files). If the server refuses the bulk endpoint, flows are sent
+# one request per namespace; if a request still fails, they are deployed one by one.
+# Without --override the existence check is best-effort: a flow created by someone
+# else in the meantime is updated rather than rejected.
 kestractl flows deploy ./flows/
 
 # Deploy with namespace override (all flows go to specified namespace)
@@ -290,7 +298,8 @@ kestractl flows deploy ./flows/ --disable-triggers
 # Override existing flows
 kestractl flows deploy ./flows/ --override
 
-# Stop on first error (fail-fast)
+# Stop on first error (fail-fast). For a directory, nothing is written when any
+# file fails a local, validation or existence check.
 kestractl flows deploy ./flows/ --fail-fast
 
 # Validate a single flow or directory
@@ -347,15 +356,21 @@ kestractl flows export-by-query --namespace my.namespace --output-file export.zi
 kestractl flows import flows.zip
 
 # Sync an entire namespace from a YAML file (delete flows absent from the file)
-kestractl flows namespace-sync my.namespace flows.yaml --delete --override
+kestractl flows namespace-sync my.namespace flows.yaml --delete
+
+# Sync an entire namespace from a directory: each .yaml/.yml file (one flow per
+# file) is sent as its own part of a single multipart request. Needs Kestra
+# 1.0.24+, 1.2.1+ or 2.x: the 1.1 line answers 401, so sync a single file there.
+kestractl flows namespace-sync my.namespace ./flows
+kestractl flows namespace-sync my.namespace ./flows --recursive=false --delete
 
 # View and manage flow revisions
 kestractl flows revisions my.namespace my-flow
 kestractl flows delete-revisions my.namespace my-flow --before-revision 5
 
-# Manage concurrency limits
+# Inspect concurrency limits and reset a flow's running execution counter
 kestractl flows concurrency-limits my.namespace my-flow
-kestractl flows update-concurrency my.namespace my-flow --limit 10
+kestractl flows update-concurrency my.namespace my-flow --running 0
 ```
 
 #### Verifying a migration
@@ -395,7 +410,7 @@ kestractl executions run my.namespace my-flow
 # Trigger a flow with inputs (repeatable)
 kestractl executions run my.namespace my-flow --input branch=main --input dry_run=true
 
-# Trigger and wait for completion
+# Trigger and wait for completion (exits non-zero if the execution ends in FAILED, KILLED or CANCELLED)
 kestractl executions run my.namespace my-flow --wait
 
 # Get execution details (aliases: show, describe)
@@ -875,6 +890,33 @@ kestractl blueprints custom update <id> --title "My Blueprint" --source-file blu
 kestractl blueprints custom delete <id>
 ```
 
+### MCP Servers
+
+An MCP server exposes the flows that declare an MCP Tool trigger as tools to MCP clients. Every tenant has a `default` server, which cannot be deleted. Requires Kestra **2.0 or later**.
+
+`update` only changes the fields you pass, and `enable` / `disable` set the state explicitly, so running them twice is safe.
+
+```bash
+# List MCP servers (alias: ls)
+kestractl mcp-servers list
+kestractl mcp-servers list --output json
+
+# Get a server (aliases: show, describe)
+kestractl mcp-servers get default
+
+# List the tools a server exposes, with the flow and trigger behind each one
+kestractl mcp-servers tools default
+
+# Create, update and delete a server (delete alias: rm)
+kestractl mcp-servers create ops --description "Operations flows" --instructions "Only call a tool when the request clearly maps to one of the flows."
+kestractl mcp-servers update ops --description "Operations and on-call flows"
+kestractl mcp-servers delete ops --yes
+
+# Enable or disable a server
+kestractl mcp-servers disable ops
+kestractl mcp-servers enable ops
+```
+
 ### Test Suites (Enterprise Edition)
 
 ```bash
@@ -1067,6 +1109,26 @@ kestractl roles delete <role_id>
 kestractl roles delete <role_id> --yes
 ```
 
+### Policies (Enterprise Edition)
+
+Policy management requires Kestra Enterprise Edition. This covers tenant-scoped
+policies; policies are created from YAML files, like flows.
+
+```bash
+kestractl policies list
+kestractl policies get <policy_id>
+kestractl policies create --file policy.yml
+kestractl policies update <policy_id> --file policy.yml
+kestractl policies validate --file policy.yml
+
+# Delete (alias: rm), prompts for confirmation unless --yes
+kestractl policies delete <policy_id> --yes
+
+# Export all policies, or only the given IDs, as YAML
+kestractl policies export --output-file policies.yml
+kestractl policies export <id1> <id2> --output-file policies.yml
+```
+
 ### Service Accounts (Enterprise Edition)
 
 Service account management requires Kestra Enterprise Edition. Service accounts
@@ -1233,6 +1295,8 @@ kestractl/
     ├── assets_test.go
     ├── blueprints.go              # Blueprints commands (community + internal EE)
     ├── blueprints_test.go
+    ├── mcp_servers.go             # MCP servers commands
+    ├── mcp_servers_test.go
     ├── test_suites.go             # Test suites commands (EE)
     ├── test_suites_test.go
     ├── users.go                   # IAM users commands (EE)

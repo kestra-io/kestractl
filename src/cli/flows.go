@@ -1,14 +1,20 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -937,8 +943,20 @@ Hidden files and directories (starting with .) are skipped.
 By default, the deployment will fail if a flow already exists.
 Use --override to update existing flows.
 
+A directory of several flows is deployed in batches: flows are validated, checked
+for existing flows (without --override) and then written with a few bulk requests
+(100 flows each) instead of two requests per flow; the existence check is best-effort,
+so a flow created by someone else in the meantime is updated rather than rejected.
+Each file in a directory must hold exactly one flow ('---' separated files are rejected; use
+'flows bulk-update' or 'flows namespace-sync' for those), and two files cannot define
+the same namespace and flow ID. If the server refuses the bulk endpoint, flows are
+sent with one request per namespace instead. If a request still fails, its flows are
+deployed one by one so each file gets its own error.
+
 By default, when deploying multiple flows, all files are processed even if some fail.
-Use --fail-fast to stop on the first error.
+Use --fail-fast to stop on the first error. For a directory, --fail-fast writes
+nothing when any file fails a local, validation or existence check, and stops after
+the first failed bulk request.
 
 --namespace forces every flow to one target namespace. --namespace-prefix
 instead prepends a prefix to each flow's own namespace, keeping their
@@ -1363,15 +1381,22 @@ func runFlowsDeploy(client *Client, path string, override bool, namespaceOverrid
 		files = []string{path}
 	}
 
-	// Deploy all flows
-	results := make([]DeployResult, 0, len(files))
-	for _, file := range files {
-		result := deployFlow(client, file, namespaceOverride, namespacePrefix, disableTriggers, override)
-		results = append(results, result)
+	// A directory of several flows goes through the bulk endpoint; a single
+	// file, or a directory holding one, keeps the per-flow path since batching
+	// saves nothing there.
+	var results []DeployResult
+	if info.IsDir() && len(files) >= 2 {
+		results = deployFlowsBulk(client, files, namespaceOverride, namespacePrefix, disableTriggers, override, failFast)
+	} else {
+		results = make([]DeployResult, 0, len(files))
+		for _, file := range files {
+			result := deployFlow(client, file, namespaceOverride, namespacePrefix, disableTriggers, override)
+			results = append(results, result)
 
-		if !result.Success && failFast {
-			// Stop on first error when fail-fast is enabled
-			break
+			if !result.Success && failFast {
+				// Stop on first error when fail-fast is enabled
+				break
+			}
 		}
 	}
 
@@ -1414,8 +1439,15 @@ func collectFlowFiles(rootPath string, recursive bool) ([]string, error) {
 	return files, nil
 }
 
-// deployFlow deploys a single flow file and returns the result.
-func deployFlow(client *Client, filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, override bool) DeployResult {
+// prepareFlowDeploy is the local half of a deploy: read, parse, apply the
+// namespace override or prefix and the trigger switch. It sends nothing. On
+// failure the returned result carries the error and Success stays false; on
+// success Error is empty and source is what must be sent to the server.
+//
+// singleDocument rejects a file holding several YAML documents. A directory
+// deploy joins sources into one multi-document body, so a multi-document file
+// would split into several flows and break the file-to-flow mapping.
+func prepareFlowDeploy(filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, singleDocument bool) (DeployResult, string) {
 	result := DeployResult{
 		FilePath: filePath,
 		Success:  false,
@@ -1424,26 +1456,31 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		result.Error = fmt.Sprintf("failed to read file: %v", err)
-		return result
+		return result, ""
 	}
 
 	yamlContent := string(content)
+	if singleDocument && isMultiDocumentYAML(yamlContent) {
+		result.Error = "file contains several YAML documents ('---'): in a directory each file must hold exactly one flow; split it, or use 'flows bulk-update' / 'flows namespace-sync' for multi-document files"
+		return result, ""
+	}
+
 	namespace, flowID, err := parseFlowYAML(yamlContent)
 	if err != nil {
 		result.Error = err.Error()
-		return result
+		return result, ""
 	}
 
 	result.FlowID = flowID
 
 	// Apply namespace override or prefix if provided; the two are mutually
-	// exclusive, enforced by the command before deployFlow is ever called.
+	// exclusive, enforced by the command before this is ever called.
 	if namespaceOverride != "" {
 		// Modify YAML content to use the overridden namespace
 		yamlContent, err = replaceNamespaceInYAML(yamlContent, namespaceOverride)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to override namespace: %v", err)
-			return result
+			return result, ""
 		}
 		namespace = namespaceOverride
 	} else if namespacePrefix != "" {
@@ -1451,7 +1488,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		yamlContent, err = replaceNamespaceInYAML(yamlContent, prefixedNamespace)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to apply namespace prefix: %v", err)
-			return result
+			return result, ""
 		}
 		namespace = prefixedNamespace
 	}
@@ -1460,10 +1497,27 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		yamlContent, err = disableTriggersInYAML(yamlContent)
 		if err != nil {
 			result.Error = fmt.Sprintf("failed to disable triggers: %v", err)
-			return result
+			return result, ""
 		}
 	}
 	result.Namespace = namespace
+
+	return result, normalizeFlowSource(yamlContent)
+}
+
+// deployFlow deploys a single flow file and returns the result.
+func deployFlow(client *Client, filePath string, namespaceOverride string, namespacePrefix string, disableTriggers bool, override bool) DeployResult {
+	result, yamlContent := prepareFlowDeploy(filePath, namespaceOverride, namespacePrefix, disableTriggers, false)
+	if result.Error != "" {
+		return result
+	}
+	return deployPreparedFlow(client, result, yamlContent, override)
+}
+
+// deployPreparedFlow is the network half of a single-flow deploy: an existence
+// check followed by an update or a create.
+func deployPreparedFlow(client *Client, result DeployResult, yamlContent string, override bool) DeployResult {
+	namespace, flowID := result.Namespace, result.FlowID
 
 	// Check if flow exists
 	exists := false
@@ -1477,7 +1531,7 @@ func deployFlow(client *Client, filePath string, namespaceOverride string, names
 		// The generated client cannot decode array-format labels (#83), but a
 		// body that parses to a flow means it exists — proceed to the update.
 		exists = true
-	} else if resp != nil && resp.StatusCode != 404 {
+	} else if resp == nil || resp.StatusCode != 404 {
 		result.Error = formatSDKError(checkErr).Error()
 		return result
 	}
@@ -3038,8 +3092,8 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "update-concurrency <namespace> <flow-id>",
-		Short: "Set the concurrency limit for a flow.",
-		Example: `  kestractl flows update-concurrency prod my-flow --running 5
+		Short: "Set the running execution counter for a flow.",
+		Example: `  kestractl flows update-concurrency prod my-flow --running 0
   kestractl flows update-concurrency prod my-flow --running 5 --output json`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -3055,18 +3109,21 @@ func newFlowsUpdateConcurrencyCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int32Var(&running, "running", 0, "Maximum number of concurrent running executions (0 = unlimited)")
+	cmd.Flags().Int32Var(&running, "running", 0, "Number of executions currently counted as running (0 = reset the counter)")
+	_ = cmd.MarkFlagRequired("running")
 	return cmd
 }
 
 func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running int32, renderer *Renderer) error {
+	if running < 0 {
+		return errors.New("--running must be >= 0")
+	}
+
 	limit := kestra.ConcurrencyLimit{
 		TenantId:  client.Tenant,
 		Namespace: namespace,
 		FlowId:    flowID,
-	}
-	if running > 0 {
-		limit.Running = &running
+		Running:   &running,
 	}
 
 	result, err := client.Kestra.Flows().UpdateConcurrencyLimit(client.Ctx, namespace, flowID, client.Tenant, limit)
@@ -3075,7 +3132,7 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 	}
 
 	return renderer.Render(result, func(w *tabwriter.Writer) error {
-		fmt.Fprintf(w, "Concurrency limit updated.\n\nNamespace:\t%s\nFlow ID:\t%s\nRunning:\t%d\n",
+		fmt.Fprintf(w, "Running counter updated.\n\nNamespace:\t%s\nFlow ID:\t%s\nRunning:\t%d\n",
 			result.GetNamespace(), result.GetFlowId(), result.GetRunning())
 		return nil
 	})
@@ -3084,23 +3141,38 @@ func runFlowsUpdateConcurrency(client *Client, namespace, flowID string, running
 func newFlowsNamespaceSyncCommand() *cobra.Command {
 	var (
 		deleteMissing bool
-		override      bool
+		recursive     bool
 	)
 
 	cmd := &cobra.Command{
-		Use:   "namespace-sync <namespace> <file>",
-		Short: "Sync all flows in a namespace from a YAML file.",
-		Long: `Create or update all flows in the given namespace from a YAML file.
-Flows in the namespace that are not present in the file can optionally be deleted with --delete.`,
+		Use:   "namespace-sync <namespace> <path>",
+		Short: "Sync all flows in a namespace from a YAML file or a directory.",
+		Long: `Create or update all flows in the given namespace from a YAML file or a directory.
+Existing flows are always updated. Flows already in the namespace but not present in the
+source are deleted only if --delete is set (default false).
+
+If <path> is a file, it is sent as a single YAML body and may contain several flows
+separated by '---'.
+
+If <path> is a directory, every .yaml/.yml file in it is sent as its own part of a single
+multipart request, so each file must contain exactly one flow (multi-document files are
+rejected) and each flow must live in only one file. Hidden files and directories are skipped,
+subdirectories are scanned unless --recursive=false, and symlinked directories are not
+followed. A directory without any .yaml/.yml file is an error, so that --delete can never
+empty a namespace by mistake. Every flow's namespace must match <namespace>.
+Directory sync needs Kestra 1.0.24+ (1.0 line), 1.2.1+ or 2.x: the 1.1 line has no multipart
+upload and answers with 401 Unauthorized, so sync a single file there instead.
+With --delete, the returned list (JSON output) also contains the deleted flows.`,
 		Example: `  # Sync flows in namespace prod.analytics from a YAML file
   kestractl flows namespace-sync prod.analytics flows.yaml
 
-  # Sync and delete flows not present in the file
-  kestractl flows namespace-sync prod.analytics flows.yaml --delete
+  # Sync flows in namespace prod.analytics from a directory of flow files
+  kestractl flows namespace-sync prod.analytics ./flows
 
-  # Override existing flows
-  kestractl flows namespace-sync prod.analytics flows.yaml --override`,
-		Args: cobra.ExactArgs(2),
+  # Sync the top-level files of a directory and delete flows not present in it
+  kestractl flows namespace-sync prod.analytics ./flows --recursive=false --delete`,
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			renderer, err := NewRendererFromFlags(cmd.OutOrStdout())
 			if err != nil {
@@ -3110,24 +3182,36 @@ Flows in the namespace that are not present in the file can optionally be delete
 			if err != nil {
 				return err
 			}
-			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, override, renderer)
+			return runFlowsNamespaceSync(client, args[0], args[1], deleteMissing, recursive, renderer)
 		},
 	}
 
-	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the file")
-	cmd.Flags().BoolVar(&override, "override", false, "Override existing flows")
+	cmd.Flags().BoolVar(&deleteMissing, "delete", false, "Delete flows in the namespace that are not in the source (default false)")
+	cmd.Flags().BoolVar(&recursive, "recursive", true, "Recurse into subdirectories when a directory is provided")
+	cmd.Flags().Bool("override", false, "Has no effect")
+	_ = cmd.Flags().MarkDeprecated("override", "it has no effect, existing flows are always updated")
 	return cmd
 }
 
-func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMissing, override bool, renderer *Renderer) error {
-	content, err := os.ReadFile(filePath)
+func runFlowsNamespaceSync(client *Client, namespace, path string, deleteMissing, recursive bool, renderer *Renderer) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to access path '%s': %w", path, err)
+	}
+	if info.IsDir() {
+		return runFlowsNamespaceSyncDir(client, namespace, path, deleteMissing, recursive, renderer)
+	}
+
+	content, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
 	results, err := client.Kestra.Flows().UpdateFlowsInNamespace(
 		client.Ctx, namespace, client.Tenant, string(content),
-		boolPtr(deleteMissing), boolPtr(override))
+		// delete is always sent explicitly: the server defaults a missing value to true.
+		// override is not sent: the YAML endpoint ignores it.
+		boolPtr(deleteMissing), nil)
 	if err != nil {
 		return formatSDKError(err)
 	}
@@ -3136,6 +3220,127 @@ func runFlowsNamespaceSync(client *Client, namespace, filePath string, deleteMis
 		fmt.Fprintf(w, "Namespace '%s' synced: %d flow(s) updated.\n", namespace, len(results))
 		return nil
 	})
+}
+
+// runFlowsNamespaceSyncDir sends every flow file of a directory as its own part of
+// one multipart request. The Go SDK only exposes the YAML overload, so this goes
+// through the raw request path (same base URL, auth and HTTP client).
+func runFlowsNamespaceSyncDir(client *Client, namespace, dir string, deleteMissing, recursive bool, renderer *Renderer) error {
+	files, err := collectFlowFiles(dir, recursive)
+	if err != nil {
+		return fmt.Errorf("failed to scan directory '%s': %w", dir, err)
+	}
+	// Must fail before any request: with delete=true an empty part list would
+	// delete every flow of the namespace.
+	if len(files) == 0 {
+		return fmt.Errorf("no .yaml or .yml files found in directory '%s'", dir)
+	}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, file := range files {
+		content, err := os.ReadFile(file)
+		if err != nil {
+			return fmt.Errorf("failed to read file '%s': %w", file, err)
+		}
+		if isMultiDocumentYAML(string(content)) {
+			return fmt.Errorf("file '%s' contains several YAML documents ('---'): in a directory each file must hold exactly one flow; split it, or sync it as a single file", file)
+		}
+		rel, err := filepath.Rel(dir, file)
+		if err != nil {
+			rel = filepath.Base(file)
+		}
+		header := make(textproto.MIMEHeader)
+		// FileContentDisposition escapes quotes and backslashes, and percent-encodes CR/LF
+		// so a file name cannot inject part headers.
+		header.Set("Content-Disposition", multipart.FileContentDisposition("flows", filepath.ToSlash(rel)))
+		header.Set("Content-Type", "application/x-yaml")
+		part, err := mw.CreatePart(header)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(content); err != nil {
+			return err
+		}
+	}
+	if err := mw.Close(); err != nil {
+		return err
+	}
+
+	// delete is always sent explicitly: the server defaults a missing value to true.
+	// override=false: true would rewrite every flow's namespace, which this command does not offer.
+	query := url.Values{}
+	query.Set("delete", strconv.FormatBool(deleteMissing))
+	query.Set("override", "false")
+	path := client.tenantAPIPath(query, "flows", namespace)
+
+	respBody, status, err := client.doRawRequestPathBody(http.MethodPost, path, &buf, mw.FormDataContentType())
+	if err != nil {
+		return formatSDKError(err)
+	}
+	switch {
+	case status == http.StatusRequestEntityTooLarge:
+		return fmt.Errorf("request too large: the server rejected the %d flow file(s) as one request; split the sync into smaller directories (note that --delete only keeps the flows of the directory being synced)", len(files))
+	case status == http.StatusUnsupportedMediaType:
+		return fmt.Errorf("the server does not accept multipart flow uploads; concatenate the flows into a single YAML file (separated by '---') and sync that file instead")
+	case status >= 400:
+		return formatErrorBody(respBody, fmt.Sprintf("status %d", status))
+	}
+
+	var results []kestra.FlowInterface
+	if err := json.Unmarshal(respBody, &results); err != nil {
+		return formatSDKError(err)
+	}
+
+	return renderer.Render(results, func(w *tabwriter.Writer) error {
+		// Each file holds exactly one flow (multi-document files are rejected above and the
+		// server rejects duplicate ids), so files == created/updated flows. The server returns
+		// Stream.concat(deleted, updatedOrCreated) and deleted flows still report deleted=false,
+		// so the deleted count is whatever exceeds the number of files.
+		deleted := len(results) - len(files)
+		if deleted < 0 {
+			deleted = 0
+		}
+		fmt.Fprintf(w, "Namespace '%s' synced from %d file(s): %d flow(s) created or updated, %d deleted.\n", namespace, len(files), len(files), deleted)
+		return nil
+	})
+}
+
+// isMultiDocumentYAML reports whether content holds more than one YAML document.
+//
+// It is a line scan, not a parse: yaml.v3 rejects valid streams (%YAML 1.2
+// directives, "--- key: value") before reporting any document, so a decoder cannot
+// be used here. An unindented line that is exactly "---" or starts with "---" and a
+// blank is a document marker; whatever follows the marker on that line (e.g.
+// "--- id: b") is content of the new document. Block scalar content must be
+// indented, so an unindented marker cannot be a false positive inside one.
+// Documents with no content (a leading or trailing "---") are not counted, and
+// unindented "%" lines are directives, not content.
+func isMultiDocumentYAML(content string) bool {
+	documents := 0
+	current := false // whether the current document has content so far
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "%") {
+			continue
+		}
+		if line == "---" || strings.HasPrefix(line, "--- ") || strings.HasPrefix(line, "---\t") {
+			if current {
+				documents++
+			}
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "---"))
+			current = rest != "" && !strings.HasPrefix(rest, "#")
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			current = true
+		}
+	}
+	if current {
+		documents++
+	}
+	return documents > 1
 }
 
 func boolPtr(b bool) *bool { return &b }

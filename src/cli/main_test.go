@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 		for _, address := range blocked {
 			fmt.Fprintf(os.Stderr, "  - %s\n", address)
 		}
-		fmt.Fprint(os.Stderr, "Point the relevant package var (telemetryConfigURL, newVersionCheckLatestReleaseURL, pluginsAPIBase, pluginsMavenBase, ...) at an httptest server.\n")
+		fmt.Fprint(os.Stderr, "Point the relevant package var (telemetryConfigURL, newVersionCheckLatestReleaseURL, pluginsAPIBase, pluginsMavenRepositories, ...) at an httptest server.\n")
 		if code == 0 {
 			code = 1
 		}
@@ -96,7 +96,7 @@ type errExternalNetwork struct {
 func (e *errExternalNetwork) Error() string {
 	return fmt.Sprintf(
 		"unit tests must not reach the network: blocked %s dial to %s. "+
-			"Point the relevant package var (telemetryConfigURL, newVersionCheckLatestReleaseURL, pluginsAPIBase, pluginsMavenBase, ...) at an httptest server",
+			"Point the relevant package var (telemetryConfigURL, newVersionCheckLatestReleaseURL, pluginsAPIBase, pluginsMavenRepositories, ...) at an httptest server",
 		e.network, e.address,
 	)
 }

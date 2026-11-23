@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -1708,26 +1712,85 @@ func TestFlowsUpdateConcurrencyCommand_NoArgs(t *testing.T) {
 	}
 }
 
+func TestFlowsUpdateConcurrencyCommand_RequiresRunning(t *testing.T) {
+	cmd := newFlowsUpdateConcurrencyCommand()
+	_, err := executeCommand(cmd, "prod", "my-flow")
+	if err == nil {
+		t.Fatal("expected error when --running is missing")
+	}
+	if !strings.Contains(err.Error(), `required flag(s) "running" not set`) {
+		t.Fatalf("expected required --running error, got: %v", err)
+	}
+}
+
 func TestRunFlowsUpdateConcurrency(t *testing.T) {
+	for _, running := range []int32{0, 5} {
+		t.Run(strconv.Itoa(int(running)), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("expected PUT, got %s", r.Method)
+					http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+					return
+				}
+
+				var body kestra.ConcurrencyLimit
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					http.Error(w, "invalid request body", http.StatusBadRequest)
+					return
+				}
+				if body.Running == nil {
+					t.Error("request body omitted running")
+					http.Error(w, "missing running", http.StatusBadRequest)
+					return
+				}
+				if *body.Running != running {
+					t.Errorf("request running = %d, want %d", *body.Running, running)
+					http.Error(w, "unexpected running value", http.StatusBadRequest)
+					return
+				}
+				t.Logf("request body includes running=%d", *body.Running)
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(body); err != nil {
+					t.Errorf("encode response body: %v", err)
+					return
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			var buf bytes.Buffer
+			err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", running, newTableRenderer(&buf))
+			if err != nil {
+				t.Fatalf("runFlowsUpdateConcurrency error: %v", err)
+			}
+			out := buf.String()
+			for _, want := range []string{"prod", "my-flow", strconv.Itoa(int(running)), "updated"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestRunFlowsUpdateConcurrencyRejectsNegativeRunning(t *testing.T) {
+	requested := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("expected PUT, got %s", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tenantId":"default","namespace":"prod","flowId":"my-flow","running":5}`))
+		requested = true
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
 
-	var buf bytes.Buffer
-	err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", 5, newTableRenderer(&buf))
-	if err != nil {
-		t.Fatalf("runFlowsUpdateConcurrency error: %v", err)
+	err := runFlowsUpdateConcurrency(newTestClient(t, server.URL), "prod", "my-flow", -1, newTableRenderer(io.Discard))
+	if err == nil {
+		t.Fatal("expected error for negative --running")
 	}
-	out := buf.String()
-	for _, want := range []string{"prod", "my-flow", "5", "updated"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
-		}
+	if err.Error() != "--running must be >= 0" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requested {
+		t.Fatal("negative --running sent an HTTP request")
 	}
 }
 
@@ -1742,25 +1805,34 @@ func TestFlowsNamespaceSyncCommand_NoArgs(t *testing.T) {
 	}
 }
 
-func TestRunFlowsNamespaceSync(t *testing.T) {
-	var gotMethod string
+func writeNamespaceSyncFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "flows.yaml")
+	if err := os.WriteFile(path, []byte("id: flow-one\nnamespace: prod\n"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+	return path
+}
+
+func namespaceSyncServer(t *testing.T, gotMethod *string, gotQuery *url.Values) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod = r.Method
+		*gotMethod = r.Method
+		*gotQuery = r.URL.Query()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[{"id":"f1","namespace":"prod","flowId":"flow-one"}]`))
 	}))
 	t.Cleanup(server.Close)
+	return server
+}
 
-	tmpFile, err := os.CreateTemp("", "flows-*.yaml")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	_, _ = tmpFile.WriteString("id: flow-one\nnamespace: prod\n")
-	tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
+func TestRunFlowsNamespaceSync(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
 
 	var buf bytes.Buffer
-	err = runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", tmpFile.Name(), false, false, newTableRenderer(&buf))
+	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, true, newTableRenderer(&buf))
 	if err != nil {
 		t.Fatalf("runFlowsNamespaceSync error: %v", err)
 	}
@@ -1769,6 +1841,87 @@ func TestRunFlowsNamespaceSync(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "prod") {
 		t.Errorf("expected namespace in output, got:\n%s", buf.String())
+	}
+	if got := gotQuery.Get("delete"); got != "false" {
+		t.Errorf("expected delete=false, got query %v", gotQuery)
+	}
+	if _, ok := gotQuery["override"]; ok {
+		t.Errorf("override must not be sent, got query %v", gotQuery)
+	}
+}
+
+func TestRunFlowsNamespaceSync_Delete(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), true, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runFlowsNamespaceSync error: %v", err)
+	}
+	if got := gotQuery.Get("delete"); got != "true" {
+		t.Errorf("expected delete=true, got query %v", gotQuery)
+	}
+}
+
+func TestFlowsNamespaceSyncCommand_DeprecatedOverride(t *testing.T) {
+	var gotMethod string
+	var gotQuery url.Values
+	server := namespaceSyncServer(t, &gotMethod, &gotQuery)
+
+	original := newClientFunc
+	newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+	defer func() { newClientFunc = original }()
+
+	// Cobra writes flag deprecation notices to its output writer, which defaults to
+	// os.Stderr when SetOut is not called (as in the real binary). Leave it unset and
+	// capture os.Stderr so the test proves the warning stays off stdout.
+	cmd := newFlowsNamespaceSyncCommand()
+	cmd.SetArgs([]string{"prod", writeNamespaceSyncFile(t), "--override"})
+
+	originalStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	// Safety net: a panic in Execute must not leave os.Stderr on a closed pipe.
+	t.Cleanup(func() { os.Stderr = originalStderr })
+	stdout, execErr := captureStdout(cmd.Execute)
+	os.Stderr = originalStderr
+	_ = w.Close()
+	stderrBytes, _ := io.ReadAll(r)
+	_ = r.Close()
+	stderr := string(stderrBytes)
+
+	if execErr != nil {
+		t.Fatalf("--override must still be accepted, got: %v", execErr)
+	}
+	if !strings.Contains(stderr, "Flag --override has been deprecated") {
+		t.Errorf("expected deprecation warning on stderr, got:\n%s", stderr)
+	}
+	if strings.Contains(stdout, "deprecated") {
+		t.Errorf("deprecation warning leaked to stdout:\n%s", stdout)
+	}
+	if _, ok := gotQuery["override"]; ok {
+		t.Errorf("override must not be sent, got query %v", gotQuery)
+	}
+	if got := gotQuery.Get("delete"); got != "false" {
+		t.Errorf("expected delete=false, got query %v", gotQuery)
+	}
+}
+
+func TestFlowsNamespaceSyncCommand_Help(t *testing.T) {
+	cmd := newFlowsNamespaceSyncCommand()
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetErr(&buf)
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("help error: %v", err)
+	}
+	if strings.Contains(buf.String(), "--override") {
+		t.Errorf("deprecated --override must be hidden from help, got:\n%s", buf.String())
 	}
 }
 
@@ -2089,5 +2242,359 @@ func TestConfirmFixtureDecodeError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("fixture fails to decode for the wrong reason (want a missing-draft error): %v", err)
+	}
+}
+
+// syncDirRequest captures what the multipart namespace-sync sent.
+type syncDirRequest struct {
+	method, path, rawPath, contentType string
+	query                              url.Values
+	parts                              map[string]string // filename -> content
+	partNames                          []string
+}
+
+func syncDirServer(t *testing.T, status int, response string, got *syncDirRequest, calls *int) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls++
+		got.method = r.Method
+		got.path = r.URL.Path
+		got.rawPath = r.URL.EscapedPath()
+		got.query = r.URL.Query()
+		got.contentType = r.Header.Get("Content-Type")
+		got.parts = map[string]string{}
+		if mr, err := r.MultipartReader(); err == nil {
+			for {
+				p, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				b, _ := io.ReadAll(p)
+				// Part.FileName() strips directories; read the raw header instead.
+				_, params, _ := mime.ParseMediaType(p.Header.Get("Content-Disposition"))
+				got.parts[params["filename"]] = string(b)
+				got.partNames = append(got.partNames, p.FormName())
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(response))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func writeSyncDir(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+const syncOKResponse = `[{"id":"a","namespace":"prod","flowId":"a"},{"id":"b","namespace":"prod","flowId":"b"}]`
+
+func TestRunFlowsNamespaceSync_Directory(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n", "sub/b.yml": "id: b\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if calls != 1 || got.method != http.MethodPost || got.path != "/api/v1/main/flows/prod" {
+		t.Fatalf("unexpected request: calls=%d %s %s", calls, got.method, got.path)
+	}
+	if !strings.HasPrefix(got.contentType, "multipart/form-data") {
+		t.Errorf("content type = %q", got.contentType)
+	}
+	if got.query.Get("delete") != "false" || got.query.Get("override") != "false" {
+		t.Errorf("expected explicit delete=false&override=false, got %v", got.query)
+	}
+	if len(got.parts) != 2 || got.parts["a.yaml"] == "" || got.parts["sub/b.yml"] == "" {
+		t.Errorf("unexpected parts: %v", got.parts)
+	}
+	for _, n := range got.partNames {
+		if n != "flows" {
+			t.Errorf("part name = %q, want flows", n)
+		}
+	}
+	out := buf.String()
+	if !strings.Contains(out, "synced from 2 file(s): 2 flow(s) created or updated, 0 deleted.") {
+		t.Errorf("unexpected output: %s", out)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryDelete(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if got.query.Get("delete") != "true" {
+		t.Errorf("expected delete=true, got %v", got.query)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryNotRecursiveAndHidden(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{
+		"a.yaml":       "id: a\nnamespace: prod\n",
+		"sub/b.yaml":   "id: b\nnamespace: prod\n",
+		".hidden.yaml": "id: h\nnamespace: prod\n",
+		".git/c.yaml":  "id: c\nnamespace: prod\n",
+		"notes.txt":    "ignored",
+	})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, false, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if len(got.parts) != 1 || got.parts["a.yaml"] == "" {
+		t.Errorf("expected only a.yaml, got %v", got.parts)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryNoFilesNoRequest(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+
+	for name, files := range map[string]map[string]string{
+		"empty":   {},
+		"no yaml": {"notes.txt": "x"},
+		"hidden":  {".a.yaml": "id: a"},
+		"subdir":  {"sub/a.yaml": "id: a"}, // ignored when not recursive
+	} {
+		dir := writeSyncDir(t, files)
+		recursive := name != "subdir"
+		var buf bytes.Buffer
+		err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, recursive, newTableRenderer(&buf))
+		if err == nil || !strings.Contains(err.Error(), "no .yaml or .yml files") {
+			t.Errorf("%s: expected no-files error, got %v", name, err)
+		}
+	}
+	if calls != 0 {
+		t.Errorf("no request must be sent, got %d", calls)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryMultiDocRejected(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{
+		"ok.yaml":    "id: a\nnamespace: prod\n",
+		"multi.yaml": "id: a\nnamespace: prod\n---\nid: b\nnamespace: prod\n",
+	})
+
+	var buf bytes.Buffer
+	err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf))
+	if err == nil || !strings.Contains(err.Error(), "multi.yaml") {
+		t.Fatalf("expected error naming multi.yaml, got %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("no request must be sent, got %d", calls)
+	}
+}
+
+func TestIsMultiDocumentYAML(t *testing.T) {
+	tests := map[string]struct {
+		in   string
+		want bool
+	}{
+		"single":                {"id: a\n", false},
+		"leading separator":     {"---\nid: a\n", false},
+		"leading comment+sep":   {"# c\n---\nid: a\n", false},
+		"trailing separator":    {"id: a\n---\n", false},
+		"two docs":              {"id: a\n---\nid: b\n", true},
+		"two docs crlf":         {"id: a\r\n---\r\nid: b\r\n", true},
+		"separator trailing sp": {"id: a\n---  \nid: b\n", true},
+		"separator comment":     {"id: a\n--- # next\nid: b\n", true},
+		"in block scalar":       {"id: a\ndescription: |\n  ---\n  text\n", false},
+		"dashes in value":       {"id: a\nmessage: ---\n", false},
+		"inline doc start":      {"id: a\n--- id: b\n", true},
+		"inline doc tag":        {"id: a\n--- !!map\nid: b\n", true},
+		"directive":             {"%YAML 1.2\n---\nid: a\nnamespace: prod\n", false},
+		"directive two docs":    {"%YAML 1.2\n---\nid: a\n---\nid: b\n", true},
+	}
+	for name, tc := range tests {
+		if got := isMultiDocumentYAML(tc.in); got != tc.want {
+			t.Errorf("%s: got %v want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestRunFlowsNamespaceSync_FileStillYAML(t *testing.T) {
+	var contentType string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", writeNamespaceSyncFile(t), false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !strings.Contains(contentType, "application/x-yaml") {
+		t.Errorf("content type = %q, want application/x-yaml", contentType)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryHTTPErrors(t *testing.T) {
+	tests := []struct {
+		status int
+		body   string
+		want   string
+	}{
+		{413, ``, "request too large"},
+		{415, ``, "concatenate"},
+		{422, `{"message":"flow namespace is invalid"}`, "flow namespace is invalid"},
+	}
+	for _, tc := range tests {
+		var got syncDirRequest
+		calls := 0
+		server := syncDirServer(t, tc.status, tc.body, &got, &calls)
+		dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n"})
+		var buf bytes.Buffer
+		err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("status %d: expected %q, got %v", tc.status, tc.want, err)
+		}
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryEscapesPath(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, `[]`, &got, &calls)
+	client := newTestClient(t, server.URL)
+	client.Tenant = "my tenant"
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: x\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(client, "a/b c", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if got.rawPath != "/api/v1/my%20tenant/flows/a%2Fb%20c" {
+		t.Errorf("raw path = %q", got.rawPath)
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryCountsDeleted(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	// The server lists deleted flows first, still with deleted=false.
+	server := syncDirServer(t, 200, `[{"id":"old","namespace":"prod","flowId":"old"},{"id":"a","namespace":"prod","flowId":"a"},{"id":"b","namespace":"prod","flowId":"b"}]`, &got, &calls)
+	dir := writeSyncDir(t, map[string]string{"a.yaml": "id: a\nnamespace: prod\n", "b.yaml": "id: b\nnamespace: prod\n"})
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, true, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "2 flow(s) created or updated, 1 deleted") {
+		t.Errorf("unexpected output: %s", buf.String())
+	}
+}
+
+func TestRunFlowsNamespaceSync_DirectoryFilenameCannotInjectHeaders(t *testing.T) {
+	var got syncDirRequest
+	calls := 0
+	server := syncDirServer(t, 200, syncOKResponse, &got, &calls)
+	name := "a\r\nX-Injected: yes\r\n\".yaml"
+	dir := writeSyncDir(t, map[string]string{name: "id: a\nnamespace: prod\n"})
+
+	var raw bytes.Buffer
+	rawServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(&raw, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(syncOKResponse))
+	}))
+	t.Cleanup(rawServer.Close)
+
+	var buf bytes.Buffer
+	if err := runFlowsNamespaceSync(newTestClient(t, rawServer.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if strings.Contains(raw.String(), "\r\nX-Injected") {
+		t.Errorf("file name injected a part header:\n%q", raw.String())
+	}
+
+	buf.Reset()
+	if err := runFlowsNamespaceSync(newTestClient(t, server.URL), "prod", dir, false, true, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if _, ok := got.parts["a%0D%0AX-Injected: yes%0D%0A\".yaml"]; !ok || len(got.parts) != 1 {
+		t.Errorf("expected one part with the CR/LF percent-encoded file name, got %v", got.parts)
+	}
+}
+
+func writeTempFlowFile(t *testing.T) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "flow-*.yaml")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	_, _ = f.WriteString("id: a\nnamespace: x.y\ntasks:\n  - id: t1\n    type: io.kestra.plugin.core.log.Log\n    message: hi\n")
+	f.Close()
+	return f.Name()
+}
+
+func TestDeployFlow_ExistenceCheckConnectionDropped(t *testing.T) {
+	var posts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			panic(http.ErrAbortHandler)
+		case http.MethodPost:
+			posts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"a","namespace":"x.y","revision":1}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	result := deployFlow(newTestClient(t, server.URL), writeTempFlowFile(t), "", "", false, true)
+	if result.Success {
+		t.Fatal("expected deploy to fail when the existence check gets no response")
+	}
+	if !strings.HasPrefix(result.Error, `Get "`) {
+		t.Errorf("expected error from the GET, got: %s", result.Error)
+	}
+	if n := posts.Load(); n != 0 {
+		t.Errorf("expected no create POST, got %d", n)
+	}
+}
+
+func TestDeployFlow_ExistenceCheckConnectionRefused(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := server.URL
+	server.Close()
+
+	result := deployFlow(newTestClient(t, url), writeTempFlowFile(t), "", "", false, true)
+	if result.Success {
+		t.Fatal("expected deploy to fail when the server is unreachable")
+	}
+	if !strings.HasPrefix(result.Error, `Get "`) {
+		t.Errorf("expected error attributed to the GET, got: %s", result.Error)
 	}
 }

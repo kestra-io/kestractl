@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/dustin/go-humanize"
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -31,10 +33,19 @@ var errRateLimited = errors.New("rate limited by repository (429)")
 // Exposed as a var so tests can override it to avoid sleeping.
 var rateLimitWaits = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second}
 
-// pluginsAPIBase and pluginsMavenBase are vars so tests can point them at a local httptest server.
+// errArtifactNotFound is returned by downloadJAR when the repository answers 404 for the JAR,
+// so the next repository can be tried.
+var errArtifactNotFound = errors.New("artifact not found")
+
+// errChecksumNotPublished is returned by fetchExpectedSHA1 when the repository has no .sha1 for the JAR.
+var errChecksumNotPublished = errors.New("no .sha1 published")
+
+// pluginsAPIBase and pluginsMavenRepositories are vars so tests can point them at a local httptest server.
 var (
-	pluginsAPIBase   = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
-	pluginsMavenBase = "https://repo1.maven.org/maven2"
+	pluginsAPIBase = "https://api.kestra.io/v1/plugins/artifacts/core-compatibility"
+	// pluginsMavenRepositories are tried in order when no --maven-repository is given: a plugin
+	// version may live on any of them (older releases on Maven Central, newer ones elsewhere).
+	pluginsMavenRepositories = []string{"https://repo1.maven.org/maven2"}
 )
 
 // validCoordinatePart matches Maven-style groupId/artifactId/version segments:
@@ -81,7 +92,7 @@ func newPluginsDownloadCommand() *cobra.Command {
 	var edition string
 	var keepOnlyLastVersion bool
 	var globalTimeout time.Duration
-	var mavenRepository string
+	var mavenRepositories []string
 	var mavenUsername string
 	var mavenPassword string
 	var pluginsList []string
@@ -112,7 +123,21 @@ A coordinate that pins its own version keeps it, and the ignored --compatible-fo
 is reported. --edition still filters the catalog used for resolution.
 
 By default plugins are fetched from Maven Central. Use --maven-repository to
-point at a custom registry (mirror, internal Nexus/Artifactory, etc.).
+point at a custom registry (mirror, internal Nexus/Artifactory, etc.). Repeat it to
+use several repositories: each JAR is looked up in the order given, and the next
+repository is tried only when one answers 404.
+
+--maven-repository, --maven-username and --maven-password can also be set with the
+KESTRACTL_MAVEN_REPOSITORY (space- or comma-separated), KESTRACTL_MAVEN_USERNAME and
+KESTRACTL_MAVEN_PASSWORD environment variables; a flag given on the command line wins.
+
+--maven-username, --maven-password and --header need a single repository. With
+several, put each repository's credentials in its own URL, so they are sent to that
+repository only:
+
+  kestractl plugins download 1.3.9 \
+    --maven-repository https://repo1.maven.org/maven2 \
+    --maven-repository https://myuser:mypassword@nexus.example.com/repository/kestra
 
 Authentication:
 
@@ -185,8 +210,9 @@ Authentication:
 				fmt.Fprintln(cmd.OutOrStdout(), "No core plugins required by the provided configuration (all configured backends are bundled in Kestra).")
 				return nil
 			}
+			mavenRepositories, mavenUsername, mavenPassword = mavenFlagsFromEnv(cmd, mavenRepositories, mavenUsername, mavenPassword)
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepository, mavenUsername, mavenPassword, headers, explicit)
+			return runPluginsInstall(cmd.OutOrStdout(), version, pluginsDir, concurrency, forceRedownload, license, keepOnlyLastVersion, globalTimeout, mavenRepositories, mavenUsername, mavenPassword, headers, explicit)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -197,9 +223,9 @@ Authentication:
 	cmd.Flags().StringVar(&edition, "edition", "ALL", "Edition to download: ALL, OSS (open-source only), or EE (enterprise only)")
 	cmd.Flags().BoolVar(&keepOnlyLastVersion, "keep-only-last-version", true, "Remove older versions of each plugin from the plugins directory after downloading")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for all downloads")
-	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
-	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
-	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central, env: KESTRACTL_MAVEN_REPOSITORY)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication (env: KESTRACTL_MAVEN_USERNAME)")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication (env: KESTRACTL_MAVEN_PASSWORD)")
 	cmd.Flags().StringArrayVar(&pluginsList, "plugins", nil, "Explicit list of plugins to download as groupId:artifactId:version (space-separated or repeated flag; bypasses API lookup). The version may be omitted when --compatible-for or a version argument is given")
 	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve unversioned --plugins coordinates against, using the same compatibility catalog as \"plugins list\"")
 	cmd.Flags().StringArrayVar(&configPaths, "from-config", nil, "Download only the core plugins (storage, secret manager, queue/repository backend) required by one or more Kestra configuration files; requires a version argument")
@@ -262,7 +288,7 @@ func newPluginsGetCommand() *cobra.Command {
 	var pluginsDir string
 	var forceRedownload bool
 	var globalTimeout time.Duration
-	var mavenRepository string
+	var mavenRepositories []string
 	var mavenUsername string
 	var mavenPassword string
 	var compatibleFor string
@@ -277,7 +303,11 @@ This lets users install a single plugin into their plugins/ directory without pu
 
 The version may be omitted (groupId:artifactId) when --compatible-for <kestra-version>
 is given: it is then resolved from the same compatibility catalog "plugins list"
-prints. An artifact absent from that set is an error naming it.`,
+prints. An artifact absent from that set is an error naming it.
+
+--maven-repository, --maven-username and --maven-password can also be set with the
+KESTRACTL_MAVEN_REPOSITORY (space- or comma-separated), KESTRACTL_MAVEN_USERNAME and
+KESTRACTL_MAVEN_PASSWORD environment variables; a flag given on the command line wins.`,
 		Example: `  # Download only the Kafka plugin version 1.6.0
   kestractl plugins get io.kestra.plugin:plugin-kafka:1.6.0
 
@@ -291,8 +321,9 @@ prints. An artifact absent from that set is an error naming it.`,
     --maven-password mypassword`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			mavenRepositories, mavenUsername, mavenPassword = mavenFlagsFromEnv(cmd, mavenRepositories, mavenUsername, mavenPassword)
 			headers, _ := cmd.Root().PersistentFlags().GetStringArray(FlagHeader)
-			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepository, mavenUsername, mavenPassword, globalTimeout)
+			return runPluginsGet(cmd.OutOrStdout(), args[0], compatibleFor, pluginsDir, forceRedownload, headers, mavenRepositories, mavenUsername, mavenPassword, globalTimeout)
 		},
 		Annotations: map[string]string{AnnotationOffline: "true"},
 	}
@@ -300,9 +331,9 @@ prints. An artifact absent from that set is an error naming it.`,
 	cmd.Flags().StringVar(&pluginsDir, "plugins-dir", "./plugins", "Destination directory")
 	cmd.Flags().BoolVar(&forceRedownload, "force-redownload", false, "Re-download the plugin even if it already exists")
 	cmd.Flags().DurationVar(&globalTimeout, "global-timeout", 5*time.Minute, "Maximum total time allowed for the download")
-	cmd.Flags().StringVar(&mavenRepository, "maven-repository", "", "Custom Maven repository base URL (defaults to Maven Central)")
-	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication")
-	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication")
+	cmd.Flags().StringArrayVar(&mavenRepositories, "maven-repository", nil, "Custom Maven repository base URL; repeat to try several repositories in order (defaults to Maven Central, env: KESTRACTL_MAVEN_REPOSITORY)")
+	cmd.Flags().StringVar(&mavenUsername, "maven-username", "", "Username for Maven repository basic authentication (env: KESTRACTL_MAVEN_USERNAME)")
+	cmd.Flags().StringVar(&mavenPassword, "maven-password", "", "Password for Maven repository basic authentication (env: KESTRACTL_MAVEN_PASSWORD)")
 	cmd.Flags().StringVar(&compatibleFor, "compatible-for", "", "Kestra version to resolve the coordinate's version against when it is given as groupId:artifactId")
 
 	return cmd
@@ -435,15 +466,14 @@ func resolveVersion(version string) string {
 	}
 }
 
-func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepository string, mavenUsername string, mavenPassword string, headers []string, explicitPlugins []pluginArtifact) error {
-	effectiveMavenBase := pluginsMavenBase
-	if mavenRepository != "" {
-		effectiveMavenBase = mavenRepository
-	}
-
+func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, concurrency int, forceRedownload bool, license string, keepOnlyLastVersion bool, globalTimeout time.Duration, mavenRepositories []string, mavenUsername string, mavenPassword string, headers []string, explicitPlugins []pluginArtifact) error {
 	parsedHeaders, err := parseHeaders(headers)
 	if err != nil {
 		return fmt.Errorf("invalid --header value: %w", err)
+	}
+	repositories, err := resolveMavenRepositories(mavenRepositories, mavenUsername, mavenPassword, parsedHeaders)
+	if err != nil {
+		return err
 	}
 
 	var plugins []pluginArtifact
@@ -502,7 +532,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 					continue
 				default:
 				}
-				n, skipped, err := downloadJAR(ctx, logf, j.plugin, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+				n, skipped, err := downloadJARFromRepositories(ctx, logf, j.plugin, pluginsDir, forceRedownload, repositories)
 				results <- downloadResult{index: j.index, plugin: j.plugin, bytes: n, err: err, skipped: skipped}
 			}
 		}()
@@ -576,7 +606,7 @@ func runPluginsInstall(out io.Writer, kestraVersion string, pluginsDir string, c
 	return nil
 }
 
-func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, pluginsDir string, forceRedownload bool, headers []string, mavenRepository string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
+func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, pluginsDir string, forceRedownload bool, headers []string, mavenRepositories []string, mavenUsername string, mavenPassword string, globalTimeout time.Duration) error {
 	p, err := parsePluginCoordinate(coordinate, true)
 	if err != nil {
 		return err
@@ -587,14 +617,13 @@ func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, plugi
 	}
 	p = resolved[0]
 
-	effectiveMavenBase := pluginsMavenBase
-	if mavenRepository != "" {
-		effectiveMavenBase = mavenRepository
-	}
-
 	parsedHeaders, err := parseHeaders(headers)
 	if err != nil {
 		return fmt.Errorf("invalid --header value: %w", err)
+	}
+	repositories, err := resolveMavenRepositories(mavenRepositories, mavenUsername, mavenPassword, parsedHeaders)
+	if err != nil {
+		return err
 	}
 
 	if err := os.MkdirAll(pluginsDir, 0o755); err != nil {
@@ -609,7 +638,7 @@ func runPluginsGet(out io.Writer, coordinate string, compatibleFor string, plugi
 
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
-	n, skipped, err := downloadJAR(ctx, logf, p, pluginsDir, forceRedownload, effectiveMavenBase, mavenUsername, mavenPassword, parsedHeaders)
+	n, skipped, err := downloadJARFromRepositories(ctx, logf, p, pluginsDir, forceRedownload, repositories)
 
 	if err != nil {
 		return fmt.Errorf("failed to download %s: %w", label, err)
@@ -846,9 +875,107 @@ func pluginFileName(p pluginArtifact) string {
 	return groupID + "__" + p.ArtifactID + "__" + version + ".jar"
 }
 
-func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, mavenBase string, mavenUsername string, mavenPassword string, headers map[string]string) (int64, bool, error) {
+// mavenFlagsFromEnv fills --maven-repository, --maven-username and --maven-password from their KESTRACTL_*
+// environment variables when they are not given on the command line. The plugin commands are offline, so they
+// skip initializeConfig, which is what binds the other commands' flags to the environment. This keeps the
+// password out of the process arguments, e.g. in CI.
+func mavenFlagsFromEnv(cmd *cobra.Command, repositories []string, username string, password string) ([]string, string, string) {
+	if value, ok := envForFlag(cmd, "maven-repository"); ok {
+		repositories = strings.FieldsFunc(value, func(r rune) bool { return r == ',' || unicode.IsSpace(r) })
+	}
+	if value, ok := envForFlag(cmd, "maven-username"); ok {
+		username = value
+	}
+	if value, ok := envForFlag(cmd, "maven-password"); ok {
+		password = value
+	}
+	return repositories, username, password
+}
+
+// envForFlag returns the KESTRACTL_<FLAG> environment variable, unless the flag was given on the command line.
+func envForFlag(cmd *cobra.Command, flag string) (string, bool) {
+	if cmd.Flags().Changed(flag) {
+		return "", false
+	}
+	return os.LookupEnv(envPrefix + "_" + strings.ToUpper(strings.ReplaceAll(flag, "-", "_")))
+}
+
+// mavenRepository is a repository plugins are downloaded from, with the credentials sent to it only.
+type mavenRepository struct {
+	// url is the base URL without credentials, safe to print.
+	url      string
+	username string
+	password string
+	headers  map[string]string
+}
+
+// resolveMavenRepositories returns the repositories given with --maven-repository, or the default ones when
+// none was given. --maven-username, --maven-password and --header apply to a single repository: sending them
+// to several would leak a private repository's credentials to the others (e.g. to Maven Central). With several
+// repositories, each one's credentials go in its own URL (https://user:password@host/path).
+func resolveMavenRepositories(mavenRepositories []string, mavenUsername string, mavenPassword string, headers map[string]string) ([]mavenRepository, error) {
+	var urls []string
+	for _, r := range mavenRepositories {
+		if r = strings.TrimSuffix(strings.TrimSpace(r), "/"); r != "" {
+			urls = append(urls, r)
+		}
+	}
+	if len(urls) == 0 {
+		urls = pluginsMavenRepositories
+	}
+	if (mavenUsername != "" || mavenPassword != "" || len(headers) > 0) && len(urls) > 1 {
+		return nil, fmt.Errorf("--maven-username, --maven-password and --header apply to a single Maven repository, but %d are used: "+
+			"put each repository's credentials in its own URL instead (https://user:password@host/path)", len(urls))
+	}
+
+	repositories := make([]mavenRepository, 0, len(urls))
+	for i, raw := range urls {
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			// The URL is not printed: it may hold a password.
+			return nil, fmt.Errorf("--maven-repository #%d is not a valid absolute URL", i+1)
+		}
+		repository := mavenRepository{username: mavenUsername, password: mavenPassword, headers: headers}
+		if parsed.User != nil {
+			repository.username = parsed.User.Username()
+			repository.password, _ = parsed.User.Password()
+			parsed.User = nil
+		}
+		repository.url = parsed.String()
+		repositories = append(repositories, repository)
+	}
+	return repositories, nil
+}
+
+// downloadJARFromRepositories downloads the plugin JAR from the first repository that has it.
+// Only a 404 moves on to the next repository: any other failure (rate limit, server error,
+// checksum mismatch) is returned as is, so a broken repository is never silently skipped.
+func downloadJARFromRepositories(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, repositories []mavenRepository) (int64, bool, error) {
+	var notFound []error
+	for _, repository := range repositories {
+		n, skipped, err := downloadJAR(ctx, logf, p, destDir, forceRedownload, repository)
+		if !errors.Is(err, errArtifactNotFound) {
+			return n, skipped, err
+		}
+		notFound = append(notFound, err)
+	}
+	if len(notFound) == 1 {
+		return 0, false, notFound[0]
+	}
+	urls := make([]string, len(repositories))
+	for i, repository := range repositories {
+		urls[i] = mavenJARURL(p, repository.url)
+	}
+	return 0, false, fmt.Errorf("%w in any of the %d repositories (HTTP 404 at %s), check that the groupId, artifactId and version exist on one of them",
+		errArtifactNotFound, len(repositories), strings.Join(urls, ", "))
+}
+
+// downloadJAR downloads the plugin JAR from one repository, then checks it against the repository's .sha1.
+// The JAR is requested first: a repository without the artifact costs a single request before the next one
+// is tried, and a .sha1 problem is only reported for the repository that actually serves the JAR.
+func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifact, destDir string, forceRedownload bool, repository mavenRepository) (int64, bool, error) {
 	destPath := filepath.Join(destDir, pluginFileName(p))
-	url := mavenJARURL(p, mavenBase)
+	jarURL := mavenJARURL(p, repository.url)
 	label := fmt.Sprintf("%s:%s:%s", p.GroupID, p.ArtifactID, p.Version)
 
 	if !forceRedownload {
@@ -856,120 +983,115 @@ func downloadJAR(ctx context.Context, logf func(string, ...any), p pluginArtifac
 			return 0, true, nil
 		}
 	}
-	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, url, label, mavenUsername, mavenPassword, headers)
-	if err != nil {
-		if errors.Is(err, errRateLimited) {
-			return 0, false, err
-		}
-		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
-		expectedSHA1 = ""
-	} else if expectedSHA1 != "" {
-		if len(expectedSHA1) != 40 {
-			logf("  [WARN] expected SHA-1 for %s has invalid length (%d), proceeding without checksum validation\n", label, len(expectedSHA1))
-			expectedSHA1 = ""
-		} else if _, hexErr := hex.DecodeString(expectedSHA1); hexErr != nil {
-			logf("  [WARN] expected SHA-1 for %s is not valid hex, proceeding without checksum validation\n", label)
-			expectedSHA1 = ""
-		}
-	}
 
+	var resp *http.Response
 	for attempt := 0; ; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, jarURL, nil)
 		if err != nil {
 			return 0, false, fmt.Errorf("failed to build request: %w", err)
 		}
-		for k, v := range headers {
+		for k, v := range repository.headers {
 			req.Header.Set(k, v)
 		}
-		if mavenUsername != "" || mavenPassword != "" {
-			req.SetBasicAuth(mavenUsername, mavenPassword)
+		if repository.username != "" || repository.password != "" {
+			req.SetBasicAuth(repository.username, repository.password)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err = http.DefaultClient.Do(req)
 		if err != nil {
 			return 0, false, fmt.Errorf("HTTP request failed: %w", err)
 		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
-			resp.Body.Close()
-			if attempt >= len(rateLimitWaits) {
-				return 0, false, errRateLimited
-			}
-			wait := rateLimitWaits[attempt]
-			logf("  [429] rate limited on %s — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
-			select {
-			case <-time.After(wait):
-			case <-ctx.Done():
-				return 0, false, ctx.Err()
-			}
-			continue
+		if resp.StatusCode != http.StatusTooManyRequests {
+			break
 		}
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusNotFound {
-				return 0, false, fmt.Errorf("artifact not found at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", url)
-			}
-			return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
-		}
-
-		f, err := os.CreateTemp(destDir, filepath.Base(destPath)+".part*")
-		if err != nil {
-			resp.Body.Close()
-			return 0, false, fmt.Errorf("cannot create temp file: %w", err)
-		}
-		partPath := f.Name()
-		// os.CreateTemp creates files with mode 0600; make the finished JAR
-		// readable by any user/process (e.g. Kestra running as another user).
-		if err := os.Chmod(partPath, 0o644); err != nil {
-			resp.Body.Close()
-			f.Close()
-			os.Remove(partPath)
-			return 0, false, fmt.Errorf("failed to set permissions on temp file: %w", err)
-		}
-
-		n, copyErr := io.Copy(f, resp.Body)
 		resp.Body.Close()
-		closeErr := f.Close()
-		if copyErr != nil {
-			os.Remove(partPath)
-			return 0, false, fmt.Errorf("write failed: %w", copyErr)
+		if attempt >= len(rateLimitWaits) {
+			return 0, false, errRateLimited
 		}
-		if closeErr != nil {
-			os.Remove(partPath)
-			return 0, false, fmt.Errorf("failed to close file: %w", closeErr)
+		wait := rateLimitWaits[attempt]
+		logf("  [429] rate limited on %s — waiting %s (retry %d/%d)\n", label, wait, attempt+1, len(rateLimitWaits))
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return 0, false, ctx.Err()
 		}
-		if err := os.Rename(partPath, destPath); err != nil {
-			os.Remove(partPath)
-			return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
-		}
-
-		if expectedSHA1 != "" {
-			actualSHA1, hashErr := fileSHA1(destPath)
-			if hashErr != nil {
-				os.Remove(destPath)
-				return 0, false, fmt.Errorf("failed to compute SHA-1 of downloaded file: %w", hashErr)
-			}
-			if actualSHA1 != expectedSHA1 {
-				os.Remove(destPath)
-				return 0, false, fmt.Errorf("checksum mismatch for %s: expected %s, got %s", label, expectedSHA1, actualSHA1)
-			}
-		}
-		return n, false, nil
 	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound {
+			return 0, false, fmt.Errorf("%w at %s (HTTP 404), check that the groupId, artifactId and version exist on the repository", errArtifactNotFound, jarURL)
+		}
+		return 0, false, fmt.Errorf("repository returned HTTP %d", resp.StatusCode)
+	}
+
+	f, err := os.CreateTemp(destDir, filepath.Base(destPath)+".part*")
+	if err != nil {
+		resp.Body.Close()
+		return 0, false, fmt.Errorf("cannot create temp file: %w", err)
+	}
+	partPath := f.Name()
+	finalized := false
+	defer func() {
+		if !finalized {
+			os.Remove(partPath)
+		}
+	}()
+	// os.CreateTemp creates files with mode 0600; make the finished JAR
+	// readable by any user/process (e.g. Kestra running as another user).
+	if err := os.Chmod(partPath, 0o644); err != nil {
+		resp.Body.Close()
+		f.Close()
+		return 0, false, fmt.Errorf("failed to set permissions on temp file: %w", err)
+	}
+
+	// SHA-1 because Maven repositories publish <artifact>.sha1: this detects a corrupt or truncated
+	// download, it is not a signature check (the checksum comes from the same server as the jar).
+	hasher := sha1.New() // nosemgrep: go.lang.security.audit.crypto.use_of_weak_crypto.use-of-sha1
+	n, copyErr := io.Copy(io.MultiWriter(f, hasher), resp.Body)
+	resp.Body.Close()
+	closeErr := f.Close()
+	if copyErr != nil {
+		return 0, false, fmt.Errorf("write failed: %w", copyErr)
+	}
+	if closeErr != nil {
+		return 0, false, fmt.Errorf("failed to close file: %w", closeErr)
+	}
+
+	if err := verifySHA1(ctx, logf, jarURL, label, repository, hex.EncodeToString(hasher.Sum(nil))); err != nil {
+		return 0, false, err
+	}
+
+	if err := os.Rename(partPath, destPath); err != nil {
+		return 0, false, fmt.Errorf("failed to finalize download (rename error): %w", err)
+	}
+	finalized = true
+	return n, false, nil
 }
 
-// fileSHA1 computes and returns the hex-encoded SHA-1 checksum of the file at the
-// given path.
-func fileSHA1(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", fmt.Errorf("cannot open file: %w", err)
+// verifySHA1 checks a downloaded JAR against the .sha1 its repository publishes. A missing, unreadable or
+// malformed .sha1 only skips the check, with a warning; a mismatch, a rate limit or a cancellation fails.
+func verifySHA1(ctx context.Context, logf func(string, ...any), jarURL string, label string, repository mavenRepository, actualSHA1 string) error {
+	expectedSHA1, err := fetchExpectedSHA1(ctx, logf, jarURL, label, repository.username, repository.password, repository.headers)
+	switch {
+	case errors.Is(err, errChecksumNotPublished):
+		logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
+		return nil
+	case errors.Is(err, errRateLimited), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return err
+	case err != nil:
+		logf("  [WARN] failed to fetch expected SHA-1 for %s: %v, proceeding without checksum validation\n", label, err)
+		return nil
+	case len(expectedSHA1) != 40:
+		logf("  [WARN] expected SHA-1 for %s has invalid length (%d), proceeding without checksum validation\n", label, len(expectedSHA1))
+		return nil
 	}
-	defer f.Close()
-	hasher := sha1.New()
-	if _, err := io.Copy(hasher, f); err != nil {
-		return "", fmt.Errorf("cannot read file: %w", err)
+	if _, hexErr := hex.DecodeString(expectedSHA1); hexErr != nil {
+		logf("  [WARN] expected SHA-1 for %s is not valid hex, proceeding without checksum validation\n", label)
+		return nil
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	if actualSHA1 != expectedSHA1 {
+		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", label, expectedSHA1, actualSHA1)
+	}
+	return nil
 }
 
 // fetchExpectedSHA1 retrieves the expected SHA-1 checksum for a given Maven artifact URL.
@@ -1011,8 +1133,7 @@ func fetchExpectedSHA1(ctx context.Context, logf func(string, ...any), jarURL st
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusNotFound {
-				logf("  [warn] no .sha1 published for %s — skipping checksum verification\n", label)
-				return "", nil
+				return "", errChecksumNotPublished
 			}
 			return "", fmt.Errorf("checksum file returned HTTP %d at %s.sha1", resp.StatusCode, jarURL)
 		}

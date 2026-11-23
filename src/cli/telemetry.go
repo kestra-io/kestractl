@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -20,10 +21,14 @@ import (
 const (
 	telemetryDisabledEnv      = "KESTRACTL_TELEMETRY_DISABLED"
 	telemetryGitHubActionEnv  = "KESTRACTL_GITHUB_ACTION"
+	telemetrySkillSourceEnv   = "KESTRACTL_SKILL_SOURCE"
 	telemetryEventCommandDone = "cli_command_executed"
 	telemetryEventGHADone     = "gha_command_executed"
 	installationIDFileName    = "installation_id"
 )
+
+// skillSourcePattern keeps free text (paths, emails, prompts) out of telemetry.
+var skillSourcePattern = regexp.MustCompile(`^[a-z0-9._-]{1,64}$`)
 
 type telemetryReporter interface {
 	CaptureCommand(commandPath string, commandErr error, duration time.Duration)
@@ -46,6 +51,13 @@ func (t posthogTelemetry) CaptureCommand(commandPath string, commandErr error, d
 		Set("success", commandErr == nil).
 		Set("duration_ms", duration.Milliseconds()).
 		Set("$process_person_profile", false)
+
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv(telemetrySkillSourceEnv))); v != "" {
+		if !skillSourcePattern.MatchString(v) {
+			v = "other"
+		}
+		properties.Set("skill_source", v)
+	}
 
 	if commandErr != nil {
 		properties.Set("error_type", telemetryErrorType(commandErr))

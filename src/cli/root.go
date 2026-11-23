@@ -141,6 +141,7 @@ Compatibility:
 	root.AddCommand(newUsersCommand())
 	root.AddCommand(newGroupsCommand())
 	root.AddCommand(newRolesCommand())
+	root.AddCommand(newPoliciesCommand())
 	root.AddCommand(newServiceAccountsCommand())
 	root.AddCommand(newInvitationsCommand())
 	root.AddCommand(newBindingsCommand())
@@ -152,6 +153,7 @@ Compatibility:
 	root.AddCommand(newDashboardsCommand())
 	root.AddCommand(newAssetsCommand())
 	root.AddCommand(newBlueprintsCommand())
+	root.AddCommand(newMcpServersCommand())
 	root.AddCommand(newReusableInputsCommand())
 
 	return root
