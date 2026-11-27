@@ -69,7 +69,7 @@ In addition to `Common pitfalls` above, check for:
 - **SSRF:** outbound requests to a user-supplied host/URL (`--server`, webhook-style flags) are validated, not blindly followed
 - **Resource leaks:** HTTP clients and file handles are closed; no goroutine started without a way to stop it
 - **Idempotency:** destructive commands (`delete`, `reset`) require explicit confirmation or a `--force`/`-y` flag
-- **SDK version pinning:** see `Release` below — a floating/`-SNAPSHOT`/`develop`-tracking Go SDK version is a review blocker for anything targeting `main`
+- **SDK version pinning:** see `Release` below — a floating/`-SNAPSHOT`/`develop`-tracking Go SDK version is a review blocker for anything targeting `main`. The upcoming SDK is checked separately by `next-sdk.yml`, which builds against client-sdk's newest `next/v*` branch every weekday without touching the committed `go.mod`. When it goes red, fix kestractl in a PR pinned to that `next/v*` commit and merge it once the SDK minor is tagged.
 
 **A running Kestra instance is required for QA.** Beyond unit tests, exercising a command for real needs a live Kestra instance — spin one up locally (see `e2e_tests/docker-setup/`) or point `--server`/config at one. Don't conclude a command is broken from unit tests alone.
 
