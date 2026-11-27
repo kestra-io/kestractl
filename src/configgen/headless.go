@@ -72,6 +72,11 @@ func Validate(c *Choices) error {
 		errs = append(errs, "project_name is required")
 	}
 
+	// tmp_dir_path is bind mounted and written unquoted into the compose file
+	if c.TmpDirPath != "" && (!strings.HasPrefix(c.TmpDirPath, "/") || strings.ContainsAny(c.TmpDirPath, ": \t\r\n")) {
+		errs = append(errs, fmt.Sprintf("tmp_dir_path must be an absolute path without ':' or whitespace, got %q", c.TmpDirPath))
+	}
+
 	// Queue
 	if c.Edition != "" {
 		if allowed, ok := validQueues[c.Edition]; ok {

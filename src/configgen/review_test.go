@@ -95,3 +95,17 @@ func TestComposeTmpDirAndH2Volume(t *testing.T) {
 		t.Error("h2 must be file backed")
 	}
 }
+
+func TestValidateTmpDirPath(t *testing.T) {
+	for _, p := range []string{"./tmp", "tmp dir", "/a:b", "/a b"} {
+		c := eeBase()
+		c.TmpDirPath = p
+		if err := Validate(&c); err == nil || !strings.Contains(err.Error(), "tmp_dir_path") {
+			t.Errorf("%q: want tmp_dir_path error, got %v", p, err)
+		}
+	}
+	c := eeBase()
+	if err := Validate(&c); err != nil {
+		t.Fatal(err)
+	}
+}
