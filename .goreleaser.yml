@@ -113,3 +113,24 @@ dockers_v2:
       - linux/amd64
       - linux/arm64
     labels: *oci_labels
+
+homebrew_casks:
+  - name: kestractl
+    ids:
+      - archive
+    binaries:
+      - kestractl
+    homepage: "https://kestra.io"
+    description: "Command-line interface for Kestra"
+    skip_upload: auto
+    repository:
+      owner: kestra-io
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/kestractl"]
+          end
