@@ -41,7 +41,7 @@ func LoadFromFile(path string) (Choices, error) {
 	c := Choices{
 		// Same defaults as the wizard
 		Storage:         "local",
-		TmpDirPath:      "/tmp/kestra-wd/tmp",
+		TmpDirPath:      defaultTmpDir,
 		KestraURL:       "http://localhost:8080/",
 		SuperAdminEmail: "root@root.com",
 		SuperAdminPass:  "Root!1234",
@@ -103,6 +103,18 @@ func Validate(c *Choices) error {
 		}
 	}
 
+	// A database only applies to a jdbc queue or repository
+	if c.Queue != "jdbc" {
+		c.QueueDatabase = ""
+	}
+	if c.Repository != "jdbc" {
+		c.RepositoryDatabase = ""
+	}
+	// Kestra needs one database for both, mixing engines does not start
+	if c.QueueDatabase != "" && c.RepositoryDatabase != "" && c.QueueDatabase != c.RepositoryDatabase {
+		errs = append(errs, fmt.Sprintf("queue_database %q and repository_database %q must match when both are jdbc", c.QueueDatabase, c.RepositoryDatabase))
+	}
+
 	// Queue database
 	if c.Queue == "jdbc" && c.QueueDatabase == "" {
 		errs = append(errs, "queue_database is required when queue is \"jdbc\"")
@@ -151,6 +163,19 @@ func Validate(c *Choices) error {
 		for _, f := range eeOnly {
 			if f.flag {
 				errs = append(errs, fmt.Sprintf("%s is only available for EE edition", f.name))
+			}
+		}
+	}
+
+	if !c.IsEE() {
+		for name, set := range map[string]bool{
+			"oauth_clients":   len(c.OAuthClients) > 0,
+			"ai_configs":      len(c.AIConfigs) > 0,
+			"plugin_includes": c.PluginIncludes != "",
+			"plugin_excludes": c.PluginExcludes != "",
+		} {
+			if set {
+				errs = append(errs, fmt.Sprintf("%s is only available for EE edition", name))
 			}
 		}
 	}

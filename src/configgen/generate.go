@@ -12,6 +12,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultTmpDir = "/tmp/kestra-wd/tmp"
+
 // ComposeData holds the flags used to render the compose template.
 type ComposeData struct {
 	IsEE          bool
@@ -21,12 +23,28 @@ type ComposeData struct {
 	Elasticsearch bool
 	Redis         bool
 	RabbitMQ      bool
+	H2            bool
+	TmpDir        string
 	HasInfra      bool
 }
 
 // Generate writes application.yml, docker-compose.yml, and .env into dir
 // and returns the written file paths.
-func Generate(c Choices, dir string) ([]string, error) {
+// Existing files are never overwritten unless force is set: regenerating
+// rotates the encryption key, which makes stored secrets unreadable.
+func Generate(c Choices, dir string, force bool) ([]string, error) {
+	files := []string{
+		filepath.Join(dir, "application.yml"),
+		filepath.Join(dir, "docker-compose.yml"),
+		filepath.Join(dir, ".env"),
+	}
+	if !force {
+		for _, f := range files {
+			if _, err := os.Stat(f); err == nil {
+				return nil, fmt.Errorf("%s already exists, use --force to overwrite (this rotates the encryption key and JWT secret)", f)
+			}
+		}
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating output dir: %w", err)
 	}
@@ -51,11 +69,7 @@ func Generate(c Choices, dir string) ([]string, error) {
 	if err := generateEnvFile(dir, c, replacements); err != nil {
 		return nil, err
 	}
-	return []string{
-		filepath.Join(dir, "application.yml"),
-		filepath.Join(dir, "docker-compose.yml"),
-		filepath.Join(dir, ".env"),
-	}, nil
+	return files, nil
 }
 
 func buildReplacements(c Choices, encryptionKey, jwtSecret string) map[string]string {
@@ -103,9 +117,7 @@ func buildReplacements(c Choices, encryptionKey, jwtSecret string) map[string]st
 		r["__DATA_RETENTION__"] = c.DataRetention
 	}
 
-	if c.OIDCGroupsClaimPath != "" {
-		r["__OIDC_GROUPS_CLAIM_PATH__"] = c.OIDCGroupsClaimPath
-	}
+	r["__OIDC_GROUPS_CLAIM_PATH__"] = c.OIDCGroupsClaimPath
 	r["__OIDC_EMAIL_VERIFICATION__"] = fmt.Sprintf("%t", c.OIDCEmailVerification)
 
 	return r
@@ -129,7 +141,7 @@ func generateApplicationYML(dir string, c Choices, replacements map[string]strin
 	}
 
 	// AI providers: build kestra.ai.providers list
-	if len(c.AIConfigs) > 0 {
+	if c.CopilotAI && len(c.AIConfigs) > 0 {
 		providers := buildAIProviders(c.AIConfigs)
 		aiConfig := map[string]any{
 			"kestra": map[string]any{
@@ -142,13 +154,13 @@ func generateApplicationYML(dir string, c Choices, replacements map[string]strin
 	}
 
 	// Plugin security: build includes/excludes lists from comma-separated strings
-	if c.PluginIncludes != "" || c.PluginExcludes != "" {
+	if c.Plugins && (c.PluginIncludes != "" || c.PluginExcludes != "") {
 		pluginSecurity := buildPluginSecurity(c.PluginIncludes, c.PluginExcludes)
 		merged = deepMerge(merged, pluginSecurity)
 	}
 
 	// OAuth2/OIDC providers: build micronaut.security.oauth2.clients map
-	if len(c.OAuthClients) > 0 {
+	if c.OIDC && len(c.OAuthClients) > 0 {
 		oauthConfig := buildOAuthConfig(c.OAuthClients)
 		merged = deepMerge(merged, oauthConfig)
 	}
@@ -413,6 +425,11 @@ func generateDockerCompose(dir string, c Choices) error {
 		Elasticsearch: c.Repository == "elasticsearch",
 		Redis:         c.Queue == "redis",
 		RabbitMQ:      c.Queue == "amqp",
+		H2:            c.Queue == "h2",
+		TmpDir:        c.TmpDirPath,
+	}
+	if data.TmpDir == "" {
+		data.TmpDir = defaultTmpDir
 	}
 	data.HasInfra = data.Postgres || data.MySQL || data.Kafka || data.Elasticsearch || data.Redis || data.RabbitMQ
 
@@ -468,7 +485,7 @@ func generateEnvFile(dir string, c Choices, replacements map[string]string) erro
 	}
 
 	// OIDC: one env var per OAuth client secret + JWT secret
-	if len(c.OAuthClients) > 0 {
+	if c.OIDC && len(c.OAuthClients) > 0 {
 		for _, client := range c.OAuthClients {
 			envVar := fmt.Sprintf("OIDC_%s_CLIENT_SECRET", strings.ToUpper(strings.ReplaceAll(client.Name, "-", "_")))
 			content.WriteString(fmt.Sprintf("%s=%s\n", envVar, client.ClientSecret))

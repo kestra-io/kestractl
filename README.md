@@ -256,6 +256,9 @@ kestractl config generate --from-file stack.json --dry-run
 
 # Write the files (default directory: project_name from the file)
 kestractl config generate --from-file stack.json --output-dir ./my-stack
+
+# Overwrite an existing stack (rotates the encryption key and JWT secret)
+kestractl config generate --from-file stack.json --output-dir ./my-stack --force
 ```
 
 ### Flows

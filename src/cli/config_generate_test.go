@@ -21,7 +21,7 @@ func TestRunConfigGenerate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), true, r); err != nil {
+	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), true, false, r); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "valid") {
@@ -31,7 +31,7 @@ func TestRunConfigGenerate(t *testing.T) {
 		t.Fatal("dry run wrote files")
 	}
 
-	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), false, r); err != nil {
+	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), false, false, r); err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"application.yml", "docker-compose.yml", ".env"} {
@@ -40,7 +40,14 @@ func TestRunConfigGenerate(t *testing.T) {
 		}
 	}
 
-	if err := runConfigGenerate(filepath.Join(dir, "nope.json"), "", false, r); err == nil {
+	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), false, false, r); err == nil {
+		t.Error("expected error when files already exist")
+	}
+	if err := runConfigGenerate(cfg, filepath.Join(dir, "out"), false, true, r); err != nil {
+		t.Errorf("--force should overwrite: %v", err)
+	}
+
+	if err := runConfigGenerate(filepath.Join(dir, "nope.json"), "", false, false, r); err == nil {
 		t.Error("expected error for missing file")
 	}
 }

@@ -3,3 +3,6 @@ kestra:
     super-admin:
       username: __SUPER_ADMIN_EMAIL__
       password: __SUPER_ADMIN_PASSWORD__
+      # without a tenant binding every API call returns 403
+      tenant-admin-access:
+        - main

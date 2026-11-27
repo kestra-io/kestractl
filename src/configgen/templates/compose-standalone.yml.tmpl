@@ -1,6 +1,10 @@
 volumes:
   kestra-data:
     driver: local
+{{- if .H2}}
+  kestra-db:
+    driver: local
+{{- end}}
 {{- if .Postgres}}
   postgres-data:
     driver: local
@@ -26,9 +30,12 @@ services:
       MICRONAUT_CONFIG_FILES: /app/confs/application.yml
     volumes:
       - kestra-data:/app/storage
+{{- if .H2}}
+      - kestra-db:/app/data
+{{- end}}
       - ./application.yml:/app/confs/application.yml:ro
       - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/kestra-wd:/tmp/kestra-wd
+      - {{.TmpDir}}:{{.TmpDir}}
     env_file:
       - .env
     ports:

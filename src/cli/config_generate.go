@@ -15,6 +15,7 @@ func newConfigGenerateCommand() *cobra.Command {
 		outputDir     string
 		printDefaults bool
 		dryRun        bool
+		force         bool
 	)
 
 	cmd := &cobra.Command{
@@ -38,13 +39,14 @@ Use --print-defaults to get an annotated template, edit it, then run with --from
 			if err != nil {
 				return err
 			}
-			return runConfigGenerate(fromFile, outputDir, dryRun, renderer)
+			return runConfigGenerate(fromFile, outputDir, dryRun, force, renderer)
 		},
 	}
 
 	cmd.Flags().StringVarP(&fromFile, "from-file", "f", "", "Path to the JSON stack description")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Directory to write files into (default: project_name from the file)")
 	cmd.Flags().BoolVar(&printDefaults, "print-defaults", false, "Print an annotated JSON template and exit")
+	cmd.Flags().BoolVar(&force, "force", false, "Overwrite existing files (rotates the encryption key and JWT secret)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Validate the file without writing anything")
 
 	return cmd
@@ -56,7 +58,7 @@ type configGenerateResult struct {
 	Files     []string `json:"files,omitempty"`
 }
 
-func runConfigGenerate(path, outputDir string, dryRun bool, renderer *Renderer) error {
+func runConfigGenerate(path, outputDir string, dryRun, force bool, renderer *Renderer) error {
 	if err := validateOutputFormat(); err != nil {
 		return err
 	}
@@ -70,7 +72,7 @@ func runConfigGenerate(path, outputDir string, dryRun bool, renderer *Renderer) 
 	if outputDir == "" {
 		outputDir = choices.ProjectName
 	}
-	files, err := configgen.Generate(choices, outputDir)
+	files, err := configgen.Generate(choices, outputDir, force)
 	if err != nil {
 		return fmt.Errorf("generating files: %w", err)
 	}

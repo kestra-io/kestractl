@@ -25,7 +25,7 @@ func TestGenerate_KafkaElasticsearch(t *testing.T) {
 		KestraURL:   "http://localhost:8080/",
 	}
 
-	if _, err := Generate(c, c.ProjectName); err != nil {
+	if _, err := Generate(c, c.ProjectName, false); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestGenerate_PostgresJDBC(t *testing.T) {
 		BasicAuth:          true,
 	}
 
-	if _, err := Generate(c, c.ProjectName); err != nil {
+	if _, err := Generate(c, c.ProjectName, false); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestGenerate_MixedDatabases(t *testing.T) {
 		KestraURL:          "http://localhost:8080/",
 	}
 
-	if _, err := Generate(c, c.ProjectName); err != nil {
+	if _, err := Generate(c, c.ProjectName, false); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -238,7 +238,7 @@ func TestGenerate_H2(t *testing.T) {
 		KestraURL:   "http://localhost:8080/",
 	}
 
-	if _, err := Generate(c, c.ProjectName); err != nil {
+	if _, err := Generate(c, c.ProjectName, false); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
@@ -284,7 +284,7 @@ func TestGenerate_OSS(t *testing.T) {
 		KestraURL:   "http://localhost:8080/",
 	}
 
-	if _, err := Generate(c, c.ProjectName); err != nil {
+	if _, err := Generate(c, c.ProjectName, false); err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
 
