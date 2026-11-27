@@ -1,0 +1,9 @@
+kestra:
+  ee:
+    mail-service:
+      host: __MAIL_HOST__
+      port: __MAIL_PORT__
+      username: __MAIL_USERNAME__
+      password: ${MAIL_PASSWORD}
+      from: __MAIL_FROM__
+      starttlsEnable: true

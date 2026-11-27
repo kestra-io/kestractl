@@ -243,6 +243,24 @@ kestractl config use prod
 kestractl config remove dev
 ```
 
+### Stack Generation
+
+Generate `application.yml`, `docker-compose.yml` and `.env` for a Kestra OSS or EE stack. Works offline, no context needed.
+
+```bash
+# Get an annotated JSON template, then edit it
+kestractl config generate --print-defaults > stack.json
+
+# Validate only
+kestractl config generate --from-file stack.json --dry-run
+
+# Write the files (default directory: project_name from the file)
+kestractl config generate --from-file stack.json --output-dir ./my-stack
+
+# Overwrite an existing stack (rotates the encryption key and JWT secret)
+kestractl config generate --from-file stack.json --output-dir ./my-stack --force
+```
+
 ### Flows
 
 ```bash

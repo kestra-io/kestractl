@@ -1,0 +1,5 @@
+kestra:
+  queue:
+    type: redis
+  redis:
+    uri: redis://redis:6379

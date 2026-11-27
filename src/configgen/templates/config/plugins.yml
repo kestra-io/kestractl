@@ -1,0 +1,4 @@
+kestra:
+  plugins:
+    management:
+      enabled: true

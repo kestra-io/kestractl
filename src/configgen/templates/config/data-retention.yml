@@ -1,0 +1,4 @@
+kestra:
+  jdbc:
+    cleaner:
+      retention: __DATA_RETENTION__

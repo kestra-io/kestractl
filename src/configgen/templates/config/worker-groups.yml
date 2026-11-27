@@ -1,0 +1,4 @@
+kestra:
+  ee:
+    worker-groups:
+      enabled: true

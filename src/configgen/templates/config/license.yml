@@ -1,0 +1,6 @@
+kestra:
+  ee:
+    license:
+      id: __LICENSE_ID__
+      key: __LICENSE_KEY__
+      fingerprint: __LICENSE_FINGERPRINT__

@@ -1,0 +1,8 @@
+datasources:
+  mysql:
+    url: jdbc:mysql://mysql:3306/kestra
+    driverClassName: com.mysql.cj.jdbc.Driver
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+    dialect: MYSQL
+    keepalive-time: 60000

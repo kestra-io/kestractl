@@ -1,0 +1,5 @@
+kestra:
+  queue:
+    type: amqp
+  amqp:
+    uri: amqp://guest:guest@rabbitmq:5672/
