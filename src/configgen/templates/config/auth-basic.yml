@@ -1,0 +1,19 @@
+micronaut:
+  security:
+    enabled: true
+    authentication: cookie
+    basic-auth:
+      enabled: true
+    token:
+      jwt:
+        enabled: true
+        signatures:
+          secret:
+            generator:
+              secret: ${JWT_SECRET}
+        generator:
+          refresh-token:
+            enabled: true
+      cookie:
+        enabled: true
+        cookie-same-site: strict

@@ -1,0 +1,5 @@
+kestra:
+  security:
+    oidc:
+      groups-claim-path: __OIDC_GROUPS_CLAIM_PATH__
+      email-verification-enabled: __OIDC_EMAIL_VERIFICATION__

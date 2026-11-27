@@ -1,0 +1,4 @@
+kestra:
+  ee:
+    tenants:
+      enabled: true

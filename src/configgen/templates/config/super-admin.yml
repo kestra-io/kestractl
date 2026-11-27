@@ -1,0 +1,5 @@
+kestra:
+  security:
+    super-admin:
+      username: __SUPER_ADMIN_EMAIL__
+      password: __SUPER_ADMIN_PASSWORD__

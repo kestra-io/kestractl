@@ -1,0 +1,188 @@
+volumes:
+  kestra-data:
+    driver: local
+{{- if .Postgres}}
+  postgres-data:
+    driver: local
+{{- end}}
+{{- if .MySQL}}
+  mysql-data:
+    driver: local
+{{- end}}
+{{- if .Elasticsearch}}
+  elasticsearch-data:
+    driver: local
+{{- end}}
+
+services:
+  kestra:
+    image: {{if .IsEE}}registry.kestra.io/docker/kestra-ee:latest{{else}}kestra/kestra:latest{{end}}
+    entrypoint: /bin/bash
+    user: "root"
+    command:
+      - -c
+      - /app/kestra server standalone --worker-thread=128
+    environment:
+      MICRONAUT_CONFIG_FILES: /app/confs/application.yml
+    volumes:
+      - kestra-data:/app/storage
+      - ./application.yml:/app/confs/application.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+{{- if .HasInfra}}
+    depends_on:
+{{- if .Postgres}}
+      postgres:
+        condition: service_healthy
+{{- end}}
+{{- if .MySQL}}
+      mysql:
+        condition: service_healthy
+{{- end}}
+{{- if .Kafka}}
+      kafka:
+        condition: service_healthy
+{{- end}}
+{{- if .Elasticsearch}}
+      elasticsearch:
+        condition: service_healthy
+{{- end}}
+{{- if .Redis}}
+      redis:
+        condition: service_healthy
+{{- end}}
+{{- if .RabbitMQ}}
+      rabbitmq:
+        condition: service_healthy
+{{- end}}
+{{- end}}
+    restart: on-failure
+{{- if .Postgres}}
+
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_DB: kestra
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "5432:5432"
+    restart: on-failure
+{{- end}}
+{{- if .MySQL}}
+
+  mysql:
+    image: mysql
+    command: >-
+      --log-bin-trust-function-creators=1
+      --innodb_ft_min_token_size=1
+      --ft_min_word_len=1
+      --sort-buffer-size=10485760
+    environment:
+      MYSQL_DATABASE: kestra
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "3306:3306"
+    restart: on-failure
+{{- end}}
+{{- if .Kafka}}
+
+  kafka:
+    image: apache/kafka-native:4.0.0
+    environment:
+      KAFKA_NODE_ID: 101
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 101@kafka:29093
+      KAFKA_LISTENERS: PLAINTEXT://kafka:29092,CONTROLLER://kafka:29093,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "9092:9092"
+    restart: on-failure
+{{- end}}
+{{- if .Elasticsearch}}
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.5
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: "-Xms256m -Xmx512m"
+      xpack.security.enabled: "false"
+      action.destructive_requires_name: "false"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: curl -s -f localhost:9200/_cat/health >/dev/null || exit 1
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "9200:9200"
+    restart: on-failure
+{{- end}}
+{{- if .Redis}}
+
+  redis:
+    image: redis:7
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "6379:6379"
+    restart: on-failure
+{{- end}}
+{{- if .RabbitMQ}}
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    restart: on-failure
+{{- end}}

@@ -1,0 +1,7 @@
+kestra:
+  tasks:
+    tmp-dir:
+      path: __TMP_DIR_PATH__
+  url: __KESTRA_URL__
+  encryption:
+    secret-key: ${KESTRA_ENCRYPTION_KEY}

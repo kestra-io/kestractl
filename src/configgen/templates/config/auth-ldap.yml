@@ -1,0 +1,28 @@
+micronaut:
+  security:
+    enabled: true
+    authentication: cookie
+    ldap:
+      default:
+        enabled: true
+        context:
+          server: __LDAP_SERVER_URL__
+          manager-dn: __LDAP_BIND_DN__
+          manager-password: ${LDAP_BIND_PASSWORD}
+        search:
+          base: __LDAP_SEARCH_BASE__
+        groups:
+          enabled: true
+    token:
+      jwt:
+        enabled: true
+        signatures:
+          secret:
+            generator:
+              secret: ${JWT_SECRET}
+        generator:
+          refresh-token:
+            enabled: true
+      cookie:
+        enabled: true
+        cookie-same-site: strict
