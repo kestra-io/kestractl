@@ -509,6 +509,21 @@ func (c *Client) isLegacyServer() bool {
 	return c.serverEra() == eraLegacy
 }
 
+// isBeforeKestra21 reports whether the server is known to run a Kestra older
+// than 2.1, which still serves the asset lineage-event routes and the
+// destinationOnly dependency graph. An unknown version counts as 2.1 or later.
+func (c *Client) isBeforeKestra21() bool {
+	version, err := c.ServerVersion()
+	if err != nil {
+		return false
+	}
+	core, _ := splitVersion(version)
+	if core == [3]int{} {
+		return false
+	}
+	return core[0] < 2 || (core[0] == 2 && core[1] < 1)
+}
+
 // requireKestra2 fails when the server is known to run Kestra 1.x, naming the
 // feature that needs 2.0. It does not block unknown servers — a real auth or
 // network problem surfaces on the very next call anyway; it exists to turn a

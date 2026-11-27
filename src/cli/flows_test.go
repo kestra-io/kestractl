@@ -1733,7 +1733,15 @@ func TestRunFlowsUpdateConcurrency(t *testing.T) {
 					return
 				}
 
-				var body kestra.ConcurrencyLimit
+				if !strings.HasSuffix(r.URL.Path, "/main/concurrency-limit") {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				var body struct {
+					Namespace string `json:"namespace"`
+					FlowId    string `json:"flowId"`
+					Running   *int32 `json:"running"`
+				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode request body: %v", err)
 					http.Error(w, "invalid request body", http.StatusBadRequest)
@@ -1752,7 +1760,8 @@ func TestRunFlowsUpdateConcurrency(t *testing.T) {
 				t.Logf("request body includes running=%d", *body.Running)
 
 				w.Header().Set("Content-Type", "application/json")
-				if err := json.NewEncoder(w).Encode(body); err != nil {
+				resp := kestra.ConcurrencyLimit{TenantId: "main", Namespace: body.Namespace, FlowId: body.FlowId, Running: body.Running}
+				if err := json.NewEncoder(w).Encode(resp); err != nil {
 					t.Errorf("encode response body: %v", err)
 					return
 				}

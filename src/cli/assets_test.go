@@ -51,14 +51,21 @@ func TestAssetsSubgroups_Structure(t *testing.T) {
 
 func TestRunAssetsDependencies(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/configs" {
+			_, _ = w.Write([]byte(`{"version":"2.1.0"}`))
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/assets/asset1/dependencies") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Has("destinationOnly") {
+			t.Errorf("a 2.1 server must not get destinationOnly: %s", r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"nodes":[
 			{"uid":"n1","namespace":"prod","type":"ASSET"},
 			{"uid":"n2","namespace":"dev","type":"FLOW"}
-		],"edges":[{"source":"n1","target":"n2"}]}`))
+		],"edges":[{"source":"n1","target":"n2","kind":"CONSUMED_BY"}],"truncated":false}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -68,10 +75,52 @@ func TestRunAssetsDependencies(t *testing.T) {
 		t.Fatalf("runAssetsDependencies error: %v", err)
 	}
 	out := buf.String()
-	for _, want := range []string{"n1", "n2", "Nodes: 2, Edges: 1"} {
+	for _, want := range []string{"n1", "prod", "ASSET", "n2", "Nodes: 2, Edges: 1"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRunAssetsDependencies_Kestra20KeepsDestinationOnlyAndRawJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/configs" {
+			_, _ = w.Write([]byte(`{"version":"2.0.9"}`))
+			return
+		}
+		if got := r.URL.Query().Get("destinationOnly"); got != "true" {
+			t.Errorf("destinationOnly = %q, want true", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"nodes":[{"uid":"n1","type":"ASSET"},{"uid":"n2","type":"FLOW"}],
+			"edges":[{"source":"n1","target":"n2","relation":"USED_BY"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAssetsDependencies(newTestClient(t, server.URL), "asset1", true, false, newJSONRenderer(&buf))
+	if err != nil {
+		t.Fatalf("runAssetsDependencies error: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"relation": "USED_BY"`) {
+		t.Errorf("the 2.0 edge relation must be kept in JSON output:\n%s", buf.String())
+	}
+}
+
+func TestRunAssetsDependencies_DestinationOnlyRefusedOnKestra21(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/configs" {
+			t.Errorf("no dependency call expected, got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"version":"2.1.0"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	err := runAssetsDependencies(newTestClient(t, server.URL), "asset1", true, false, newTableRenderer(&buf))
+	const want = "--destination-only is only available before Kestra 2.1 (the server runs 2.1.0)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %q", err, want)
 	}
 }
 
@@ -143,6 +192,10 @@ func TestAssetsDeleteByQueryCommand_NoFilter(t *testing.T) {
 
 func TestRunAssetsLineageEventsList(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/configs" {
+			_, _ = w.Write([]byte(`{"version":"2.0.9"}`))
+			return
+		}
 		if !strings.HasSuffix(r.URL.Path, "/assets/lineage-events/search") {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
@@ -163,6 +216,29 @@ func TestRunAssetsLineageEventsList(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestRunAssetsLineageEventsList_Kestra21ListsUsages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/configs" {
+			_, _ = w.Write([]byte(`{"version":"2.1.0"}`))
+			return
+		}
+		if !strings.HasSuffix(r.URL.Path, "/assets/usages/search") {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"assetId":"a1","namespace":"prod","flowId":"f1"}],"total":1}`))
+	}))
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	if err := runAssetsLineageEventsList(newTestClient(t, server.URL), 1, 100, nil, newTableRenderer(&buf)); err != nil {
+		t.Fatalf("runAssetsLineageEventsList error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "Total usages: 1") {
+		t.Errorf("expected usages, got:\n%s", buf.String())
 	}
 }
 
@@ -192,29 +268,39 @@ func TestRunAssetsUsagesList(t *testing.T) {
 }
 
 func TestAssetsLineageEventsDeleteByQuery_Command(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			t.Errorf("expected DELETE, got %s", r.Method)
-		}
-		if !strings.HasSuffix(r.URL.Path, "/assets/lineage-events/by-query") {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"count":2}`))
-	}))
-	t.Cleanup(server.Close)
+	for _, tc := range []struct{ version, path string }{
+		{"2.0.9", "/assets/lineage-events/by-query"},
+		{"2.1.0", "/assets/usages/by-query"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/configs" {
+					_, _ = w.Write([]byte(`{"version":"` + tc.version + `"}`))
+					return
+				}
+				if r.Method != http.MethodDelete {
+					t.Errorf("expected DELETE, got %s", r.Method)
+				}
+				if !strings.HasSuffix(r.URL.Path, tc.path) {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"count":2}`))
+			}))
+			t.Cleanup(server.Close)
 
-	original := newClientFunc
-	newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
-	defer func() { newClientFunc = original }()
+			original := newClientFunc
+			newClientFunc = func() (*Client, error) { return newTestClient(t, server.URL), nil }
+			defer func() { newClientFunc = original }()
 
-	cmd := newAssetsLineageEventsDeleteByQueryCommand()
-	out, err := executeCommand(cmd, "--namespace", "prod")
-	if err != nil {
-		t.Fatalf("execute error: %v", err)
-	}
-	if !strings.Contains(out, "2 asset(s) affected") {
-		t.Errorf("expected bulk count, got:\n%s", out)
+			out, err := executeCommand(newAssetsLineageEventsDeleteByQueryCommand(), "--namespace", "prod")
+			if err != nil {
+				t.Fatalf("execute error: %v", err)
+			}
+			if !strings.Contains(out, "2 asset(s) affected") {
+				t.Errorf("expected bulk count, got:\n%s", out)
+			}
+		})
 	}
 }
 

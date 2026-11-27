@@ -143,7 +143,7 @@ func TestStringify(t *testing.T) {
 		{name: "sdk Level enum", input: kestra.LEVEL_INFO, want: "INFO"},
 		{name: "sdk Level enum error", input: kestra.LEVEL_ERROR, want: "ERROR"},
 		{name: "sdk StateType enum", input: kestra.STATETYPE_SUCCESS, want: "SUCCESS"},
-		{name: "sdk Relation enum", input: kestra.RELATION_USED_BY, want: "USED_BY"},
+		{name: "sdk RelationKind enum", input: kestra.RELATIONKIND_CONSUMED_BY, want: "CONSUMED_BY"},
 		{name: "pointer to enum", input: kestra.LEVEL_WARN.Ptr(), want: "WARN"},
 		{name: "stringer wins over string kind", input: bugStringer("x"), want: "stringer:x"},
 		{name: "int stays json", input: 42, want: "42"},
