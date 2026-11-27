@@ -838,7 +838,7 @@ kestractl assets delete-by-ids id1 id2 id3
 kestractl assets delete-by-query --namespace my.namespace
 kestractl assets delete-by-query --filter NAMESPACE:EQUALS:my.namespace --purge
 
-# Inspect and manage lineage events (alias: lineage)
+# Inspect and manage lineage events (alias: lineage), acts on usages on Kestra 2.1+
 kestractl assets lineage-events list --output json
 kestractl assets lineage-events delete-by-query --namespace my.namespace
 

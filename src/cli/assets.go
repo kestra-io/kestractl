@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strconv"
 	"text/tabwriter"
 
 	kestra "github.com/kestra-io/client-sdk/go-sdk/v2/kestra_api_client"
@@ -251,22 +254,56 @@ func newAssetsDependenciesCommand() *cobra.Command {
 }
 
 func runAssetsDependencies(client *Client, id string, destinationOnly, expandAll bool, renderer *Renderer) error {
-	graph, err := client.Kestra.Assets().AssetDependencies(client.Ctx, id, client.Tenant, &destinationOnly, &expandAll)
+	value, graph, err := fetchAssetDependencies(client, id, destinationOnly, expandAll)
 	if err != nil {
-		return formatSDKError(err)
+		return err
 	}
 
-	return renderer.Render(graph, func(w *tabwriter.Writer) error {
-		nodes := graph.GetNodes()
-		edges := graph.GetEdges()
+	return renderer.Render(value, func(w *tabwriter.Writer) error {
 		fmt.Fprintln(w, "UID\tNAMESPACE\tTYPE")
-		for _, n := range nodes {
-			fmt.Fprintf(w, "%s\t%s\t%v\n", n.GetUid(), n.GetNamespace(), n.GetType())
+		for _, n := range graph.Nodes {
+			namespace := ""
+			if n.Namespace != nil {
+				namespace = *n.Namespace
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n", n.Uid, namespace, n.Type)
 		}
-		fmt.Fprintf(w, "\nNodes: %d, Edges: %d\n", len(nodes), len(edges))
+		fmt.Fprintf(w, "\nNodes: %d, Edges: %d\n", len(graph.Nodes), len(graph.Edges))
 		fmt.Fprintln(w, "Use --output json to see the full graph.")
 		return nil
 	})
+}
+
+// fetchAssetDependencies returns the value to render as JSON and the graph for
+// the table. Before Kestra 2.1 it calls the route directly, since the SDK no
+// longer sends destinationOnly, and keeps the server's JSON as-is so the edge
+// relation the 2.1 graph type lacks is not dropped.
+func fetchAssetDependencies(client *Client, id string, destinationOnly, expandAll bool) (any, *kestra.AssetRelationGraph, error) {
+	if !client.isBeforeKestra21() {
+		if destinationOnly {
+			version, _ := client.ServerVersion()
+			return nil, nil, fmt.Errorf("--destination-only is only available before Kestra 2.1 (the server runs %s)", version)
+		}
+		graph, err := client.Kestra.Assets().AssetDependencies(client.Ctx, id, client.Tenant, nil, &expandAll, nil)
+		if err != nil {
+			return nil, nil, formatSDKError(err)
+		}
+		return graph, graph, nil
+	}
+
+	query := url.Values{
+		"destinationOnly": {strconv.FormatBool(destinationOnly)},
+		"expandAll":       {strconv.FormatBool(expandAll)},
+	}
+	body, err := client.doRawRequest("GET", query, "assets", id, "dependencies")
+	if err != nil {
+		return nil, nil, err
+	}
+	var graph kestra.AssetRelationGraph
+	if err := json.Unmarshal(body, &graph); err != nil {
+		return nil, nil, fmt.Errorf("failed to decode the asset dependency graph: %w", err)
+	}
+	return json.RawMessage(body), &graph, nil
 }
 
 func newAssetsDeleteByIdsCommand() *cobra.Command {
@@ -350,8 +387,12 @@ func renderAssetsBulkResponse(resp *kestra.BulkResponse, renderer *Renderer) err
 
 func newAssetsLineageEventsCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "lineage-events",
-		Short:   "Inspect and manage asset lineage events.",
+		Use:   "lineage-events",
+		Short: "Inspect and manage asset lineage events.",
+		Long: `Inspect and manage asset lineage events.
+
+Kestra 2.1 replaced lineage events with asset usages: on a 2.1 or later server,
+these commands act on usages, like "kestractl assets usages".`,
 		Aliases: []string{"lineage"},
 	}
 	cmd.AddCommand(newAssetsLineageEventsListCommand())
@@ -392,6 +433,9 @@ func newAssetsLineageEventsListCommand() *cobra.Command {
 }
 
 func runAssetsLineageEventsList(client *Client, page, size int32, sort []string, renderer *Renderer) error {
+	if !client.isBeforeKestra21() {
+		return runAssetsUsagesList(client, page, size, sort, renderer)
+	}
 	pageInt, sizeInt := int(page), int(size)
 
 	resp, err := client.Kestra.Assets().SearchAssetLineageEvents(client.Ctx, client.Tenant, &pageInt, &sizeInt, sort, nil)
@@ -432,16 +476,29 @@ func newAssetsLineageEventsDeleteByQueryCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := client.Kestra.Assets().DeleteAssetLineageEventsByQuery(client.Ctx, client.Tenant, queryFiltersToSearchFilters(filters))
-			if err != nil {
-				return formatSDKError(err)
-			}
-			return renderAssetsBulkResponse(resp, renderer)
+			return runAssetsLineageEventsDeleteByQuery(client, filters, renderer)
 		},
 	}
 
 	addByQueryFilterFlags(cmd, &filterFlags)
 	return cmd
+}
+
+func runAssetsLineageEventsDeleteByQuery(client *Client, filters []kestra.QueryFilter, renderer *Renderer) error {
+	searchFilters := queryFiltersToSearchFilters(filters)
+	var (
+		resp *kestra.BulkResponse
+		err  error
+	)
+	if client.isBeforeKestra21() {
+		resp, err = client.Kestra.Assets().DeleteAssetLineageEventsByQuery(client.Ctx, client.Tenant, searchFilters)
+	} else {
+		resp, err = client.Kestra.Assets().DeleteAssetUsagesByQuery(client.Ctx, client.Tenant, searchFilters)
+	}
+	if err != nil {
+		return formatSDKError(err)
+	}
+	return renderAssetsBulkResponse(resp, renderer)
 }
 
 func newAssetsUsagesCommand() *cobra.Command {
